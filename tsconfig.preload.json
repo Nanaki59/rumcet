@@ -1,0 +1,9 @@
+{
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "module": "commonjs",  // Force CommonJS pour le preload
+    "target": "es2024"
+  },
+  "include": ["preload.ts"],
+  "exclude": ["node_modules", "dist"]
+}
