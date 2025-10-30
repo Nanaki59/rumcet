@@ -1,0 +1,88 @@
+RUMCET - ROM's Ultimate Manager, Conversion and Editor Tool
+Copyright (C) 2025 Nanaki59
+
+This program is free software: you can redistribute it and/or modify
+it under the terms of the GNU Affero General Public License as published by
+the Free Software Foundation, either version 3 of the License, or
+(at your option) any later version.
+
+This program is distributed in the hope that it will be useful,
+but WITHOUT ANY WARRANTY; without even the implied warranty of
+MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+GNU Affero General Public License for more details.
+
+You should have received a copy of the GNU Affero General Public License
+along with this program.  If not, see <https://www.gnu.org/licenses/>.
+
+================================================================================
+
+THIRD-PARTY COMPONENTS
+
+This software includes the following third-party components:
+
+1. adm-zip (MIT License)
+   Copyright (c) 2012 Another-D-Mention Software and other contributors
+   https://github.com/cthackers/adm-zip
+
+2. node-7z (MIT License)
+   Copyright (c) 2014 Quentin Rossetti
+   https://github.com/quentinrossetti/node-7z
+
+3. 7zip-bin (LGPL-3.0)
+   7-Zip Copyright (C) 1999-2023 Igor Pavlov
+   https://github.com/develar/7zip-bin
+
+4. sqlite3 (BSD-3-Clause)
+   Copyright (c) MapBox
+   https://github.com/TryGhost/node-sqlite3
+
+5. xml2js (MIT License)
+   Copyright 2010, 2011, 2012, 2013. All rights reserved.
+   https://github.com/Leonidas-from-XIV/node-xml2js
+
+6. crc (MIT License)
+   https://github.com/alexgorbatchev/node-crc
+
+7. Electron (MIT License)
+   Copyright (c) Electron contributors
+   https://github.com/electron/electron
+
+8. TypeScript (Apache-2.0)
+   Copyright Microsoft Corporation
+   https://github.com/microsoft/TypeScript
+
+All third-party components are used in accordance with their respective licenses.
+All licenses are compatible with GNU AGPL v3.
+
+================================================================================
+
+OPTIONAL EXTERNAL TOOLS
+
+RAR archive support requires one of the following tools to be installed separately:
+
+- 7-Zip (LGPL-3.0): https://www.7-zip.org
+- WinRAR (Proprietary, paid): https://www.rarlab.com
+- unrar (Proprietary, freeware): https://www.rarlab.com/rar_add.htm
+
+These tools are NOT included with this software and must be obtained separately.
+Users are responsible for complying with the license terms of any external tools they choose to install.
+
+================================================================================
+
+ATTRIBUTION
+
+When modifying or redistributing this software, you must:
+1. Retain all copyright notices
+2. Include a copy of the AGPL v3 license
+3. Make source code available
+4. State significant changes made to the software
+5. Ensure derivative works are also licensed under AGPL v3
+
+================================================================================
+
+NO WARRANTY
+
+This program is distributed in the hope that it will be useful,
+but WITHOUT ANY WARRANTY; without even the implied warranty of
+MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+GNU Affero General Public License for more details.
