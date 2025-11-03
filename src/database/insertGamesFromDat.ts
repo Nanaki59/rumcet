@@ -1,4 +1,5 @@
 // src/database/insertGamesFromDat.ts
+
 import { Database } from './init';
 import { parseString } from 'xml2js';
 import fs from 'fs/promises';

@@ -28,7 +28,7 @@ import { sendLogToRenderer } from './utils/logger.js';
 import fs from 'fs/promises';
 
 // Import des handlers
-import { registerChdHandlers } from './handlers/chd.handlers.js';
+import { registerArchiveHandlers } from './handlers/archive.handlers.js';
 import { registerDatabaseHandlers } from './handlers/database.handlers.js';
 import { registerDatHandlers } from './handlers/dat.handlers.js';
 import { registerDialogHandlers } from './handlers/dialog.handlers.js';
@@ -336,7 +336,7 @@ async function initializeApp(): Promise<void> {
 
   // Enregistrer tous les handlers IPC
   if (mainWindow) {
-    registerChdHandlers(ipcMain, mainWindow);
+    registerArchiveHandlers(ipcMain, mainWindow);
     registerDatabaseHandlers(ipcMain, mainWindow);
     registerDatHandlers(ipcMain, mainWindow);
     registerRomsHandlers(ipcMain, mainWindow);

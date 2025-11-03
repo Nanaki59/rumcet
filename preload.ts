@@ -1,4 +1,4 @@
-// preload.ts
+// preload.ts - VERSION COMPLÈTE AVEC NOUVELLES APIs
 import { contextBridge, ipcRenderer } from 'electron';
 
 export interface DatLoadResult {
@@ -72,67 +72,87 @@ contextBridge.exposeInMainWorld('api', {
   showMessageBox: (options: any) => ipcRenderer.invoke('dialog:show-message', options),
 
   // ========================================
-  // API CHD
-  // ========================================
-
-  convertToChd: (filePaths: string[]) => 
-    ipcRenderer.invoke('chd:convert-batch', filePaths),
-    
-  extractChd: (chdPath: string, outputPath?: string) => 
-    ipcRenderer.invoke('chd:extract', chdPath, outputPath),
-    
-  getChdInfo: (chdPath: string) => 
-    ipcRenderer.invoke('chd:info', chdPath),
-    
-  verifyChd: (chdPath: string) => 
-    ipcRenderer.invoke('chd:verify', chdPath),
-    
-  checkChdmanAvailable: () => 
-    ipcRenderer.invoke('chd:check-available'),
-    
-  setChdmanPath: () => 
-    ipcRenderer.invoke('chd:set-path'),
-
-
-  // ========================================
-  // API Archives - Gestion complète des archives
+  // API Archives - Gestion complète et centralisée
   // ========================================
 
   archive: {
-    // Création d'archives
-    createArchive: (files: any[], outputPath: string, format?: 'zip' | '7z') =>
-      ipcRenderer.invoke('archive:create', files, outputPath, format),
+    // Détection et configuration des outils
+    detectTools: () => 
+      ipcRenderer.invoke('archive:detect-tools'),
     
-    createZip: (files: any[], outputPath: string) =>
-      ipcRenderer.invoke('archive:createZip', files, outputPath),
+    checkChdmanAvailable: () => 
+      ipcRenderer.invoke('archive:check-chdman-available'),
     
-    create7z: (files: any[], outputPath: string) =>
-      ipcRenderer.invoke('archive:create7z', files, outputPath),
+    setChdmanPath: () => 
+      ipcRenderer.invoke('archive:set-chdman-path'),
     
-    // Ajout de fichiers à une archive existante
-    addFiles: (archivePath: string, files: any[]) =>
-      ipcRenderer.invoke('archive:addFiles', archivePath, files),
+    set7ZipPath: () => 
+      ipcRenderer.invoke('archive:set-7zip-path'),
     
-    // Suppression de fichiers d'une archive
-    removeFiles: (archivePath: string, fileNames: string[]) =>
-      ipcRenderer.invoke('archive:removeFiles', archivePath, fileNames),
+    setRarToolPath: (toolType: 'unrar' | 'sevenZip' | 'winrar') => 
+      ipcRenderer.invoke('archive:set-rar-tool-path', toolType),
     
-    // Extraction de fichiers (avec option de suppression)
-    extractFiles: (archivePath: string, fileNames: string[], outputDir: string, deleteAfterExtract?: boolean) =>
-      ipcRenderer.invoke('archive:extractFiles', archivePath, fileNames, outputDir, deleteAfterExtract),
+    // Opérations sur archives
+    list: (archivePath: string) => 
+      ipcRenderer.invoke('archive:list', archivePath),
     
-    // Lister le contenu d'une archive
-    listContents: (archivePath: string) =>
-      ipcRenderer.invoke('archive:listContents', archivePath),
+    extract: (archivePath: string, outputDir: string, files?: string[]) => 
+      ipcRenderer.invoke('archive:extract', archivePath, outputDir, files),
     
-    // Paramètres de compression
-    updateSettings: (settings: any) =>
-      ipcRenderer.invoke('archive:updateSettings', settings),
+    create: (files: string[], outputPath: string, settings?: any) => 
+      ipcRenderer.invoke('archive:create', files, outputPath, settings),
     
-    getSettings: () =>
-      ipcRenderer.invoke('archive:getSettings')
+    isArchive: (filePath: string) => 
+      ipcRenderer.invoke('archive:is-archive', filePath),
+    
+    getFormat: (filePath: string) => 
+      ipcRenderer.invoke('archive:get-format', filePath),
+    
+    // Conversions CHD
+    convertToChdBatch: (filePaths: string[]) => 
+      ipcRenderer.invoke('archive:convert-to-chd-batch', filePaths),
+    
+    // Événements de progression
+    onProgress: (callback: (event: any) => void) => {
+      ipcRenderer.on('archive-progress', (_event, data) => callback(data));
+    }
   },
 
+  // ========================================
+  // API Compatibilité des archives par système
+  // ========================================
+
+  archiveCompat: {
+    // Obtenir la configuration de compatibilité pour un système
+    getConfig: (systemId: string) => 
+      ipcRenderer.invoke('archive-compat:get-config', systemId),
+    
+    // Vérifier si un format est supporté par un système
+    checkFormat: (systemId: string, format: string) => 
+      ipcRenderer.invoke('archive-compat:check-format', systemId, format),
+    
+    // Obtenir le format recommandé pour un système
+    getRecommended: (systemId: string) => 
+      ipcRenderer.invoke('archive-compat:get-recommended', systemId),
+    
+    // Obtenir tous les formats compatibles pour un système
+    getAllCompatible: (systemId: string) => 
+      ipcRenderer.invoke('archive-compat:get-all-compatible', systemId),
+    
+    // Obtenir la liste de tous les systèmes configurés
+    getAllSystems: () => 
+      ipcRenderer.invoke('archive-compat:get-all-systems'),
+    
+    // Configuration personnalisée
+    getCustomConfig: (systemId: string) => 
+      ipcRenderer.invoke('archive-compat:get-custom-config', systemId),
+    
+    saveCustomConfig: (systemId: string, config: any) => 
+      ipcRenderer.invoke('archive-compat:save-custom-config', systemId, config),
+    
+    resetConfig: (systemId: string) => 
+      ipcRenderer.invoke('archive-compat:reset-config', systemId)
+  },
 
   // ========================================
   // API du workflow principal

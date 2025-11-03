@@ -2,34 +2,75 @@
 
 export type ArchiveFormat = '7z' | 'zip' | 'chd';
 export type CompressionLevel = 'fastest' | 'normal' | 'maximum';
+export type RarTool = '7zip' | 'winrar' | 'unrar';
+export type Theme = 'light' | 'dark';
+export type Language = 'fr' | 'en';
 
+// Interface pour la compatibilité des systèmes
+export interface SystemCompatibility {
+  systemId: string;
+  systemName: string;
+  supportedFormats: ArchiveFormat[];
+  warningFormats?: ArchiveFormat[];
+}
+
+// Interface principale des paramètres de l'application
 export interface AppSettings {
-  // Dossiers par défaut
+  // ========================================
+  // ONGLET GÉNÉRAL - Interface
+  // ========================================
+  theme: Theme;
+  language: Language;
+  
+  // ========================================
+  // ONGLET GÉNÉRAL - Démarrage
+  // ========================================
+  autoScanOnStartup: boolean;
+  
+  // ========================================
+  // ONGLET DOSSIERS - Dossiers par défaut
+  // ========================================
   defaultDatFolder: string;
   defaultDatabaseFolder: string;
   defaultRomsFolder: string;
   unmatchedRomsFolder: string;
   
-  // Préférences générales
-  theme: 'light' | 'dark';
-  language: 'fr' | 'en';
-  autoScanOnStartup: boolean;
-  
-  // Paramètres de compression des archives
+  // ========================================
+  // ONGLET ARCHIVES - Niveau de compression
+  // ========================================
   compressionLevel: CompressionLevel;
-  recreateArchivesIfNeeded: boolean;
   
-  // Liste ordonnée des formats préférés (au lieu d'un seul)
+  // ========================================
+  // ONGLET ARCHIVES - Ordre de priorité des formats
+  // ========================================
   archiveFormatPriority: ArchiveFormat[];
-  // Exemple: ['7z', 'zip', 'chd'] => Essaie 7z d'abord, puis zip, puis chd
   
-  // Option "Best compression" (teste tous les formats)
+  // ========================================
+  // ONGLET ARCHIVES - Options avancées
+  // ========================================
+  recreateArchivesIfNeeded: boolean;
   useBestCompression: boolean;
-  
   solidArchive: boolean;
   multithreading: boolean;
   
-  // Version des paramètres (pour migrations futures)
+  // ========================================
+  // ONGLET OUTILS EXTERNES
+  // ========================================
+  sevenZipPath?: string;
+  winrarPath?: string;
+  unrarPath?: string;
+  chdmanPath?: string;
+  useEmbeddedChdman?: boolean;
+  rarToolPriority?: RarTool[];
+  
+  // ========================================
+  // ONGLET COMPATIBILITÉ - Compatibilité archives par système
+  // ========================================
+  systemCompatibility?: SystemCompatibility[];
+  
+  // ========================================
+  // VERSION DES PARAMÈTRES (pour migrations futures)
+  // ========================================
   settingsVersion?: number;
 }
 
@@ -133,6 +174,34 @@ export interface ArchiveAPI {
     solidArchive: boolean;
     multithreading: boolean;
   }>;
+  
+  // Méthodes pour la configuration des outils
+  detectTools: () => Promise<{ sevenZip: string | null; winrar: string | null; unrar: string | null }>;
+  checkChdmanAvailable: () => Promise<boolean>;
+  set7ZipPath: () => Promise<string | null>;
+  setChdmanPath: () => Promise<string | null>;
+  setRarToolPath: (toolType: 'unrar' | 'sevenZip' | 'winrar') => Promise<string | null>;
+}
+
+// Interface pour l'API de compatibilité des archives
+export interface ArchiveCompatAPI {
+  getConfig: (systemId: string) => Promise<{
+    recommended: string;
+    fullySupported: string[];
+    partiallySupported?: Array<{
+      format: string;
+      warning: string;
+      emulators?: string[];
+    }>;
+    notSupported: string[];
+  }>;
+  checkFormat: (systemId: string, format: string) => Promise<boolean>;
+  getRecommended: (systemId: string) => Promise<string>;
+  getAllCompatible: (systemId: string) => Promise<string[]>;
+  getAllSystems: () => Promise<string[]>;
+  getCustomConfig: (systemId: string) => Promise<any>;
+  saveCustomConfig: (systemId: string, config: any) => Promise<boolean>;
+  resetConfig: (systemId: string) => Promise<any>;
 }
 
 // Interface pour les résultats de matching
@@ -219,12 +288,12 @@ declare global {
       }) => Promise<{ response: number; checkboxChecked: boolean }>;
 
       // ========================================
-      // API du workflow principal
+      // API de gestion des bases de données et DAT
       // ========================================
-
+      
       /**
-       * Etape 1 - Ouvre une boîte de dialogue pour sélectionner un fichier DAT/XML.
-       * @returns Le chemin du fichier sélectionné ou undefined si annulé.
+       * Etape 1 - Sélectionne un fichier DAT/XML et retourne son chemin.
+       * @returns Le chemin du fichier DAT sélectionné ou null si annulé.
        */
       selectDatFile: () => Promise<string | null>;
 
@@ -369,6 +438,11 @@ declare global {
       // API Archives
       // ========================================
       archive: ArchiveAPI;
+      
+      // ========================================
+      // API de compatibilité des archives
+      // ========================================
+      archiveCompat: ArchiveCompatAPI;
 
 
       // ========================================

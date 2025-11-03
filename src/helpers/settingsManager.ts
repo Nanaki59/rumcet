@@ -1,10 +1,12 @@
-// src/main/settingsManager.ts
+// src/helpers/settingsManager.ts
+
 import { app } from 'electron';
 import path from 'path';
 import fs from 'fs/promises';
 
 export type ArchiveFormat = '7z' | 'zip' | 'chd';
 export type CompressionLevel = 'fastest' | 'normal' | 'maximum';
+export type RarTool = '7zip' | 'winrar' | 'unrar';
 
 export interface AppSettings {
   // Dossiers par défaut
@@ -25,6 +27,14 @@ export interface AppSettings {
   useBestCompression: boolean;
   solidArchive: boolean;
   multithreading: boolean;
+
+  // Outils externes
+  sevenZipPath?: string;
+  winrarPath?: string;
+  unrarPath?: string;
+  chdmanPath?: string;
+  useEmbeddedChdman?: boolean;
+  rarToolPriority?: RarTool[];
   
   settingsVersion?: number;
 }
@@ -73,6 +83,14 @@ class SettingsManager {
       useBestCompression: false,
       solidArchive: true,
       multithreading: true,
+      
+      // Paramètres des outils externes par défaut
+      sevenZipPath: undefined,
+      winrarPath: undefined,
+      unrarPath: undefined,
+      chdmanPath: undefined,
+      useEmbeddedChdman: true,
+      rarToolPriority: ['7zip', 'winrar', 'unrar'],
       
       settingsVersion: CURRENT_SETTINGS_VERSION
     };

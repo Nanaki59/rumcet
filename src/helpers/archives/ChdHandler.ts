@@ -1,15 +1,23 @@
-// ============================================
-// src/helpers/chdmanHandler.ts
-// ============================================
+// src/helpers/archives/ChdHandler.ts
+// VERSION FUSIONNÉE : Intègre tout le code de chdmanHandler.ts
 
 import { spawn } from 'child_process';
 import { EventEmitter } from 'events';
 import path from 'path';
 import fs from 'fs/promises';
+import os from 'os';
 import { app } from 'electron';
+import { 
+  IArchiveHandler, 
+  ArchiveContent, 
+  ArchiveCreateOptions, 
+  ArchiveExtractOptions 
+} from './types.js';
+import { calculateFileHashes } from '../hashCalculator.js';
 
-// Créer un EventEmitter pour les événements CHD
-export const chdmanEvents = new EventEmitter();
+// ============================================
+// INTERFACES ET TYPES
+// ============================================
 
 export interface ChdConversionOptions {
   inputPath: string;
@@ -34,9 +42,9 @@ export interface ChdInfo {
   // Tag = RAW  =>  RAW
   metadata: string;
   mediaType?: 'CD' | 'DVD' | 'HD' | 'LD' | 'RAW';
-  allMetadata?: string[];  // Toutes les lignes de metadata
-  tracks?: ChdTrackInfo[];  // Informations des tracks pour CD/DVD
-  isGDI?: boolean;  // Indicateur si c'est un GD-ROM (Dreamcast)
+  allMetadata?: string[];
+  tracks?: ChdTrackInfo[];
+  isGDI?: boolean;
   discType?: 'CD-ROM' | 'CD-DA' | 'GD-ROM' | 'DVD-ROM' | 'DVD-VIDEO';
 }
 
@@ -51,47 +59,245 @@ export interface ChdTrackInfo {
   pgsub?: string;          // NONE, RW, etc.
 }
 
-// Détection du type selon l'extension pour la création
+// ============================================
+// CONSTANTES
+// ============================================
+
 const CD_FORMATS = ['.cue', '.gdi', '.toc', '.nrg', '.cdi', '.iso', '.ccd'];
-const DVD_FORMATS = ['.iso', '.mds'];  // ISO peut être CD ou DVD selon la taille
+const DVD_FORMATS = ['.iso', '.mds'];
 const HD_FORMATS = ['.img', '.vhd', '.vmdk', '.vdi', '.qcow2', '.raw'];
 
-// Pour déterminer le type lors de la création
+// ============================================
+// FONCTIONS UTILITAIRES
+// ============================================
+
+/**
+ * Détecte le type de média selon l'extension et la taille
+ */
 export function detectMediaType(filePath: string, fileSize?: number): string {
   const ext = path.extname(filePath).toLowerCase();
   
   if (ext === '.gdi') return 'cd';  // GDI est toujours CD (Dreamcast)
   if (ext === '.cue') return 'cd';  // CUE est toujours CD
   if (ext === '.toc') return 'cd';  // TOC est toujours CD
-  
+
   // ISO peut être CD ou DVD selon la taille
   if (ext === '.iso' && fileSize) {
     return fileSize > 800 * 1024 * 1024 ? 'dvd' : 'cd';  // > 800MB = probablement DVD
   }
-  
+
+  if (CD_FORMATS.includes(ext)) return 'cd';
+
+  if (DVD_FORMATS.includes(ext)) return 'dvd';
+
   if (HD_FORMATS.includes(ext)) return 'hd';
-  
+
   return 'cd'; // Par défaut
 }
 
-export class ChdmanHandler {
+// ============================================
+// CLASSE PRINCIPALE : ChdHandler
+// ============================================
+
+/**
+ * Handler pour les archives CHD (Compressed Hunks of Data)
+ * Support: Lecture et Écriture (via chdman binaire)
+ * 
+ * Cette classe fusionne les fonctionnalités de chdmanHandler.ts
+ * et implémente l'interface IArchiveHandler
+ */
+export class ChdHandler extends EventEmitter implements IArchiveHandler {
   private chdmanPath: string;
   
   constructor(chdmanPath?: string) {
-    // Chemin vers chdman.exe - peut être dans le dossier de l'app ou configuré
+    super();
     this.chdmanPath = chdmanPath || path.join(app.getPath('userData'), 'tools', 'chdman.exe');
   }
   
+  // ============================================
+  // MÉTHODES IARCHIVEHANDLER
+  // ============================================
+  
+  canRead(filePath: string): boolean {
+    return filePath.toLowerCase().endsWith('.chd');
+  }
+  
   /**
-   * Définir le chemin vers chdman
+   * Liste le contenu d'un CHD en l'extrayant temporairement
    */
+  async list(filePath: string): Promise<ArchiveContent[]> {
+    const isAvailable = await this.isAvailable();
+    if (!isAvailable) {
+      throw new Error('chdman not available. Please configure chdman path in settings.');
+    }
+    
+    const chdInfo = await this.info(filePath);
+    const tempDir = path.join(os.tmpdir(), 'chd_list_' + Date.now());
+    await fs.mkdir(tempDir, { recursive: true });
+    
+    try {
+      const baseName = path.basename(filePath, '.chd');
+      const outputBase = path.join(tempDir, baseName);
+      
+      if (chdInfo.mediaType === 'DVD') {
+        await this.extractDVD(filePath, outputBase);
+      } else if (chdInfo.mediaType === 'HD') {
+        await this.extractHD(filePath, outputBase + '.img');
+      } else {
+        await this.extractCD(filePath, outputBase + '.cue', chdInfo);
+      }
+      
+      /*const files = await fs.readdir(tempDir);
+      const contents: ArchiveContent[] = [];
+      
+      for (const file of files) {
+        const fullPath = path.join(tempDir, file);
+        const stats = await fs.stat(fullPath);
+        
+        if (stats.isFile()) {
+          const hashes = await calculateFileHashes(fullPath);
+          contents.push({
+            fileName: file,
+            size: stats.size,
+            hashes: hashes
+          });
+        }
+      }*/
+
+      const files = await fs.readdir(tempDir);
+      console.log(`📀 CHD extraits : ${files.length} fichiers détectés`);
+
+      const contents: ArchiveContent[] = [];
+
+      for (const file of files) {
+        const fullPath = path.join(tempDir, file);
+        const stats = await fs.stat(fullPath);
+        
+        if (stats.isFile()) {
+          console.log(`  - ${file} (${(stats.size / 1024 / 1024).toFixed(2)} MB)`);
+          
+          // Calculer les hashes uniquement pour les fichiers BIN, CUE, GDI et ISO
+          // Les autres fichiers (comme .ccd, .sub) ne sont pas hashés pour des raisons de performance
+          const ext = path.extname(file).toLowerCase();
+          if (ext === '.bin' || ext === '.cue' || ext === '.gdi' || ext === '.iso') {
+            const hashes = await calculateFileHashes(fullPath);
+            contents.push({
+              fileName: file,
+              size: stats.size,
+              hashes: hashes
+            });
+          } else {
+            // Pour les autres fichiers, ajouter sans hash
+            contents.push({
+              fileName: file,
+              size: stats.size,
+              hashes: {
+                crc32: '',
+                md5: '',
+                sha1: ''
+              }
+            });
+          }
+        }
+      }
+      
+      return contents;
+      
+    } finally {
+      try {
+        await fs.rm(tempDir, { recursive: true, force: true });
+      } catch (error) {
+        console.warn('Failed to clean up temp directory:', error);
+      }
+    }
+  }
+  
+  async extract(options: ArchiveExtractOptions): Promise<void> {
+    const isAvailable = await this.isAvailable();
+    if (!isAvailable) {
+      throw new Error('chdman not available. Please configure chdman path in settings.');
+    }
+    
+    await fs.mkdir(options.outputDir, { recursive: true });
+    
+    const chdInfo = await this.info(options.archivePath);
+    const baseName = path.basename(options.archivePath, '.chd');
+    const outputBase = path.join(options.outputDir, baseName);
+    
+    if (chdInfo.mediaType === 'DVD') {
+      await this.extractDVD(options.archivePath, outputBase);
+    } else if (chdInfo.mediaType === 'HD') {
+      await this.extractHD(options.archivePath, outputBase + '.img');
+    } else {
+      await this.extractCD(options.archivePath, outputBase + '.cue', chdInfo);
+    }
+  }
+  
+  canWrite(): boolean {
+    return true;
+  }
+  
+  async create(options: ArchiveCreateOptions): Promise<void> {
+    const isAvailable = await this.isAvailable();
+    if (!isAvailable) {
+      throw new Error('chdman not available. Please configure chdman path in settings.');
+    }
+    
+    if (options.files.length === 0) {
+      throw new Error('No input file specified for CHD creation');
+    }
+    
+    if (options.files.length > 1) {
+      throw new Error('CHD can only be created from a single source file (.cue, .gdi, .iso, etc.)');
+    }
+    
+    const inputFile = options.files[0];
+    
+    try {
+      await fs.access(inputFile);
+    } catch (error) {
+      throw new Error(`Input file not found: ${inputFile}`);
+    }
+    
+    const outputDir = path.dirname(options.outputPath);
+    await fs.mkdir(outputDir, { recursive: true });
+    
+    const chdOptions: ChdConversionOptions = {
+      inputPath: inputFile,
+      outputPath: options.outputPath,
+      force: true
+    };
+    
+    const stats = await fs.stat(inputFile);
+    const mediaType = detectMediaType(inputFile, stats.size);
+    
+    let result;
+    
+    if (mediaType === 'dvd') {
+      result = await this.createDVD(chdOptions);
+    } else if (mediaType === 'hd') {
+      result = await this.createHD(chdOptions);
+    } else {
+      result = await this.createCD(chdOptions);
+    }
+    
+    if (!result.success) {
+      throw new Error(`CHD creation failed: ${result.message}`);
+    }
+  }
+  
+  getSupportedExtensions(): string[] {
+    return ['.chd'];
+  }
+  
+  // ============================================
+  // MÉTHODES CHDMAN (fusionnées depuis chdmanHandler.ts)
+  // ============================================
+  
   setPath(newPath: string): void {
     this.chdmanPath = newPath;
   }
   
-  /**
-   * Vérifie si chdman est disponible
-   */
   async isAvailable(): Promise<boolean> {
     try {
       await fs.access(this.chdmanPath);
@@ -102,7 +308,7 @@ export class ChdmanHandler {
   }
   
   /**
-   * Convertit un CD en CHD
+   * Crée un CHD depuis un CD
    */
   async createCD(options: ChdConversionOptions): Promise<{ success: boolean; message: string }> {
     return new Promise((resolve, reject) => {
@@ -119,12 +325,12 @@ export class ChdmanHandler {
       if (options.compression) {
         args.push('-c', options.compression);
       }
-      
+
       // Force overwrite
       if (options.force) {
         args.push('-f');
       }
-      
+
       // Number of processors
       if (options.numProcessors) {
         args.push('-np', options.numProcessors.toString());
@@ -137,7 +343,6 @@ export class ChdmanHandler {
       
       process.stdout.on('data', (data) => {
         output += data.toString();
-        // Émettre la progression si nécessaire
         this.parseProgress(data.toString());
       });
       
@@ -149,21 +354,21 @@ export class ChdmanHandler {
         if (code === 0) {
           resolve({
             success: true,
-            message: `Conversion réussie : ${outputPath}`
+            message: `CHD CD created successfully: ${outputPath}`
           });
         } else {
-          reject(new Error(`Erreur chdman createcd (code ${code}): ${errorOutput || output}`));
+          reject(new Error(`chdman createcd failed (code ${code}): ${errorOutput || output}`));
         }
       });
       
       process.on('error', (err) => {
-        reject(new Error(`Impossible de lancer chdman: ${err.message}`));
+        reject(new Error(`Unable to run chdman: ${err.message}`));
       });
     });
   }
   
   /**
-   * Convertit un DVD en CHD
+   * Crée un CHD depuis un DVD
    */
   async createDVD(options: ChdConversionOptions): Promise<{ success: boolean; message: string }> {
     return new Promise((resolve, reject) => {
@@ -210,21 +415,21 @@ export class ChdmanHandler {
         if (code === 0) {
           resolve({
             success: true,
-            message: `Conversion réussie : ${outputPath}`
+            message: `CHD DVD created successfully: ${outputPath}`
           });
         } else {
-          reject(new Error(`Erreur chdman createdvd (code ${code}): ${errorOutput || output}`));
+          reject(new Error(`chdman createdvd failed (code ${code}): ${errorOutput || output}`));
         }
       });
       
       process.on('error', (err) => {
-        reject(new Error(`Impossible de lancer chdman: ${err.message}`));
+        reject(new Error(`Unable to run chdman: ${err.message}`));
       });
     });
   }
   
   /**
-   * Convertit un Laser Disc en CHD
+   * Crée un CHD depuis un Laser Disc
    */
   async createLD(options: ChdConversionOptions): Promise<{ success: boolean; message: string }> {
     return new Promise((resolve, reject) => {
@@ -271,21 +476,21 @@ export class ChdmanHandler {
         if (code === 0) {
           resolve({
             success: true,
-            message: `Conversion réussie : ${outputPath}`
+            message: `CHD LD created successfully: ${outputPath}`
           });
         } else {
-          reject(new Error(`Erreur chdman createld (code ${code}): ${errorOutput || output}`));
+          reject(new Error(`chdman createld failed (code ${code}): ${errorOutput || output}`));
         }
       });
       
       process.on('error', (err) => {
-        reject(new Error(`Impossible de lancer chdman: ${err.message}`));
+        reject(new Error(`Unable to run chdman: ${err.message}`));
       });
     });
   }
   
   /**
-   * Convertit un disque dur ou une ROM en CHD
+   * Crée un CHD depuis un disque dur
    */
   async createHD(options: ChdConversionOptions): Promise<{ success: boolean; message: string }> {
     return new Promise((resolve, reject) => {
@@ -331,21 +536,21 @@ export class ChdmanHandler {
         if (code === 0) {
           resolve({
             success: true,
-            message: `Conversion réussie : ${outputPath}`
+            message: `CHD HD created successfully: ${outputPath}`
           });
         } else {
-          reject(new Error(`Erreur chdman createhd (code ${code}): ${errorOutput || output}`));
+          reject(new Error(`chdman createhd failed (code ${code}): ${errorOutput || output}`));
         }
       });
       
       process.on('error', (err) => {
-        reject(new Error(`Impossible de lancer chdman: ${err.message}`));
+        reject(new Error(`Unable to run chdman: ${err.message}`));
       });
     });
   }
   
   /**
-   * Convertit un Raw en CHD
+   * Crée un CHD depuis un Raw
    */
   async createRaw(options: ChdConversionOptions): Promise<{ success: boolean; message: string }> {
     return new Promise((resolve, reject) => {
@@ -392,37 +597,37 @@ export class ChdmanHandler {
         if (code === 0) {
           resolve({
             success: true,
-            message: `Conversion réussie : ${outputPath}`
+            message: `CHD Raw created successfully: ${outputPath}`
           });
         } else {
-          reject(new Error(`Erreur chdman createraw (code ${code}): ${errorOutput || output}`));
+          reject(new Error(`chdman createraw failed (code ${code}): ${errorOutput || output}`));
         }
       });
       
       process.on('error', (err) => {
-        reject(new Error(`Impossible de lancer chdman: ${err.message}`));
+        reject(new Error(`Unable to run chdman: ${err.message}`));
       });
     });
   }
   
   /**
-   * Extrait un CHD vers son format CD original
-   * Détermine automatiquement si l'option -sb (split bins) doit être utilisée
+   * Extrait un CD depuis un CHD
    */
-  //async extractCD(chdPath: string, outputPath?: string): Promise<{ success: boolean; message: string }> {
-  //async extractCD(chdPath: string, outputPath?: string, hasMultipleDataTracks?: boolean): Promise<{ success: boolean; message: string }> {
   async extractCD(chdPath: string, outputPath?: string, chdInfo?: ChdInfo): Promise<{ success: boolean; message: string }> {
     // Déterminer si on a besoin de plusieurs BINs
+    let expectedBinCount = 1;
     let needsMultipleBins = false;
     
     if (chdInfo) {
       // Utiliser getExpectedBinCount pour déterminer si on a plusieurs BINs
-      needsMultipleBins = this.getExpectedBinCount(chdInfo) > 1;
+      expectedBinCount = this.getExpectedBinCount(chdInfo);
+      needsMultipleBins = expectedBinCount > 1;
     } else {
       // Si aucune info fournie, essayer de la récupérer
       try {
         const info = await this.info(chdPath);
-        needsMultipleBins = this.getExpectedBinCount(info) > 1;
+        expectedBinCount = this.getExpectedBinCount(info);
+        needsMultipleBins = expectedBinCount > 1;
       } catch (error) {
         console.warn('Impossible de récupérer les infos CHD, utilisation du mode par défaut');
       }
@@ -445,13 +650,18 @@ export class ChdmanHandler {
         // Si on n'a qu'un seul BIN attendu, spécifier le nom du fichier bin
         if (!needsMultipleBins) {
           args.push('-ob', binPath);
+          console.log(`📀 single bin CHD detected (${expectedBinCount} expected files), usage of -ob ${binPath}`);
         }
       }
 
-      // Extraire en plusieurs bins si nécessaire
+      // Extract multiple bins if necessary
       if (needsMultipleBins) {
         args.push('-sb');
+        console.log(`📀 multi-bin CHD detected (${expectedBinCount} expected files), usage of --splitbin`);
       }
+
+      // Force overwrite
+      args.push('-f');
       
       const process = spawn(this.chdmanPath, args);
       
@@ -471,31 +681,35 @@ export class ChdmanHandler {
         if (code === 0) {
           resolve({
             success: true,
-            message: `Extraction réussie : ${output}`
+            message: `Extraction successful : ${output}`
           });
         } else {
-          reject(new Error(`Erreur chdman extractcd (code ${code}): ${errorOutput || outputStr}\n${args}`));
+          reject(new Error(`chdman extractcd failed (code ${code}): ${errorOutput || outputStr}\n${args}}`));
         }
       });
       
       process.on('error', (err) => {
-        reject(new Error(`Impossible de lancer chdman: ${err.message}`));
+        reject(new Error(`Unable to run chdman: ${err.message}`));
       });
     });
   }
   
   /**
-   * Extrait un CHD vers son format DVD original
+   * Extrait un DVD depuis un CHD
    */
   async extractDVD(chdPath: string, outputPath?: string): Promise<{ success: boolean; message: string }> {
     return new Promise((resolve, reject) => {
       const args = ['extractdvd'];
       
+      // Input CHD
       args.push('-i', chdPath);
       
       // Déterminer le format de sortie basé sur l'extension
       const output = outputPath || chdPath.replace('.chd', '.cue');
       args.push('-o', output);
+
+      // Force overwrite
+      args.push('-f');
       
       const process = spawn(this.chdmanPath, args);
       
@@ -515,31 +729,35 @@ export class ChdmanHandler {
         if (code === 0) {
           resolve({
             success: true,
-            message: `Extraction réussie : ${output}`
+            message: `Extraction successful : ${output}`
           });
         } else {
-          reject(new Error(`Erreur chdman extractdvd (code ${code}): ${errorOutput || outputStr}`));
+          reject(new Error(`chdman extractdvd failed (code ${code}): ${errorOutput || outputStr}`));
         }
       });
       
       process.on('error', (err) => {
-        reject(new Error(`Impossible de lancer chdman: ${err.message}`));
+        reject(new Error(`Unable to run chdman: ${err.message}`));
       });
     });
   }
   
   /**
-   * Extrait un CHD vers son format Laser Disc original
+   * Extrait un DVD depuis un CHD
    */
   async extractLD(chdPath: string, outputPath?: string): Promise<{ success: boolean; message: string }> {
     return new Promise((resolve, reject) => {
       const args = ['extractld'];
       
+      // Input CHD
       args.push('-i', chdPath);
       
       // Déterminer le format de sortie basé sur l'extension
       const output = outputPath || chdPath.replace('.chd', '.cue');
       args.push('-o', output);
+
+      // Force overwrite
+      args.push('-f');
       
       const process = spawn(this.chdmanPath, args);
       
@@ -559,31 +777,35 @@ export class ChdmanHandler {
         if (code === 0) {
           resolve({
             success: true,
-            message: `Extraction réussie : ${output}`
+            message: `Extraction successful : ${output}`
           });
         } else {
-          reject(new Error(`Erreur chdman extractld (code ${code}): ${errorOutput || outputStr}`));
+          reject(new Error(`chdman extractld failed (code ${code}): ${errorOutput || outputStr}`));
         }
       });
       
       process.on('error', (err) => {
-        reject(new Error(`Impossible de lancer chdman: ${err.message}`));
+        reject(new Error(`Unable to run chdman: ${err.message}`));
       });
     });
   }
   
   /**
-   * Extrait un CHD vers son format Hard Disk original
+   * Extrait un Hard Disk depuis un CHD
    */
   async extractHD(chdPath: string, outputPath?: string): Promise<{ success: boolean; message: string }> {
     return new Promise((resolve, reject) => {
       const args = ['extracthd'];
       
+      // Input CHD
       args.push('-i', chdPath);
       
       // Déterminer le format de sortie basé sur l'extension
       const output = outputPath || chdPath.replace('.chd', '.cue');
       args.push('-o', output);
+
+      // Force overwrite
+      args.push('-f');
       
       const process = spawn(this.chdmanPath, args);
       
@@ -603,31 +825,35 @@ export class ChdmanHandler {
         if (code === 0) {
           resolve({
             success: true,
-            message: `Extraction réussie : ${output}`
+            message: `Extraction successful : ${output}`
           });
         } else {
-          reject(new Error(`Erreur chdman extracthd (code ${code}): ${errorOutput || outputStr}`));
+          reject(new Error(`chdman extracthd failed (code ${code}): ${errorOutput || outputStr}`));
         }
       });
       
       process.on('error', (err) => {
-        reject(new Error(`Impossible de lancer chdman: ${err.message}`));
+        reject(new Error(`Unable to run chdman: ${err.message}`));
       });
     });
   }
   
   /**
-   * Extrait un CHD vers son format Raw original
+   * Extrait un Hard Disk depuis un CHD
    */
   async extractRaw(chdPath: string, outputPath?: string): Promise<{ success: boolean; message: string }> {
     return new Promise((resolve, reject) => {
       const args = ['extractraw'];
       
+      // Input CHD
       args.push('-i', chdPath);
       
       // Déterminer le format de sortie basé sur l'extension
       const output = outputPath || chdPath.replace('.chd', '.cue');
       args.push('-o', output);
+
+      // Force overwrite
+      args.push('-f');
       
       const process = spawn(this.chdmanPath, args);
       
@@ -647,25 +873,25 @@ export class ChdmanHandler {
         if (code === 0) {
           resolve({
             success: true,
-            message: `Extraction réussie : ${output}`
+            message: `Extraction successful : ${output}`
           });
         } else {
-          reject(new Error(`Erreur chdman extractraw (code ${code}): ${errorOutput || outputStr}`));
+          reject(new Error(`chdman extractraw failed (code ${code}): ${errorOutput || outputStr}`));
         }
       });
       
       process.on('error', (err) => {
-        reject(new Error(`Impossible de lancer chdman: ${err.message}`));
+        reject(new Error(`Unable to run chdman: ${err.message}`));
       });
     });
   }
   
   /**
-   * Obtient les informations d'un fichier CHD
+   * Récupère les informations d'un CHD
    */
-  async info(chdPath: string): Promise<ChdInfo> {
+  async info(inputPath: string): Promise<ChdInfo> {
     return new Promise((resolve, reject) => {
-      const args = ['info', '-i', chdPath, '-v'];
+      const args = ['info', '-i', inputPath, '-v'];
       
       const process = spawn(this.chdmanPath, args);
       
@@ -682,15 +908,19 @@ export class ChdmanHandler {
       
       process.on('close', (code) => {
         if (code === 0) {
-          const info = this.parseInfo(output);
-          resolve(info);
+          try {
+            const info = this.parseInfo(output);
+            resolve(info);
+          } catch (err: any) {
+            reject(new Error(`Failed to parse CHD info: ${err.message}`));
+          }
         } else {
-          reject(new Error(`Erreur chdman info (code ${code}): ${errorOutput || output}`));
+          reject(new Error(`chdman info failed (code ${code}): ${errorOutput || output}`));
         }
       });
       
       process.on('error', (err) => {
-        reject(new Error(`Impossible de lancer chdman: ${err.message}`));
+        reject(new Error(`Unable to run chdman: ${err.message}`));
       });
     });
   }
@@ -720,35 +950,27 @@ export class ChdmanHandler {
         if (code === 0) {
           resolve({
             valid: true,
-            message: 'CHD valide'
+            message: 'CHD valid'
           });
         } else {
           resolve({
             valid: false,
-            message: `Erreur de vérification: ${errorOutput || output}`
+            message: `chdman verify failed (code ${code}): ${errorOutput || output}`
           });
         }
       });
       
       process.on('error', (err) => {
-        reject(new Error(`Impossible de lancer chdman: ${err.message}`));
+        reject(new Error(`Unable to run chdman: ${err.message}`));
       });
     });
   }
-  
-  /**
-   * Parse la progression depuis la sortie de chdman
-   */
-  private parseProgress(output: string) {
-    // chdman affiche la progression comme : "Compressing, 50.5%"
-    const match = output.match(/(\d+\.?\d*)%/);
-    if (match) {
-      const progress = parseFloat(match[1]);
-      // Émettre un événement de progression
-      chdmanEvents.emit('progress', progress);
-    }
-  }
-  
+
+
+  // ============================================
+  // Méthodes utilitaire pour parser la sortie de chdman info
+  // ============================================
+
   /**
    * Parse les informations depuis la sortie de chdman info
    */
@@ -809,107 +1031,107 @@ export class ChdmanHandler {
       }
     }*/
   
-  // Parse TOUTES les lignes de metadata
-  const allMetadata: string[] = [];
-  let inMetadata = false;
-  
-  for (const line of lines) {
-    // Début de la section metadata
-    if (line.includes('Metadata:')) {
-      inMetadata = true;
-      // Capturer ce qui suit "Metadata:" sur la même ligne
-      const firstLineMatch = line.match(/Metadata:\s+(.+)/);
-      if (firstLineMatch && firstLineMatch[1].trim()) {
-        allMetadata.push(firstLineMatch[1].trim());
-      }
-      continue;
-    }
+    // Parse TOUTES les lignes de metadata
+    const allMetadata: string[] = [];
+    let inMetadata = false;
     
-    // Si on est dans la section metadata
-    if (inMetadata) {
-      // Sortir si on atteint une nouvelle section (commence sans espaces)
-      if (line.length > 0 && !line.startsWith(' ') && !line.startsWith('\t')) {
-        inMetadata = false;
+    for (const line of lines) {
+      // Début de la section metadata
+      if (line.includes('Metadata:')) {
+        inMetadata = true;
+        // Capturer ce qui suit "Metadata:" sur la même ligne
+        const firstLineMatch = line.match(/Metadata:\s+(.+)/);
+        if (firstLineMatch && firstLineMatch[1].trim()) {
+          allMetadata.push(firstLineMatch[1].trim());
+        }
         continue;
       }
       
-      // Ajouter la ligne de metadata (enlever l'indentation)
-      const trimmed = line.trim();
-      if (trimmed) {
-        allMetadata.push(trimmed);
+      // Si on est dans la section metadata
+      if (inMetadata) {
+        // Sortir si on atteint une nouvelle section (commence sans espaces)
+        if (line.length > 0 && !line.startsWith(' ') && !line.startsWith('\t')) {
+          inMetadata = false;
+          continue;
+        }
+        
+        // Ajouter la ligne de metadata (enlever l'indentation)
+        const trimmed = line.trim();
+        if (trimmed) {
+          allMetadata.push(trimmed);
+        }
       }
     }
-  }
-  
-  info.allMetadata = allMetadata;
-  
-  // Joindre toutes les metadata en une seule string pour compatibilité
-  info.metadata = allMetadata.join(' ');
-  
-  // Parser les TRACKS depuis les metadata
-  const tracks: ChdTrackInfo[] = [];
-  let trackCount = 0;
-  
-  for (const metaLine of allMetadata) {
-    // Format typique : TRACK:TRACK 01 MODE1/2352 PREGAP 00:02:00 PGTYPE MODE1 PGSUB RW
-    if (metaLine.startsWith('TRACK:')) {
-      const trackData = metaLine.substring(6); // Enlever "TRACK:"
-      const track = this.parseTrackInfo(trackData);
-      if (track) {
-        tracks.push(track);
-        trackCount++;
+    
+    info.allMetadata = allMetadata;
+    
+    // Joindre toutes les metadata en une seule string pour compatibilité
+    info.metadata = allMetadata.join(' ');
+    
+    // Parser les TRACKS depuis les metadata
+    const tracks: ChdTrackInfo[] = [];
+    let trackCount = 0;
+    
+    for (const metaLine of allMetadata) {
+      // Format typique : TRACK:TRACK 01 MODE1/2352 PREGAP 00:02:00 PGTYPE MODE1 PGSUB RW
+      if (metaLine.startsWith('TRACK:')) {
+        const trackData = metaLine.substring(6); // Enlever "TRACK:"
+        const track = this.parseTrackInfo(trackData);
+        if (track) {
+          tracks.push(track);
+          trackCount++;
+        }
       }
     }
-  }
-  
-  info.tracks = tracks;
-  
-  // Déterminer le type de média et sous-type
-  if (info.metadata) {
-    // Type principal
-    if (info.metadata.includes('CHT2') || info.metadata.includes('CHCD') || info.metadata.includes('CD')) {
-      info.mediaType = 'CD';
-      
-      // Détecter GD-ROM (Dreamcast)
-      if (info.metadata.includes('GDROM') || 
-          info.metadata.includes('GD-ROM') ||
-          // Les GDI ont souvent 3+ tracks avec des modes spécifiques
-          (tracks.length >= 3 && tracks.some(t => t.frames && t.frames > 150000))) {
-        info.isGDI = true;
-        info.discType = 'GD-ROM';
+    
+    info.tracks = tracks;
+    
+    // Déterminer le type de média et sous-type
+    if (info.metadata) {
+      // Type principal
+      if (info.metadata.includes('CHT2') || info.metadata.includes('CHCD') || info.metadata.includes('CD')) {
+        info.mediaType = 'CD';
+        
+        // Détecter GD-ROM (Dreamcast)
+        if (info.metadata.includes('GDROM') || 
+            info.metadata.includes('GD-ROM') ||
+            // Les GDI ont souvent 3+ tracks avec des modes spécifiques
+            (tracks.length >= 3 && tracks.some(t => t.frames && t.frames > 150000))) {
+          info.isGDI = true;
+          info.discType = 'GD-ROM';
+        }
+        // Détecter CD Audio
+        else if (tracks.every(t => t.type === 'AUDIO')) {
+          info.discType = 'CD-DA';
+        }
+        // CD-ROM standard
+        else {
+          info.discType = 'CD-ROM';
+        }
       }
-      // Détecter CD Audio
-      else if (tracks.every(t => t.type === 'AUDIO')) {
-        info.discType = 'CD-DA';
+      else if (info.metadata.includes('DVD')) {
+        info.mediaType = 'DVD';
+        info.discType = info.metadata.includes('VIDEO') ? 'DVD-VIDEO' : 'DVD-ROM';
       }
-      // CD-ROM standard
-      else {
+      else if (info.metadata.includes('LD') || info.metadata.includes('LASERDISC')) {
+        info.mediaType = 'LD';
+      }
+      else if (info.metadata.includes('HD') || info.metadata.includes('HARD_DISK')) {
+        info.mediaType = 'HD';
+      }
+      else if (info.metadata.includes('RAW')) {
+        info.mediaType = 'RAW';
+      }
+      // Par défaut, si on a des tracks, c'est probablement un CD
+      else if (tracks.length > 0) {
+        info.mediaType = 'CD';
         info.discType = 'CD-ROM';
       }
     }
-    else if (info.metadata.includes('DVD')) {
-      info.mediaType = 'DVD';
-      info.discType = info.metadata.includes('VIDEO') ? 'DVD-VIDEO' : 'DVD-ROM';
-    }
-    else if (info.metadata.includes('LD') || info.metadata.includes('LASERDISC')) {
-      info.mediaType = 'LD';
-    }
-    else if (info.metadata.includes('HD') || info.metadata.includes('HARD_DISK')) {
-      info.mediaType = 'HD';
-    }
-    else if (info.metadata.includes('RAW')) {
-      info.mediaType = 'RAW';
-    }
-    // Par défaut, si on a des tracks, c'est probablement un CD
-    else if (tracks.length > 0) {
-      info.mediaType = 'CD';
-      info.discType = 'CD-ROM';
-    }
+      
+      return info as ChdInfo;
   }
-    
-    return info as ChdInfo;
-  }
-
+  
   /**
    * Parse une ligne d'information de track
    */
@@ -971,6 +1193,20 @@ export class ChdmanHandler {
       return null;
     }
   }
+  
+  /**
+   * Parse la progression de chdman
+   */
+  private parseProgress(output: string): void {
+    // chdman affiche la progression comme : "Compressing, 50.5%"
+    const match = output.match(/(\d+)%/);
+    if (match) {
+      const progress = parseInt(match[1]);
+      // Émettre un événement de progression
+      this.emit('progress', progress);
+    }
+  }
+
 
   // ============================================
   // Méthode utilitaire pour déterminer le type de disque

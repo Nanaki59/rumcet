@@ -15,14 +15,85 @@
       font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
       background-color: #f5f5f5;
       color: #333;
-      padding: 20px;
+      display: flex;
+      height: 100vh;
+      overflow: hidden;
     }
 
-    h2 {
+    /* ========== BARRE LATÉRALE ========== */
+    .tabs-sidebar {
+      width: 220px;
+      background: #2c3e50;
+      color: white;
+      padding: 20px 0;
+      overflow-y: auto;
+      flex-shrink: 0;
+    }
+
+    .tabs-sidebar h2 {
+      padding: 0 20px 20px;
+      font-size: 20px;
+      border-bottom: 1px solid rgba(255, 255, 255, 0.1);
+      margin-bottom: 10px;
+    }
+
+    .tab-button {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      width: 100%;
+      padding: 12px 20px;
+      background: none;
+      border: none;
+      color: rgba(255, 255, 255, 0.7);
+      text-align: left;
+      cursor: pointer;
+      transition: all 0.2s;
+      font-size: 14px;
+    }
+
+    .tab-button:hover {
+      background: rgba(255, 255, 255, 0.05);
+      color: white;
+    }
+
+    .tab-button.active {
+      background: #3498db;
+      color: white;
+      font-weight: 500;
+    }
+
+    .tab-icon {
+      font-size: 18px;
+    }
+
+    /* ========== CONTENU ========== */
+    .tabs-content {
+      flex: 1;
+      display: flex;
+      flex-direction: column;
+      overflow: hidden;
+      min-width: 0;
+    }
+
+    .tab-pane {
+      display: none;
+      padding: 30px;
+      overflow-y: auto;
+      flex: 1;
+    }
+
+    .tab-pane.active {
+      display: block;
+    }
+
+    .tab-pane h3 {
       margin-bottom: 20px;
       color: #2c3e50;
+      font-size: 24px;
     }
 
+    /* ========== SECTIONS ========== */
     .settings-section {
       background: white;
       border-radius: 8px;
@@ -31,111 +102,108 @@
       box-shadow: 0 2px 4px rgba(0, 0, 0, 0.1);
     }
 
-    .settings-section h3 {
+    .settings-section h4 {
       margin-bottom: 15px;
       color: #34495e;
-      font-size: 18px;
+      font-size: 16px;
+      font-weight: 600;
     }
 
+    /* ========== CHAMPS ========== */
     .setting-row {
-      margin-bottom: 15px;
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+      margin-bottom: 20px;
+    }
+
+    .setting-row-inline {
       display: flex;
       align-items: center;
       gap: 10px;
     }
 
-    label {
-      display: block;
-      margin-bottom: 5px;
+    .setting-row label:not(label input),
+    .setting-row-inline > label:first-child {
       font-weight: 500;
       color: #555;
-      min-width: 200px;
+      margin-bottom: 5px;
     }
 
-    input[type="text"] {
+    .setting-row-inline input[type="text"] {
       flex: 1;
       padding: 8px 12px;
       border: 1px solid #ddd;
       border-radius: 4px;
       font-size: 14px;
+      min-width: 0;
     }
 
-    input[type="text"]:focus {
+    .setting-row-inline input[type="text"]:focus {
       outline: none;
       border-color: #3498db;
     }
 
-    input[type="checkbox"] {
-      width: 18px;
-      height: 18px;
-      margin-right: 8px;
-    }
-
-    select {
+    .setting-row-inline select {
       padding: 8px 12px;
       border: 1px solid #ddd;
       border-radius: 4px;
       font-size: 14px;
       background: white;
-      min-width: 150px;
+      min-width: 200px;
     }
 
-    button {
-      padding: 8px 16px;
-      border: none;
-      border-radius: 4px;
-      font-size: 14px;
-      cursor: pointer;
-      transition: background-color 0.2s;
+    .setting-row-inline input[type="checkbox"] {
+      width: 18px;
+      height: 18px;
+      margin-right: 8px;
+    }
+
+    .setting-row-buttons {
+      display: flex;
+      gap: 10px;
     }
 
     .btn-browse {
+      padding: 8px 16px;
       background-color: #95a5a6;
       color: white;
+      border: none;
+      border-radius: 4px;
+      cursor: pointer;
+      font-size: 14px;
+      white-space: nowrap;
+      flex-shrink: 0;
     }
 
     .btn-browse:hover {
       background-color: #7f8c8d;
     }
 
-    .btn-primary {
+    .btn-auto-detect {
+      padding: 8px 16px;
       background-color: #3498db;
       color: white;
-      padding: 10px 20px;
-      font-size: 16px;
+      border: none;
+      border-radius: 4px;
+      cursor: pointer;
+      font-size: 14px;
+      white-space: nowrap;
+      flex-shrink: 0;
     }
 
-    .btn-primary:hover {
+    .btn-auto-detect:hover {
       background-color: #2980b9;
-    }
-
-    .btn-secondary {
-      background-color: #ecf0f1;
-      color: #2c3e50;
-      padding: 10px 20px;
-      font-size: 16px;
-    }
-
-    .btn-secondary:hover {
-      background-color: #bdc3c7;
-    }
-
-    .buttons-row {
-      display: flex;
-      justify-content: flex-end;
-      gap: 10px;
-      margin-top: 30px;
     }
 
     .info-text {
       font-size: 12px;
       color: #7f8c8d;
-      margin-top: -5px;     /* Réduit l'écart avec setting-row */
-      margin-bottom: 15px;  /* Ajoute un écart avec le prochain élément */
+      margin-top: -5px;
+      line-height: 1.4;
     }
 
-
-    /* Styles pour l'ordre de priorité des formats */
+    /* ========== PRIORITÉ FORMATS ========== */
     .setting-row-vertical {
       margin-bottom: 20px;
     }
@@ -143,7 +211,8 @@
     .setting-row-vertical > label {
       display: block;
       margin-bottom: 10px;
-      min-width: auto;
+      font-weight: 600;
+      color: #34495e;
     }
 
     .format-priority-container {
@@ -154,7 +223,7 @@
     }
 
     .format-priority-list {
-      min-height: 100px;
+      min-height: 120px;
       margin-bottom: 15px;
     }
 
@@ -165,7 +234,7 @@
       background: white;
       border: 1px solid #ddd;
       border-radius: 4px;
-      padding: 10px;
+      padding: 12px;
       margin-bottom: 8px;
       cursor: move;
       transition: all 0.2s;
@@ -178,7 +247,6 @@
 
     .format-priority-item.dragging {
       opacity: 0.5;
-      cursor: grabbing;
     }
 
     .format-priority-item.drag-over {
@@ -194,7 +262,6 @@
     .format-name {
       flex: 1;
       font-weight: 500;
-      text-transform: uppercase;
     }
 
     .format-name.format-7z { color: #e74c3c; }
@@ -214,7 +281,6 @@
       cursor: pointer;
       color: #7f8c8d;
       font-size: 14px;
-      transition: all 0.2s;
     }
 
     .btn-icon:hover {
@@ -222,46 +288,7 @@
       color: #3498db;
     }
 
-    .btn-icon:active {
-      transform: scale(0.95);
-    }
-
-    /*.btn-icon.btn-delete:hover {
-      border-color: #e74c3c;
-      color: #e74c3c;
-    }
-
-    .format-priority-actions {
-      display: flex;
-      gap: 10px;
-      align-items: center;
-    }
-
-    .format-priority-actions select {
-      flex: 1;
-    }
-
-    .btn-add {
-      background-color: #27ae60;
-      color: white;
-      padding: 8px 16px;
-      border: none;
-      border-radius: 4px;
-      cursor: pointer;
-      font-size: 14px;
-      transition: background-color 0.2s;
-    }
-
-    .btn-add:hover {
-      background-color: #229954;
-    }
-
-    .btn-add:disabled {
-      background-color: #95a5a6;
-      cursor: not-allowed;
-    }*/
-
-    /* Avertissement pour "Best compression" */
+    /* ========== AVERTISSEMENT ========== */
     .warning-box {
       background: #fff3cd;
       border: 2px solid #ffc107;
@@ -271,16 +298,14 @@
     }
 
     .warning-box strong {
-      color: #856404;
       display: block;
-      margin-bottom: 10px;
-      font-size: 15px;
+      margin-bottom: 8px;
+      color: #856404;
     }
 
     .warning-box p {
-      margin: 8px 0;
+      margin-bottom: 10px;
       color: #856404;
-      line-height: 1.5;
     }
 
     .warning-box ul {
@@ -289,257 +314,434 @@
     }
 
     .warning-box li {
-      margin: 5px 0;
+      margin-bottom: 5px;
     }
 
-    .warning-box li strong {
-      display: inline;
-      color: #d32f2f;
+    /* ========== COMPATIBILITÉ SYSTÈME ========== */
+    .system-compatibility-item {
+      background: #f8f9fa;
+      border: 1px solid #dee2e6;
+      border-radius: 4px;
+      padding: 15px;
+      margin-bottom: 15px;
     }
 
-    /* Animation pour l'apparition/disparition de l'avertissement */
-    @keyframes slideDown {
-      from {
-        opacity: 0;
-        max-height: 0;
-        overflow: hidden;
-      }
-      to {
-        opacity: 1;
-        max-height: 500px;
-        overflow: visible;
-      }
+    .system-compatibility-item h5 {
+      color: #2c3e50;
+      margin-bottom: 10px;
+      font-size: 14px;
+      font-weight: 600;
     }
 
-    .warning-box.show {
-      animation: slideDown 0.3s ease-out;
+    .format-checkboxes {
+      display: flex;
+      gap: 20px;
+      flex-wrap: wrap;
+    }
+
+    .format-checkboxes label {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      cursor: pointer;
+      font-size: 14px;
+    }
+
+    .format-checkboxes input[type="checkbox"] {
+      width: 18px;
+      height: 18px;
+      cursor: pointer;
+    }
+
+    /* ========== FOOTER ========== */
+    .settings-footer {
+      background: white;
+      border-top: 1px solid #ddd;
+      padding: 15px 30px;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      flex-shrink: 0;
+    }
+
+    .btn-primary {
+      background-color: #3498db;
+      color: white;
+      border: none;
+      padding: 10px 20px;
+      border-radius: 4px;
+      cursor: pointer;
+      font-size: 14px;
+      font-weight: 500;
+    }
+
+    .btn-primary:hover {
+      background-color: #2980b9;
+    }
+
+    .btn-secondary {
+      background-color: #95a5a6;
+      color: white;
+      border: none;
+      padding: 10px 20px;
+      border-radius: 4px;
+      cursor: pointer;
+      font-size: 14px;
+    }
+
+    .btn-secondary:hover {
+      background-color: #7f8c8d;
+    }
+
+    .btn-danger {
+      background-color: #e74c3c;
+      color: white;
+      border: none;
+      padding: 10px 20px;
+      border-radius: 4px;
+      cursor: pointer;
+      font-size: 14px;
+    }
+
+    .btn-danger:hover {
+      background-color: #c0392b;
+    }
+
+    #save-status {
+      color: #27ae60;
+      font-weight: 500;
     }
   </style>
 </head>
 <body>
-  <h2>Paramètres de l'application</h2>
 
-  <div class="settings-section">
-    <h3>📁 Dossiers par défaut</h3>
+  <!-- ========== BARRE LATÉRALE ========== -->
+  <nav class="tabs-sidebar">
+    <h2>⚙️ Paramètres</h2>
     
-    <div class="setting-row">
-      <label for="defaultDatFolder">Dossier des fichiers DAT/XML :</label>
-      <input type="text" id="defaultDatFolder" readonly>
-      <button class="btn-browse" onclick="browseFolder('defaultDatFolder')">Parcourir</button>
-    </div>
-    <p class="info-text">Dossier par défaut lors de l'ouverture de la boîte de dialogue pour charger un DAT</p>
-
-    <div class="setting-row">
-      <label for="defaultDatabaseFolder">Dossier des bases de données :</label>
-      <input type="text" id="defaultDatabaseFolder" readonly>
-      <button class="btn-browse" onclick="browseFolder('defaultDatabaseFolder')">Parcourir</button>
-    </div>
-    <p class="info-text">Emplacement où seront stockées les bases de données SQLite</p>
-
-    <div class="setting-row">
-      <label for="defaultRomsFolder">Dossier des ROMs :</label>
-      <input type="text" id="defaultRomsFolder" readonly>
-      <button class="btn-browse" onclick="browseFolder('defaultRomsFolder')">Parcourir</button>
-    </div>
-    <p class="info-text">Dossier par défaut lors de l'ajout de dossiers de ROMs</p>
-
-    <div class="setting-row">
-      <label for="unmatchedRomsFolder">Dossier des ROMs non référencées :</label>
-      <input type="text" id="unmatchedRomsFolder" readonly>
-      <button class="btn-browse" onclick="browseFolder('unmatchedRomsFolder')">Parcourir</button>
-    </div>
-    <p class="info-text">Emplacement pour stocker les ROMs qui ne correspondent à aucune entrée du DAT</p>
-  </div>
-
-  <div class="settings-section">
-    <h3>⚙️ Préférences générales</h3>
+    <button class="tab-button active" data-tab="general">
+      <span class="tab-icon">🏠</span>
+      Général
+    </button>
     
-    <div class="setting-row">
-      <label for="theme">Thème :</label>
-      <select id="theme">
-        <option value="light">Clair</option>
-        <option value="dark">Sombre</option>
-      </select>
-    </div>
-
-    <div class="setting-row">
-      <label for="language">Langue :</label>
-      <select id="language">
-        <option value="fr">Français</option>
-        <option value="en">English</option>
-      </select>
-    </div>
-
-    <div class="setting-row">
-      <label>
-        <input type="checkbox" id="autoScanOnStartup">
-        Scanner automatiquement les dossiers au démarrage
-      </label>
-    </div>
-  </div>
-
-  <div class="settings-section">
-    <h3>📦 Compression des archives</h3>
+    <button class="tab-button" data-tab="folders">
+      <span class="tab-icon">📁</span>
+      Dossiers
+    </button>
     
-    <div class="setting-row">
-      <label for="compressionLevel">Niveau de compression :</label>
-      <select id="compressionLevel">
-        <option value="fastest">Rapide (compression minimale)</option>
-        <option value="normal" selected>Normal (équilibré)</option>
-        <option value="maximum">Maximum (meilleure compression)</option>
-      </select>
-    </div>
-    <p class="info-text">Détermine le niveau de compression pour les archives créées (uniquement pour les archives ZIP/7Z)</p>
+    <button class="tab-button" data-tab="archives">
+      <span class="tab-icon">📦</span>
+      Archives
+    </button>
+    
+    <button class="tab-button" data-tab="tools">
+      <span class="tab-icon">🛠️</span>
+      Outils externes
+    </button>
+    
+    <button class="tab-button" data-tab="compatibility">
+      <span class="tab-icon">🎮</span>
+      Compatibilité
+    </button>
+  </nav>
 
-    <!-- Ordre de priorité des formats -->
-    <div class="setting-row-vertical">
-      <label>Ordre de priorité des formats d'archives :</label>
-      <div class="format-priority-container">
-        <div class="format-priority-list" id="formatPriorityList">
-          <!-- Les éléments seront ajoutés dynamiquement ici -->
+  <!-- ========== CONTENU ========== -->
+  <div class="tabs-content">
+    
+    <!-- ===== ONGLET GÉNÉRAL ===== -->
+    <div id="tab-general" class="tab-pane active">
+      <h3>Paramètres généraux</h3>
+      
+      <div class="settings-section">
+        <h4>Interface</h4>
+        
+        <div class="setting-row">
+          <label for="theme">Thème :</label>
+          <div class="setting-row-inline">
+            <select id="theme">
+              <option value="light">Clair</option>
+              <option value="dark">Sombre</option>
+            </select>
+          </div>
         </div>
-        <!--div class="format-priority-actions">
-          <select id="formatToAdd">
-            <option value="">-- Ajouter un format --</option>
-            <option value="7z">7Z</option>
-            <option value="zip">ZIP</option>
-            <option value="chd">CHD</option>
-          </select>
-          <button class="btn-add" onclick="addFormat()">+ Ajouter</button>
-        </div-->
+
+        <div class="setting-row">
+          <label for="language">Langue :</label>
+          <div class="setting-row-inline">
+            <select id="language">
+              <option value="fr">Français</option>
+              <option value="en">English</option>
+            </select>
+          </div>
+        </div>
+      </div>
+
+      <div class="settings-section">
+        <h4>Démarrage</h4>
+        
+        <div class="setting-row">
+          <label>
+            <input type="checkbox" id="autoScanOnStartup">
+            Scanner automatiquement au démarrage
+          </label>
+          <p class="info-text">Lance le scan des dossiers de ROMs au démarrage de l'application</p>
+        </div>
       </div>
     </div>
-    <p class="info-text">
-      Les formats d'archives seront choisis dans cet ordre en fonction 
-      de la compatibilité avec le système du fichier DAT.
-      Glissez-déposez pour réordonner.
-    </p>
 
-    <div class="setting-row">
-      <label>
-        <input type="checkbox" id="recreateArchivesIfNeeded">
-        Recréer les archives si le niveau de compression ne correspond pas
-      </label>
-    </div>
-    <p class="info-text">Si activé, les archives seront recompressées pour respecter le niveau sélectionné</p>
+    <!-- ===== ONGLET DOSSIERS ===== -->
+    <div id="tab-folders" class="tab-pane">
+      <h3>Dossiers par défaut</h3>
+      
+      <div class="settings-section">
+        <div class="setting-row">
+          <label for="defaultDatFolder">Dossier des fichiers DAT/XML :</label>
+          <div class="setting-row-inline">
+            <input type="text" id="defaultDatFolder" readonly placeholder="Non configuré">
+            <button class="btn-browse" onclick="browseFolder('defaultDatFolder')">Parcourir</button>
+          </div>
+          <p class="info-text">Dossier par défaut lors de l'ouverture de la boîte de dialogue pour charger un DAT</p>
+        </div>
 
-    <!-- Option "Best compression" -->
-    <div class="setting-row">
-      <label>
-        <input type="checkbox" id="useBestCompression" onchange="toggleBestCompressionWarning(this.checked)">
-        Utiliser la meilleure compression possible
-      </label>
-    </div>
-    <div id="bestCompressionWarning" class="warning-box" style="display: none;">
-      <strong>⚠️ ATTENTION : Cette option ralentit FORTEMENT le processus !</strong>
-      <p>
-        L'application va tester TOUS les formats d'archives disponibles pour chaque jeu
-        et ne garder que le format le plus compact.
-      </p>
-      <ul>
-        <li>Temps de traitement : <strong>x3 à x5 plus lent</strong></li>
-        <li>Utilisation CPU : <strong>Maximale</strong></li>
-        <li>Utilisation disque : <strong>Temporairement doublée</strong></li>
-      </ul>
-      <p>
-        Recommandé uniquement si l'espace disque final est critique et que vous 
-        pouvez laisser le processus tourner longtemps.
-      </p>
-    </div>
-    <p class="info-text">Teste tous les formats et garde le plus compact (très lent)</p>
+        <div class="setting-row">
+          <label for="defaultDatabaseFolder">Dossier des bases de données :</label>
+          <div class="setting-row-inline">
+            <input type="text" id="defaultDatabaseFolder" readonly placeholder="Non configuré">
+            <button class="btn-browse" onclick="browseFolder('defaultDatabaseFolder')">Parcourir</button>
+          </div>
+          <p class="info-text">Emplacement où seront stockées les bases de données SQLite</p>
+        </div>
 
-    <div class="setting-row">
-      <label>
-        <input type="checkbox" id="solidArchive" checked>
-        Utiliser la compression solide (7Z uniquement)
-      </label>
-    </div>
-    <p class="info-text">La compression solide améliore le taux de compression au prix d'une vitesse plus lente</p>
+        <div class="setting-row">
+          <label for="defaultRomsFolder">Dossier des ROMs :</label>
+          <div class="setting-row-inline">
+            <input type="text" id="defaultRomsFolder" readonly placeholder="Non configuré">
+            <button class="btn-browse" onclick="browseFolder('defaultRomsFolder')">Parcourir</button>
+          </div>
+          <p class="info-text">Dossier par défaut lors de l'ajout de dossiers de ROMs</p>
+        </div>
 
-    <div class="setting-row">
-      <label>
-        <input type="checkbox" id="multithreading" checked>
-        Activer le multi-threading
-      </label>
+        <div class="setting-row">
+          <label for="unmatchedRomsFolder">Dossier des ROMs non référencées :</label>
+          <div class="setting-row-inline">
+            <input type="text" id="unmatchedRomsFolder" readonly placeholder="Non configuré">
+            <button class="btn-browse" onclick="browseFolder('unmatchedRomsFolder')">Parcourir</button>
+          </div>
+          <p class="info-text">Emplacement pour stocker les ROMs qui ne correspondent à aucune entrée du DAT</p>
+        </div>
+      </div>
     </div>
-    <p class="info-text">Utilise plusieurs cœurs du processeur pour accélérer la compression</p>
+
+    <!-- ===== ONGLET ARCHIVES ===== -->
+    <div id="tab-archives" class="tab-pane">
+      <h3>Compression des archives</h3>
+      
+      <div class="settings-section">
+        <h4>Niveau de compression</h4>
+        
+        <div class="setting-row">
+          <label for="compressionLevel">Niveau de compression :</label>
+          <div class="setting-row-inline">
+            <select id="compressionLevel">
+              <option value="fastest">Rapide (compression minimale)</option>
+              <option value="normal" selected>Normal (équilibré)</option>
+              <option value="maximum">Maximum (meilleure compression)</option>
+            </select>
+          </div>
+          <p class="info-text">Détermine le niveau de compression pour les archives ZIP/7Z</p>
+        </div>
+      </div>
+
+      <div class="settings-section">
+        <h4>Ordre de priorité des formats</h4>
+        
+        <div class="setting-row-vertical">
+          <label>Glissez-déposez pour réordonner :</label>
+          <div class="format-priority-container">
+            <div class="format-priority-list" id="formatPriorityList">
+              <!-- Rempli dynamiquement -->
+            </div>
+          </div>
+        </div>
+        <p class="info-text">
+          Les formats d'archives seront choisis dans cet ordre en fonction 
+          de la compatibilité avec le système du fichier DAT.
+        </p>
+      </div>
+
+      <div class="settings-section">
+        <h4>Options avancées</h4>
+        
+        <div class="setting-row">
+          <label>
+            <input type="checkbox" id="recreateArchivesIfNeeded">
+            Recréer les archives si le niveau de compression ne correspond pas
+          </label>
+          <p class="info-text">Si activé, les archives seront recompressées pour respecter le niveau sélectionné</p>
+        </div>
+
+        <div class="setting-row">
+          <label>
+            <input type="checkbox" id="useBestCompression" onchange="toggleBestCompressionWarning(this.checked)">
+            Utiliser la meilleure compression possible
+          </label>
+          <div id="bestCompressionWarning" class="warning-box" style="display: none;">
+            <strong>⚠️ ATTENTION : Cette option ralentit FORTEMENT le processus !</strong>
+            <p>
+              L'application va tester TOUS les formats d'archives disponibles pour chaque jeu
+              et ne garder que le format le plus compact.
+            </p>
+            <ul>
+              <li>Temps de traitement : <strong>x3 à x5 plus lent</strong></li>
+              <li>Utilisation CPU : <strong>Maximale</strong></li>
+              <li>Utilisation disque : <strong>Temporairement doublée</strong></li>
+            </ul>
+            <p>
+              Recommandé uniquement si l'espace disque final est critique.
+            </p>
+          </div>
+          <p class="info-text">Teste tous les formats et garde le plus compact (très lent)</p>
+        </div>
+
+        <div class="setting-row">
+          <label>
+            <input type="checkbox" id="solidArchive" checked>
+            Utiliser la compression solide (7Z uniquement)
+          </label>
+          <p class="info-text">La compression solide améliore le taux de compression mais ralentit l'extraction</p>
+        </div>
+
+        <div class="setting-row">
+          <label>
+            <input type="checkbox" id="multithreading" checked>
+            Activer le multi-threading
+          </label>
+          <p class="info-text">Utilise plusieurs cœurs du processeur pour accélérer la compression</p>
+        </div>
+      </div>
+    </div>
+
+    <!-- ===== ONGLET OUTILS EXTERNES ===== -->
+    <div id="tab-tools" class="tab-pane">
+      <h3>Outils externes</h3>
+      
+      <div class="settings-section">
+        <h4>7-Zip</h4>
+        
+        <div class="setting-row">
+          <label for="sevenZipPath">Chemin vers 7z.exe :</label>
+          <div class="setting-row-inline">
+            <input type="text" id="sevenZipPath" readonly placeholder="Détection automatique">
+            <div class="setting-row-buttons">
+              <button class="btn-auto-detect" onclick="autoDetect7Zip()">Auto-détection</button>
+              <button class="btn-browse" onclick="browseFile('sevenZipPath', '7z.exe')">Parcourir</button>
+            </div>
+          </div>
+          <p class="info-text">Utilisé pour lire et créer les archives .7z et .rar</p>
+        </div>
+      </div>
+
+      <div class="settings-section">
+        <h4>WinRAR</h4>
+        
+        <div class="setting-row">
+          <label for="winrarPath">Chemin vers Rar.exe :</label>
+          <div class="setting-row-inline">
+            <input type="text" id="winrarPath" readonly placeholder="Optionnel">
+            <div class="setting-row-buttons">
+              <button class="btn-auto-detect" onclick="autoDetectWinRAR()">Auto-détection</button>
+              <button class="btn-browse" onclick="browseFile('winrarPath', 'Rar.exe')">Parcourir</button>
+            </div>
+          </div>
+          <p class="info-text">Alternative pour créer des archives .rar (optionnel)</p>
+        </div>
+      </div>
+
+      <div class="settings-section">
+        <h4>UnRAR</h4>
+        
+        <div class="setting-row">
+          <label for="unrarPath">Chemin vers UnRAR.exe :</label>
+          <div class="setting-row-inline">
+            <input type="text" id="unrarPath" readonly placeholder="Optionnel">
+            <div class="setting-row-buttons">
+              <button class="btn-auto-detect" onclick="autoDetectUnRAR()">Auto-détection</button>
+              <button class="btn-browse" onclick="browseFile('unrarPath', 'UnRAR.exe')">Parcourir</button>
+            </div>
+          </div>
+          <p class="info-text">Alternative pour extraire les archives .rar (optionnel, si 7-Zip n'est pas disponible)</p>
+        </div>
+      </div>
+
+      <div class="settings-section">
+        <h4>chdman (MAME)</h4>
+        
+        <div class="setting-row">
+          <label>
+            <input type="checkbox" id="useEmbeddedChdman" checked>
+            Utiliser la version embarquée de chdman
+          </label>
+          <p class="info-text">Version fournie avec l'application (recommandé)</p>
+        </div>
+
+        <div class="setting-row">
+          <label for="chdmanPath">Chemin vers chdman personnalisé :</label>
+          <div class="setting-row-inline">
+            <input type="text" id="chdmanPath" readonly placeholder="Version embarquée par défaut">
+            <button class="btn-browse" onclick="browseFile('chdmanPath', 'chdman.exe')">Parcourir</button>
+          </div>
+          <p class="info-text">Utilisé pour créer/extraire les images CD/DVD au format CHD (si version embarquée désactivée)</p>
+        </div>
+      </div>
+
+      <div class="settings-section">
+        <h4>Ordre de priorité pour les archives RAR</h4>
+        
+        <div class="setting-row-vertical">
+          <label>Glissez-déposez pour réordonner les outils :</label>
+          <div class="format-priority-container">
+            <div class="format-priority-list" id="rarToolPriorityList">
+              <!-- Rempli dynamiquement -->
+            </div>
+          </div>
+        </div>
+        <p class="info-text">
+          Les outils seront utilisés dans cet ordre pour lire et extraire les archives RAR.
+          Le premier outil disponible sera utilisé.
+        </p>
+      </div>
+    </div>
+
+    <!-- ===== ONGLET COMPATIBILITÉ ===== -->
+    <div id="tab-compatibility" class="tab-pane">
+      <h3>Compatibilité archives par système</h3>
+      
+      <div class="settings-section">
+        <p class="info-text">
+          Configurez les formats d'archives compatibles par système.
+          Certains émulateurs ne supportent pas tous les formats.
+          Les formats avec ⚠️ fonctionnent mais peuvent avoir des limitations.
+        </p>
+
+        <div id="systemCompatibilityList">
+          <!-- Rempli dynamiquement -->
+        </div>
+      </div>
+    </div>
+
+    <!-- ===== FOOTER ===== -->
+    <div class="settings-footer">
+      <div>
+        <span id="save-status"></span>
+      </div>
+      <div style="display: flex; gap: 10px;">
+        <button class="btn-secondary" onclick="cancel()">Annuler</button>
+        <button class="btn-danger" onclick="resetToDefaults()">Réinitialiser</button>
+        <button class="btn-primary" onclick="saveSettings()">💾 Enregistrer</button>
+      </div>
+    </div>
   </div>
 
-  <div class="buttons-row">
-    <button class="btn-secondary" onclick="cancel()">Annuler</button>
-    <button class="btn-secondary" onclick="resetToDefaults()">Réinitialiser</button>
-    <button class="btn-primary" onclick="saveSettings()">Enregistrer</button>
-  </div>
-
-  <!--script>
-    // Variables globales
-    let currentSettings = {};
-
-    // Charger les paramètres au démarrage
-    window.addEventListener('DOMContentLoaded', async () => {
-      await loadSettings();
-    });
-
-    async function loadSettings() {
-      try {
-        currentSettings = await window.api.getSettings();
-        
-        // Remplir les champs
-        document.getElementById('defaultDatFolder').value = currentSettings.defaultDatFolder || '';
-        document.getElementById('defaultDatabaseFolder').value = currentSettings.defaultDatabaseFolder || '';
-        document.getElementById('defaultRomsFolder').value = currentSettings.defaultRomsFolder || '';
-        document.getElementById('unmatchedRomsFolder').value = currentSettings.unmatchedRomsFolder || '';
-        document.getElementById('theme').value = currentSettings.theme || 'light';
-        document.getElementById('language').value = currentSettings.language || 'fr';
-        document.getElementById('autoScanOnStartup').checked = currentSettings.autoScanOnStartup || false;
-      } catch (error) {
-        console.error('Erreur lors du chargement des paramètres:', error);
-      }
-    }
-
-    async function browseFolder(fieldId) {
-      const folderPath = await window.api.chooseFolder();
-      if (folderPath) {
-        document.getElementById(fieldId).value = folderPath;
-        currentSettings[fieldId] = folderPath;
-      }
-    }
-
-    async function saveSettings() {
-      try {
-        // Collecter les valeurs
-        const newSettings = {
-          defaultDatFolder: document.getElementById('defaultDatFolder').value,
-          defaultDatabaseFolder: document.getElementById('defaultDatabaseFolder').value,
-          defaultRomsFolder: document.getElementById('defaultRomsFolder').value,
-          unmatchedRomsFolder: document.getElementById('unmatchedRomsFolder').value,
-          theme: document.getElementById('theme').value,
-          language: document.getElementById('language').value,
-          autoScanOnStartup: document.getElementById('autoScanOnStartup').checked
-        };
-
-        // Sauvegarder
-        await window.api.updateSettings(newSettings);
-        
-        // Notifier et fermer
-        alert('Paramètres enregistrés avec succès !');
-        window.close();
-      } catch (error) {
-        alert('Erreur lors de l\'enregistrement : ' + error.message);
-      }
-    }
-
-    function cancel() {
-      window.close();
-    }
-
-    async function resetToDefaults() {
-      if (confirm('Êtes-vous sûr de vouloir réinitialiser tous les paramètres ?')) {
-        await window.api.resetSettings();
-        await loadSettings();
-      }
-    }
-  </script-->
   <script type="module" src="./settings.js"></script>
 </body>
 </html>

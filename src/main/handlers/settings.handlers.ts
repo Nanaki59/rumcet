@@ -1,6 +1,7 @@
 // src/main/handlers/settings.handlers.ts
 import { IpcMain, dialog, BrowserWindow } from 'electron';
 import { settingsManager } from '../../helpers/settingsManager.js';
+import { archiveManager } from '../../helpers/archives/ArchiveManager.js';
 import { sendLogToRenderer } from '../utils/logger.js';
 
 export function registerSettingsHandlers(ipcMain: IpcMain, mainWindow: BrowserWindow) {
@@ -14,6 +15,38 @@ export function registerSettingsHandlers(ipcMain: IpcMain, mainWindow: BrowserWi
   ipcMain.handle('settings:update', async (_event, newSettings: any) => {
     try {
       await settingsManager.updateSettings(newSettings);
+      
+      // ============================================
+      // RÉAPPLIQUER LES CONFIGURATIONS RAR
+      // ============================================
+      
+      // 1. Mettre à jour les chemins des outils RAR
+      const rarToolPaths = {
+        sevenZip: newSettings.sevenZipPath || undefined,
+        winrar: newSettings.winrarPath || undefined,
+        unrar: newSettings.unrarPath || undefined
+      };
+      
+      if (rarToolPaths.sevenZip || rarToolPaths.winrar || rarToolPaths.unrar) {
+        archiveManager.setRarToolPaths(rarToolPaths);
+        console.log('🔧 Chemins RAR mis à jour:', rarToolPaths);
+      }
+      
+      // 2. Mettre à jour la priorité
+      if (newSettings.rarToolPriority && Array.isArray(newSettings.rarToolPriority)) {
+        archiveManager.setRarToolPriority(newSettings.rarToolPriority);
+        console.log('🔧 Priorité RAR mise à jour:', newSettings.rarToolPriority);
+      }
+      
+      // 3. Mettre à jour les autres chemins d'outils si nécessaire
+      if (newSettings.chdmanPath) {
+        archiveManager.setChdmanPath(newSettings.chdmanPath);
+      }
+      
+      if (newSettings.sevenZipPath) {
+        archiveManager.setSevenZipPath(newSettings.sevenZipPath);
+      }
+
       sendLogToRenderer(mainWindow, 'info', 'settings', 'Paramètres mis à jour avec succès');
       return true;
     } catch (error) {
@@ -27,6 +60,19 @@ export function registerSettingsHandlers(ipcMain: IpcMain, mainWindow: BrowserWi
     try {
       settingsManager.reset();
       await settingsManager.save();
+    
+      // Réinitialiser aussi les configurations dans archiveManager
+      const defaultSettings = settingsManager.getAll();
+      
+      // Réinitialiser les chemins RAR à vide
+      archiveManager.setRarToolPaths({});
+      
+      // Réappliquer la priorité par défaut
+      if (defaultSettings.rarToolPriority && Array.isArray(defaultSettings.rarToolPriority)) {
+        archiveManager.setRarToolPriority(defaultSettings.rarToolPriority);
+        console.log('🔧 Priorité RAR réinitialisée:', defaultSettings.rarToolPriority);
+      }
+
       sendLogToRenderer(mainWindow, 'info', 'settings', 'Paramètres réinitialisés');
       return settingsManager.getAll();
     } catch (error) {

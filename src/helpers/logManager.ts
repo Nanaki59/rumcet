@@ -1,4 +1,5 @@
 // src/helpers/logManager.ts
+
 import { app } from 'electron';
 import path from 'path';
 import fs from 'fs/promises';
