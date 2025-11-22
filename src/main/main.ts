@@ -58,7 +58,7 @@ function createMainWindow(): void {
       preload: path.join(__dirname, '../../preload.js'),
       contextIsolation: true,
       nodeIntegration: false,
-    },
+    }
   });
 
   mainWindow.webContents.on('did-fail-load', (_event, _errorCode, errorDescription) => {

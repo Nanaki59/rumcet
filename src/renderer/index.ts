@@ -1,5 +1,7 @@
 // src/renderer/index.ts
 
+import { displayMatchingReport, initMatchingUI, displayInitialReport } from './matchingUI.js';
+
 // État de l'application
 let currentDatPath: string | null = null;
 let currentDbPath: string | null = null;
@@ -487,6 +489,9 @@ function updateLeftSidebar() {
       folderList.appendChild(div);
     });
   }
+
+  //displayInitialReport(0, 0);
+  initMatchingUI();
 }
 
 // Sélection d'un élément dans le volet gauche
@@ -504,6 +509,50 @@ function selectSidebarItem(element: HTMLElement, type: 'dat' | 'folder', path: s
   }
   
   updateCenterContent(type, path);
+}
+
+// ============================================================================
+// GESTION DES SECTIONS REPLIABLES (COLLAPSE)
+// ============================================================================
+
+function setupCollapsibleSections() {
+  const collapseButtons = document.querySelectorAll('.collapse-btn');
+  
+  collapseButtons.forEach(button => {
+    button.addEventListener('click', (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      
+      const targetId = button.getAttribute('data-target');
+      if (!targetId) return;
+      
+      const targetElement = document.getElementById(targetId);
+      if (!targetElement) return;
+      
+      // Toggle les classes
+      button.classList.toggle('collapsed');
+      targetElement.classList.toggle('collapsed');
+      
+      // Sauvegarder l'état dans localStorage
+      const isCollapsed = targetElement.classList.contains('collapsed');
+      localStorage.setItem(`section-${targetId}-collapsed`, isCollapsed.toString());
+    });
+  });
+  
+  // Restaurer l'état sauvegardé
+  collapseButtons.forEach(button => {
+    const targetId = button.getAttribute('data-target');
+    if (!targetId) return;
+    
+    const savedState = localStorage.getItem(`section-${targetId}-collapsed`);
+    if (savedState === 'true') {
+      const targetElement = document.getElementById(targetId);
+      if (targetElement) {
+        button.classList.add('collapsed');
+        targetElement.classList.add('collapsed');
+      }
+    }
+  });
 }
 
 // Mise à jour du contenu central
@@ -1090,53 +1139,38 @@ async function showChdInfo(filePath: string) {
 // ============================================================================
 
 async function runMatching() {
+  const btn = document.getElementById('match-roms') as HTMLButtonElement;
+  if (!btn) return;
+  
   try {
+    // Désactiver le bouton pendant le matching
+    btn.disabled = true;
+    btn.textContent = '⏳ Matching en cours...';
+    
     log('Lancement du matching des ROMs...', { context: 'match', state: 'loading' });
     
     const result = await window.api.runMatching();
     
-    // Afficher les statistiques dans le volet droit
-    const detailView = document.getElementById('detail-view');
-    if (detailView) {
-      detailView.innerHTML = `
-        <div class="detail-header">📊 Résultats du matching</div>
-        <div class="stats-panel">
-          <div class="stats-row">
-            <span class="stats-label">Total ROMs DAT :</span>
-            <span class="stats-value">${result.stats.totalDatRoms}</span>
-          </div>
-          <div class="stats-row">
-            <span class="stats-label">Matchs parfaits :</span>
-            <span class="stats-value" style="color: #2ecc71;">${result.stats.perfectMatches}</span>
-          </div>
-          <div class="stats-row">
-            <span class="stats-label">Bonnes correspondances :</span>
-            <span class="stats-value" style="color: #3498db;">${result.stats.goodMatches}</span>
-          </div>
-          <div class="stats-row">
-            <span class="stats-label">Correspondances partielles :</span>
-            <span class="stats-value" style="color: #f39c12;">${result.stats.partialMatches}</span>
-          </div>
-          <div class="stats-row">
-            <span class="stats-label">ROMs manquantes :</span>
-            <span class="stats-value" style="color: #e74c3c;">${result.stats.missingRoms}</span>
-          </div>
-          <div class="stats-row">
-            <span class="stats-label">Fichiers non matchés :</span>
-            <span class="stats-value" style="color: #95a5a6;">${result.stats.extraFiles}</span>
-          </div>
-        </div>
-        <div style="padding: 10px;">
-          <button onclick="showMissingRoms()" style="width: 100%; margin-bottom: 10px; padding: 8px; background-color: #e74c3c; color: white; border: none; border-radius: 4px; cursor: pointer;">Voir les ROMs manquantes</button>
-          <button onclick="showExtraFiles()" style="width: 100%; margin-bottom: 10px; padding: 8px; background-color: #f39c12; color: white; border: none; border-radius: 4px; cursor: pointer;">Voir les fichiers extras</button>
-          <button onclick="exportReport()" style="width: 100%; padding: 8px; background-color: #3498db; color: white; border: none; border-radius: 4px; cursor: pointer;">Exporter le rapport CSV</button>
-        </div>
-      `;
+    // Mettre à jour le rapport dans le volet gauche
+    if (typeof displayMatchingReport === 'function') {
+      await displayMatchingReport('matching-report');
     }
+    
+    // Afficher une popup de succès
+    alert(`✅ Matching terminé !\n\n` +
+          `Jeux complets : ${result.stats.completeGames}/${result.stats.totalGames} ✅\n` +
+          `Jeux partiels : ${result.stats.partialGames}/${result.stats.totalGames} ⚠️\n` +
+          `Jeux manquants : ${result.stats.missingGames}/${result.stats.totalGames} ❌\n\n` +
+          `ROMs matchées : ${result.stats.matchedRoms}/${result.stats.totalDatRoms}`);
     
     log(`Matching terminé avec succès !`, { context: 'match', state: 'success' });
   } catch (error) {
     log(`Erreur lors du matching : ${error}`, { severity: 'error', context: 'match' });
+    alert('❌ Erreur lors du matching. Consultez les logs pour plus de détails.');
+  } finally {
+    // Réactiver le bouton
+    btn.disabled = false;
+    btn.textContent = '🎯 5. Matcher les ROMs';
   }
 }
 
@@ -1245,6 +1279,17 @@ async function openExistingDatabase() {
       if (matchRomsButton) matchRomsButton.disabled = false;
       
       updateLeftSidebar();
+      
+      // Vérifier si un matching a déjà été effectué et afficher le rapport approprié
+      if (result.hasMatching) {
+        // Afficher le rapport complet depuis la base
+        await displayMatchingReport();
+        log('✅ Rapport de matching chargé depuis la base de données', { context: 'match', state: 'success' });
+      } else if (result.gamesCount > 0) {
+        // Afficher le rapport initial (tous manquants)
+        await displayInitialReport(result.gamesCount, result.romsCount);
+        log('📊 Rapport initial affiché (matching non effectué)', { context: 'match', state: 'waiting' });
+      }
       
       const datList = document.getElementById('dat-list');
       if (datList && datList.firstElementChild) {
@@ -1636,9 +1681,21 @@ datLoadButton?.addEventListener('click', async () => {
     log(`ROMs référencées : ${resultLoadDatFile.romsCount}`, { context: 'romfile', state: 'count' });
 
     currentDatInfo = resultLoadDatFile.datInfo || null;
+    //console.log('DEBUG - resultLoadDatFile:', resultLoadDatFile);
     romAddFolderButton.disabled = false;
     //matchRomsButton.disabled = false;
     updateLeftSidebar();
+    //console.log('DEBUG - Avant displayInitialReport, gamesCount:', resultLoadDatFile.gamesCount);
+    
+    // Afficher le rapport initial avec tous les jeux/fichiers en "manquants"
+    if (resultLoadDatFile.gamesCount > 0) {
+      //console.log('DEBUG - Appel de displayInitialReport');
+      await displayInitialReport(resultLoadDatFile.gamesCount, resultLoadDatFile.romsCount);
+      log('📊 Rapport de matching initialisé', { context: 'match', state: 'waiting' });
+      //console.log('DEBUG - Après displayInitialReport');
+    } else {
+      //console.log('DEBUG - gamesCount <= 0, pas d\'appel à displayInitialReport');
+    }
   } catch (error) {
     log(`Erreur : ${error instanceof Error ? error.message : String(error)}`, { severity: 'error', context: 'dat' });
   }
@@ -1737,6 +1794,12 @@ datQuickLoadButton?.addEventListener('click', async () => {
     romAddFolderButton.disabled = false;
     matchRomsButton.disabled = false;
     updateLeftSidebar();
+    
+    // Afficher le rapport initial avec tous les jeux/fichiers en "manquants"
+    if (resultQuick.gamesCount > 0) {
+      await displayInitialReport(resultQuick.gamesCount, resultQuick.romsCount);
+      log('📊 Rapport de matching initialisé', { context: 'match', state: 'waiting' });
+    }
 
     log('Prêt pour ajouter des dossiers de ROMs !', { context: 'folder', state: 'waiting' });
 
@@ -1835,5 +1898,7 @@ document.addEventListener('DOMContentLoaded', () => {
   setupContextMenu();
   setupViewControls();
   setupSearch();
+  initMatchingUI();
+  setupCollapsibleSections();
   log('RUMCET est prêt ! Utilisez le menu Fichier ou les boutons pour commencer.', { context: 'welcome' });
 }, { once: true });

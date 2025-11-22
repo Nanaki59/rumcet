@@ -9,7 +9,9 @@ import {
   ArchiveContent, 
   ArchiveCreateOptions, 
   ArchiveFormat,
-  ArchiveProgressEvent
+  ArchiveProgressEvent,
+  ArchiveAddOptions,
+  ArchiveDeleteOptions
 } from './types.js';
 import { ZipHandler } from './ZipHandler.js';
 import { SevenZipHandler } from './SevenZipHandler.js';
@@ -27,6 +29,9 @@ import { CsoHandler } from './CsoHandler.js';
  * - Création d'archives selon les préférences utilisateur
  * - Conversion entre formats
  * - Optimisation d'archives existantes
+ * - Gestion des commentaires d'archives (ZIP, 7z)
+ * - Ajout/suppression de fichiers dans les archives (ZIP, 7z)
+ * - Détection du niveau de compression
  * 
  * Formats supportés:
  * - ZIP (lecture/écriture)
@@ -118,6 +123,7 @@ export class ArchiveManager extends EventEmitter {
   
   /**
    * Liste le contenu d'une archive
+   * Retourne également le niveau de compression et la présence de commentaires si disponibles
    */
   async listArchive(filePath: string): Promise<ArchiveContent[]> {
     const handler = this.getHandler(filePath);
@@ -448,6 +454,153 @@ export class ArchiveManager extends EventEmitter {
         type: 'error',
         archivePath: archivePath,
         operation: 'optimize',
+        error: error
+      });
+      throw error;
+    }
+  }
+  
+  /**
+   * Efface les commentaires d'une archive
+   * Fonctionne uniquement pour les formats qui supportent les commentaires (ZIP)
+   * 
+   * @param archivePath Chemin de l'archive
+   */
+  async clearArchiveComments(archivePath: string): Promise<void> {
+    const handler = this.getHandler(archivePath);
+    if (!handler) {
+      throw new Error(`Unsupported archive format: ${archivePath}`);
+    }
+    
+    if (!handler.canWrite()) {
+      throw new Error(`Cannot modify ${archivePath} (read-only format)`);
+    }
+    
+    if (!handler.canHandleComments || !handler.canHandleComments()) {
+      console.log(`Format ${this.getArchiveFormat(archivePath)} does not support comments`);
+      return;
+    }
+    
+    if (!handler.clearComments) {
+      throw new Error(`clearComments not implemented for this handler`);
+    }
+    
+    this.emitProgress({
+      type: 'start',
+      archivePath: archivePath,
+      operation: 'clearComments'
+    });
+    
+    try {
+      await handler.clearComments(archivePath);
+      
+      this.emitProgress({
+        type: 'complete',
+        archivePath: archivePath,
+        operation: 'clearComments'
+      });
+    } catch (error: any) {
+      this.emitProgress({
+        type: 'error',
+        archivePath: archivePath,
+        operation: 'clearComments',
+        error: error
+      });
+      throw error;
+    }
+  }
+  
+  /**
+   * Ajoute des fichiers à une archive existante
+   * Fonctionne uniquement pour les formats qui supportent la modification (ZIP, 7z)
+   * 
+   * @param archivePath Chemin de l'archive
+   * @param files Fichiers à ajouter (chemins absolus)
+   * @param compressionLevel Niveau de compression optionnel
+   */
+  async addFilesToArchive(archivePath: string, files: string[], compressionLevel?: number): Promise<void> {
+    const handler = this.getHandler(archivePath);
+    if (!handler) {
+      throw new Error(`Unsupported archive format: ${archivePath}`);
+    }
+    
+    if (!handler.canWrite()) {
+      throw new Error(`Cannot modify ${archivePath} (read-only format)`);
+    }
+    
+    if (!handler.addFiles) {
+      throw new Error(`addFiles not implemented for this handler`);
+    }
+    
+    this.emitProgress({
+      type: 'start',
+      archivePath: archivePath,
+      operation: 'add',
+      totalFiles: files.length
+    });
+    
+    try {
+      await handler.addFiles({ archivePath, files, compressionLevel });
+      
+      this.emitProgress({
+        type: 'complete',
+        archivePath: archivePath,
+        operation: 'add',
+        totalFiles: files.length
+      });
+    } catch (error: any) {
+      this.emitProgress({
+        type: 'error',
+        archivePath: archivePath,
+        operation: 'add',
+        error: error
+      });
+      throw error;
+    }
+  }
+  
+  /**
+   * Supprime des fichiers d'une archive existante
+   * Fonctionne uniquement pour les formats qui supportent la modification (ZIP, 7z)
+   * 
+   * @param archivePath Chemin de l'archive
+   * @param files Noms des fichiers à supprimer (chemins relatifs dans l'archive)
+   */
+  async deleteFilesFromArchive(archivePath: string, files: string[]): Promise<void> {
+    const handler = this.getHandler(archivePath);
+    if (!handler) {
+      throw new Error(`Unsupported archive format: ${archivePath}`);
+    }
+    
+    if (!handler.canWrite()) {
+      throw new Error(`Cannot modify ${archivePath} (read-only format)`);
+    }
+    
+    if (!handler.deleteFiles) {
+      throw new Error(`deleteFiles not implemented for this handler`);
+    }
+    
+    this.emitProgress({
+      type: 'start',
+      archivePath: archivePath,
+      operation: 'delete',
+      totalFiles: files.length
+    });
+    
+    try {
+      await handler.deleteFiles({ archivePath, files });
+      
+      this.emitProgress({
+        type: 'complete',
+        archivePath: archivePath,
+        operation: 'delete',
+        totalFiles: files.length
+      });
+    } catch (error: any) {
+      this.emitProgress({
+        type: 'error',
+        archivePath: archivePath,
+        operation: 'delete',
         error: error
       });
       throw error;

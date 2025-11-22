@@ -23,6 +23,7 @@ export interface DatabaseOpenResult {
   datPath: string | null;
   gamesCount: number;
   romsCount: number;
+  hasMatching: boolean;
   folders: Array<{
     path: string;
     fileCount: number;
@@ -111,6 +112,15 @@ contextBridge.exposeInMainWorld('api', {
     // Conversions CHD
     convertToChdBatch: (filePaths: string[]) => 
       ipcRenderer.invoke('archive:convert-to-chd-batch', filePaths),
+
+    clearArchiveComments: (archivePath: string) =>
+      ipcRenderer.invoke('archive:clear-comments', archivePath),
+  
+    addFilesToArchive: (archivePath: string, files: string[], compressionLevel?: number) =>
+      ipcRenderer.invoke('archive:add-files', archivePath, files, compressionLevel),
+    
+    deleteFilesFromArchive: (archivePath: string, files: string[]) =>
+      ipcRenderer.invoke('archive:delete-files', archivePath, files),
     
     // Événements de progression
     onProgress: (callback: (event: any) => void) => {
@@ -190,6 +200,8 @@ contextBridge.exposeInMainWorld('api', {
   
   runMatching: () => ipcRenderer.invoke('matching:run'),
   getMissingRoms: () => ipcRenderer.invoke('matching:get-missing'),
+  getGameMatchStatuses: () => ipcRenderer.invoke('matching:get-game-statuses'),
+  getMatchesForGame: (gameId: number) => ipcRenderer.invoke('matching:get-matches-for-game', gameId),
   getExtraFiles: () => ipcRenderer.invoke('matching:get-extras'),
   exportMatchingReport: () => ipcRenderer.invoke('matching:export-report'),
 

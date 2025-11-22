@@ -16,6 +16,9 @@ export interface ArchiveContent {
   fileName: string;
   size: number;
   hashes?: FileHash;
+  compressionLevel?: number;    // Niveau de compression numérique de l'archive
+  hasComment?: boolean;         // L'archive contient-elle un commentaire ?
+  hasGlobalComment?: boolean;   // L'archive a-t-elle un commentaire global ?
 }
 
 /**
@@ -54,6 +57,23 @@ export interface ArchiveExtractOptions {
 }
 
 /**
+ * Options pour ajouter des fichiers à une archive
+ */
+export interface ArchiveAddOptions {
+  archivePath: string;          // Chemin de l'archive cible
+  files: string[];              // Fichiers à ajouter (chemins absolus)
+  compressionLevel?: number;    // Niveau de compression (si applicable)
+}
+
+/**
+ * Options pour supprimer des fichiers d'une archive
+ */
+export interface ArchiveDeleteOptions {
+  archivePath: string;          // Chemin de l'archive cible
+  files: string[];              // Noms des fichiers à supprimer (chemins relatifs dans l'archive)
+}
+
+/**
  * Interface que tous les handlers d'archive doivent implémenter
  */
 export interface IArchiveHandler {
@@ -67,7 +87,7 @@ export interface IArchiveHandler {
   /**
    * Liste le contenu d'une archive
    * @param filePath Chemin de l'archive
-   * @returns Liste des fichiers contenus dans l'archive
+   * @returns Liste des fichiers contenus dans l'archive (avec niveau de compression et présence de commentaires si disponibles)
    */
   list(filePath: string): Promise<ArchiveContent[]>;
   
@@ -90,6 +110,30 @@ export interface IArchiveHandler {
   create(options: ArchiveCreateOptions): Promise<void>;
   
   /**
+   * Vérifie si ce handler supporte les commentaires d'archive
+   * @returns true si le handler supporte les commentaires
+   */
+  canHandleComments?(): boolean;
+  
+  /**
+   * Efface les commentaires d'une archive
+   * @param archivePath Chemin de l'archive
+   */
+  clearComments?(archivePath: string): Promise<void>;
+  
+  /**
+   * Ajoute des fichiers à une archive existante
+   * @param options Options d'ajout
+   */
+  addFiles?(options: ArchiveAddOptions): Promise<void>;
+  
+  /**
+   * Supprime des fichiers d'une archive existante
+   * @param options Options de suppression
+   */
+  deleteFiles?(options: ArchiveDeleteOptions): Promise<void>;
+  
+  /**
    * Retourne les extensions de fichier supportées par ce handler
    * @returns Liste des extensions (avec le point, ex: ['.zip'])
    */
@@ -102,7 +146,7 @@ export interface IArchiveHandler {
 export interface ArchiveProgressEvent {
   type: 'start' | 'progress' | 'complete' | 'error';
   archivePath: string;
-  operation: 'list' | 'extract' | 'create' | 'convert' | 'optimize';
+  operation: 'list' | 'extract' | 'create' | 'convert' | 'optimize' | 'add' | 'delete' | 'clearComments';
   progress?: number;           // 0-100
   currentFile?: string;
   totalFiles?: number;

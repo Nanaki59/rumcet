@@ -4,13 +4,18 @@ import Seven from 'node-7z';
 import sevenBin from '7zip-bin';
 import path from 'path';
 import fs from 'fs/promises';
+import { exec } from 'child_process';
+import { promisify } from 'util';
 import { 
   IArchiveHandler, 
   ArchiveContent, 
   ArchiveCreateOptions, 
-  ArchiveExtractOptions 
+  ArchiveExtractOptions,
+  ArchiveAddOptions,
+  ArchiveDeleteOptions
 } from './types.js';
 
+const execAsync = promisify(exec);
 const pathTo7zip = sevenBin.path7za;
 
 /**
@@ -27,6 +32,13 @@ const compressionLevels: Record<string, string> = {
 /**
  * Handler pour les archives 7z utilisant node-7z + 7zip-bin
  * Support: Lecture et Écriture
+ * 
+ * Nouvelles fonctionnalités:
+ * - Détection du niveau de compression
+ * - Détection des commentaires d'archive
+ * - Effacement des commentaires (note: 7z ne supporte pas vraiment les commentaires)
+ * - Ajout de fichiers à une archive existante
+ * - Suppression de fichiers d'une archive existante
  */
 export class SevenZipHandler implements IArchiveHandler {
   private sevenZipPath: string;
@@ -49,15 +61,17 @@ export class SevenZipHandler implements IArchiveHandler {
   
   /**
    * Liste le contenu d'une archive 7z
+   * Détecte automatiquement le niveau de compression
    */
   async list(filePath: string): Promise<ArchiveContent[]> {
     const contents: ArchiveContent[] = [];
+    let detectedCompressionLevel: number | undefined;
     
     return new Promise((resolve, reject) => {
       const myStream = Seven.list(filePath, {
         $bin: this.sevenZipPath,
         recursive: false,
-        techInfo: true  // Important : pour obtenir le CRC
+        techInfo: true  // Important : pour obtenir le CRC et les infos techniques
       });
       
       myStream.on('data', (data: any) => {
@@ -79,6 +93,32 @@ export class SevenZipHandler implements IArchiveHandler {
             }
           }
           
+          // Détecter le niveau de compression depuis les informations techniques
+          // Le format 7z stocke la méthode de compression, mais pas le niveau exact
+          // On peut estimer le niveau en fonction du ratio de compression
+          if (detectedCompressionLevel === undefined && data.techInfo) {
+            if (data.techInfo.has('Packed Size')) {
+              const packedSizeStr = data.techInfo.get('Packed Size');
+              const packedSize = parseInt(packedSizeStr) || 0;
+              
+              if (size > 0 && packedSize > 0) {
+                const ratio = packedSize / size;
+                
+                // Estimation approximative du niveau:
+                // ratio > 0.9 = niveau 1-3 (faible compression)
+                // ratio 0.7-0.9 = niveau 4-6 (compression normale)
+                // ratio < 0.7 = niveau 7-9 (haute compression)
+                if (ratio > 0.9) {
+                  detectedCompressionLevel = 3;
+                } else if (ratio > 0.7) {
+                  detectedCompressionLevel = 5;
+                } else {
+                  detectedCompressionLevel = 9;
+                }
+              }
+            }
+          }
+          
           contents.push({
             fileName: data.file,
             size: size,
@@ -86,7 +126,9 @@ export class SevenZipHandler implements IArchiveHandler {
               crc32: crc32,
               md5: '',
               sha1: ''
-            } : undefined
+            } : undefined,
+            compressionLevel: detectedCompressionLevel,
+            hasComment: false // 7z ne supporte pas vraiment les commentaires
           });
         }
       });
@@ -176,6 +218,70 @@ export class SevenZipHandler implements IArchiveHandler {
         if (progress.percent) {
           console.log(`Progression 7z: ${progress.percent}%`);
         }
+      });
+    });
+  }
+  
+  canHandleComments(): boolean {
+    return false; // 7z ne supporte pas vraiment les commentaires d'archive
+  }
+  
+  /**
+   * Efface les commentaires d'une archive 7z
+   * Note: 7z ne supporte pas vraiment les commentaires, donc cette méthode ne fait rien
+   */
+  async clearComments(archivePath: string): Promise<void> {
+    console.log('7z ne supporte pas les commentaires d\'archive, rien à effacer');
+  }
+  
+  /**
+   * Ajoute des fichiers à une archive 7z existante
+   */
+  async addFiles(options: ArchiveAddOptions): Promise<void> {
+    // Déterminer le niveau de compression
+    const compressionLevel = options.compressionLevel?.toString() || '5';
+    const mx = compressionLevels[compressionLevel] || compressionLevel;
+    
+    return new Promise((resolve, reject) => {
+      const addOptions: any = {
+        $bin: this.sevenZipPath,
+        method: ['0=LZMA2'],
+        mx: mx
+      };
+      
+      const myStream = Seven.add(options.archivePath, options.files, addOptions);
+      
+      myStream.on('end', () => {
+        console.log(`✅ Fichiers ajoutés à: ${options.archivePath}`);
+        resolve();
+      });
+      
+      myStream.on('error', (err: any) => {
+        console.error('Error adding files to 7z archive:', err);
+        reject(err);
+      });
+    });
+  }
+  
+  /**
+   * Supprime des fichiers d'une archive 7z existante
+   */
+  async deleteFiles(options: ArchiveDeleteOptions): Promise<void> {
+    return new Promise((resolve, reject) => {
+      const deleteOptions: any = {
+        $bin: this.sevenZipPath
+      };
+      
+      const myStream = Seven.delete(options.archivePath, options.files, deleteOptions);
+      
+      myStream.on('end', () => {
+        console.log(`✅ Fichiers supprimés de: ${options.archivePath}`);
+        resolve();
+      });
+      
+      myStream.on('error', (err: any) => {
+        console.error('Error deleting files from 7z archive:', err);
+        reject(err);
       });
     });
   }

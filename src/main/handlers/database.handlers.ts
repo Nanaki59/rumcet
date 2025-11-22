@@ -114,6 +114,7 @@ export function registerDatabaseHandlers(ipcMain: IpcMain, mainWindow: BrowserWi
         datPath: dbInfo.datPath,
         gamesCount: dbInfo.gamesCount,
         romsCount: dbInfo.romsCount,
+        hasMatching: dbInfo.hasMatching,
         folders: dbInfo.folders,
         datInfo: dbInfo.datInfo
       };
@@ -220,10 +221,17 @@ async function getDBInfo(database: any) {
       WHERE is_root = 1`
     );
 
+    // Vérifier si le matching a déjà été effectué
+    const matchesResult: any = await database.get(
+      'SELECT COUNT(*) as count FROM rom_matches'
+    );
+    const hasMatching = matchesResult?.count > 0;
+
     return {
       datPath: datPath,
       gamesCount: gamesResult?.count || 0,
       romsCount: romsResult?.count || 0,
+      hasMatching: hasMatching,
       folders: foldersResult.map(f => ({
         path: f.folder_path,
         fileCount: f.file_count
@@ -244,6 +252,7 @@ async function getDBInfo(database: any) {
       datPath: null,
       gamesCount: 0,
       romsCount: 0,
+      hasMatching: false,
       folders: [],
       datInfo: null
     };

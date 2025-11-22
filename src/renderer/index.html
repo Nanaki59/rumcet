@@ -138,6 +138,63 @@
       margin-bottom: 20px;
     }
 
+    /* En-tête de section avec bouton collapse */
+    .section-header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      margin-bottom: 10px;
+      padding-right: 5px;
+    }
+
+    .section-header h3 {
+      margin: 0;
+      flex-grow: 1;
+    }
+
+    /* Bouton de collapse */
+    .collapse-btn {
+      background: none;
+      border: none;
+      cursor: pointer;
+      padding: 4px 8px;
+      border-radius: 4px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      transition: background-color 0.2s;
+      color: #7f8c8d;
+    }
+
+    .collapse-btn:hover {
+      background-color: rgba(52, 152, 219, 0.1);
+      color: #3498db;
+    }
+
+    .collapse-btn .chevron {
+      font-size: 12px;
+      transition: transform 0.3s ease;
+      display: inline-block;
+    }
+
+    /* Rotation du chevron quand c'est collapsed */
+    .collapse-btn.collapsed .chevron {
+      transform: rotate(-180deg);
+    }
+
+    /* Contenu de la section */
+    .section-content {
+      overflow: hidden;
+      transition: max-height 0.3s ease, opacity 0.3s ease;
+      max-height: 2000px;
+      opacity: 1;
+    }
+
+    .section-content.collapsed {
+      max-height: 0;
+      opacity: 0;
+    }
+
     /* Menu contextuel */
     .context-menu {
       position: fixed;
@@ -483,6 +540,424 @@
     .modal-close:hover {
       color: #000;
     }
+    
+    /* Rapport de matching dans le volet gauche */
+    .matching-summary {
+      padding: 5px 0;
+    }
+
+    .summary-item {
+      display: flex;
+      align-items: center;
+      padding: 8px 10px;
+      cursor: default;
+      transition: background-color 0.2s;
+      border-radius: 4px;
+      margin-bottom: 2px;
+    }
+
+    .summary-item.clickable {
+      cursor: pointer;
+    }
+
+    .summary-item.clickable:hover {
+      background-color: rgba(52, 152, 219, 0.1);
+    }
+
+    .summary-icon {
+      font-size: 16px;
+      margin-right: 8px;
+      flex-shrink: 0;
+    }
+
+    .summary-label {
+      flex-grow: 1;
+      font-size: 13px;
+    }
+
+    .summary-count {
+      font-size: 14px;
+      font-weight: 600;
+      color: #2c3e50;
+      min-width: 24px;
+      text-align: right;
+      display: flex;
+      flex-direction: column;
+      align-items: flex-end;
+    }
+
+    .summary-count-main {
+      font-size: 14px;
+      font-weight: 600;
+    }
+
+    .summary-count-roms {
+      font-size: 10px;
+      color: #7f8c8d;
+      font-weight: 400;
+      margin-top: 2px;
+    }
+    .summary-count {
+      font-size: 14px;
+      font-weight: 600;
+      color: #2c3e50;
+      min-width: 24px;
+      text-align: right;
+      display: flex;
+      flex-direction: column;
+      align-items: flex-end;
+    }
+
+    .summary-count-main {
+      font-size: 14px;
+      font-weight: 600;
+    }
+
+    .summary-count-roms {
+      font-size: 10px;
+      color: #7f8c8d;
+      font-weight: 400;
+      margin-top: 2px;
+    }
+    .summary-count {
+      font-size: 14px;
+      font-weight: 600;
+      color: #2c3e50;
+      min-width: 24px;
+      text-align: right;
+      display: flex;
+      flex-direction: column;
+      align-items: flex-end;
+    }
+
+    .summary-count-main {
+      font-size: 14px;
+      font-weight: 600;
+    }
+
+    .summary-count-roms {
+      font-size: 10px;
+      color: #7f8c8d;
+      font-weight: 400;
+      margin-top: 2px;
+    }
+    .summary-count {
+      font-size: 14px;
+      font-weight: 600;
+      color: #2c3e50;
+      min-width: 24px;
+      text-align: right;
+      display: flex;
+      flex-direction: column;
+      align-items: flex-end;
+    }
+
+    .summary-count-main {
+      font-size: 14px;
+      font-weight: 600;
+    }
+
+    .summary-count-roms {
+      font-size: 10px;
+      color: #7f8c8d;
+      font-weight: 400;
+      margin-top: 2px;
+    }
+    .summary-count {
+      font-size: 14px;
+      font-weight: 600;
+      color: #2c3e50;
+      min-width: 24px;
+      text-align: right;
+      display: flex;
+      flex-direction: column;
+      align-items: flex-end;
+    }
+
+    .summary-count-main {
+      font-size: 14px;
+      font-weight: 600;
+    }
+
+    .summary-count-roms {
+      font-size: 10px;
+      color: #7f8c8d;
+      font-weight: 400;
+      margin-top: 2px;
+    }
+    .summary-count {
+      font-size: 14px;
+      font-weight: 600;
+      color: #2c3e50;
+      min-width: 24px;
+      text-align: right;
+      display: flex;
+      flex-direction: column;
+      align-items: flex-end;
+    }
+
+    .summary-count-main {
+      font-size: 14px;
+      font-weight: 600;
+    }
+
+    .summary-count-roms {
+      font-size: 10px;
+      color: #7f8c8d;
+      font-weight: 400;
+      margin-top: 2px;
+    }
+    .summary-count {
+      font-size: 14px;
+      font-weight: 600;
+      color: #2c3e50;
+      min-width: 24px;
+      text-align: right;
+      display: flex;
+      flex-direction: column;
+      align-items: flex-end;
+    }
+
+    .summary-count-main {
+      font-size: 14px;
+      font-weight: 600;
+    }
+
+    .summary-count-roms {
+      font-size: 10px;
+      color: #7f8c8d;
+      font-weight: 400;
+      margin-top: 2px;
+    }
+
+    /* Style spécifique pour les "?" (pas de données) */
+    .summary-count:empty,
+    .summary-count:contains("?") {
+      color: #95a5a6;
+      font-style: italic;
+    }
+
+    /* Styles pour les jeux avec statut */
+    .game-item {
+      display: flex;
+      align-items: center;
+      padding: 6px 10px;
+      cursor: pointer;
+      transition: background-color 0.2s;
+      border-radius: 4px;
+      margin-bottom: 2px;
+    }
+
+    .game-item:hover {
+      background-color: rgba(52, 152, 219, 0.1);
+    }
+
+    .game-status-icon {
+      font-size: 14px;
+      margin-right: 6px;
+      flex-shrink: 0;
+    }
+
+    .game-name {
+      flex-grow: 1;
+      font-size: 13px;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+
+    .game-match-count {
+      font-size: 11px;
+      color: #7f8c8d;
+      margin-left: 6px;
+      flex-shrink: 0;
+    }
+
+    .game-item.status-complete {
+      background-color: rgba(46, 204, 113, 0.05);
+    }
+
+    .game-item.status-partial {
+      background-color: rgba(241, 196, 15, 0.05);
+    }
+
+    .game-item.status-missing {
+      background-color: rgba(231, 76, 60, 0.05);
+    }
+
+    /* Modal générique */
+    .modal-overlay {
+      position: fixed;
+      top: 0;
+      left: 0;
+      right: 0;
+      bottom: 0;
+      background-color: rgba(0, 0, 0, 0.6);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      z-index: 10000;
+    }
+
+    .modal-content {
+      background-color: white;
+      border-radius: 8px;
+      padding: 0;
+      max-width: 600px;
+      max-height: 80vh;
+      overflow: hidden;
+      display: flex;
+      flex-direction: column;
+      box-shadow: 0 4px 20px rgba(0, 0, 0, 0.3);
+    }
+
+    .modal-content.large {
+      max-width: 900px;
+    }
+
+    .modal-header {
+      padding: 20px;
+      border-bottom: 1px solid #ecf0f1;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      background-color: #f8f9fa;
+    }
+
+    .modal-header h2 {
+      margin: 0;
+      font-size: 20px;
+      color: #2c3e50;
+    }
+
+    .close-modal {
+      background: none;
+      border: none;
+      font-size: 28px;
+      cursor: pointer;
+      color: #7f8c8d;
+      width: 32px;
+      height: 32px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      border-radius: 50%;
+      transition: all 0.2s;
+      padding: 0;
+    }
+
+    .close-modal:hover {
+      background-color: rgba(0, 0, 0, 0.05);
+      color: #2c3e50;
+    }
+
+    .modal-body {
+      padding: 20px;
+      overflow-y: auto;
+      flex-grow: 1;
+    }
+
+    .modal-footer {
+      padding: 15px 20px;
+      border-top: 1px solid #ecf0f1;
+      display: flex;
+      justify-content: flex-end;
+      gap: 10px;
+      background-color: #f8f9fa;
+    }
+
+    .modal-footer button {
+      padding: 8px 16px;
+      border: none;
+      border-radius: 4px;
+      cursor: pointer;
+      font-size: 14px;
+      transition: all 0.2s;
+    }
+
+    .btn-close-modal {
+      background-color: #95a5a6;
+      color: white;
+    }
+
+    .btn-close-modal:hover {
+      background-color: #7f8c8d;
+    }
+
+    .btn-export-missing {
+      background-color: #3498db;
+      color: white;
+    }
+
+    .btn-export-missing:hover {
+      background-color: #2980b9;
+    }
+
+    /* Groupe de jeux manquants */
+    .missing-game-group {
+      margin-bottom: 20px;
+    }
+
+    .missing-game-group h3 {
+      font-size: 16px;
+      color: #2c3e50;
+      margin-bottom: 10px;
+      padding-bottom: 5px;
+      border-bottom: 1px solid #ecf0f1;
+    }
+
+    .missing-game-group ul {
+      list-style: none;
+      padding-left: 20px;
+    }
+
+    .missing-game-group li {
+      padding: 4px 0;
+      color: #7f8c8d;
+    }
+
+    .missing-game-group li::before {
+      content: '•';
+      color: #e74c3c;
+      font-weight: bold;
+      margin-right: 8px;
+    }
+
+    /* Table des ROMs */
+    .roms-table {
+      width: 100%;
+      border-collapse: collapse;
+    }
+
+    .roms-table th {
+      background-color: #f8f9fa;
+      padding: 10px;
+      text-align: left;
+      font-weight: 600;
+      color: #2c3e50;
+      border-bottom: 2px solid #ecf0f1;
+    }
+
+    .roms-table td {
+      padding: 10px;
+      border-bottom: 1px solid #ecf0f1;
+    }
+
+    .roms-table tr.rom-found {
+      background-color: rgba(46, 204, 113, 0.05);
+    }
+
+    .roms-table tr.rom-missing {
+      background-color: rgba(231, 76, 60, 0.05);
+      color: #95a5a6;
+    }
+
+    .no-results {
+      text-align: center;
+      color: #95a5a6;
+      padding: 20px;
+      font-style: italic;
+    }
   </style>
 </head>
 <body>
@@ -524,13 +999,36 @@
     <!-- Volet gauche -->
     <div class="sidebar-left" id="sidebar-left">
       <div class="sidebar-section">
-        <h3>📁 Base de données active</h3>
-        <div id="dat-list"></div>
+        <div class="section-header">
+          <h3>🗄️ Base de données active</h3>
+          <button class="collapse-btn" data-target="dat-list" title="Replier/Déplier">
+            <span class="chevron">▲</span>
+          </button>
+        </div>
+        <div id="dat-list" class="section-content"></div>
       </div>
       
       <div class="sidebar-section">
-        <h3>📂 Dossiers ROMs</h3>
-        <div id="folder-list"></div>
+        <div class="section-header">
+          <h3>📂 Dossiers ROMs</h3>
+          <button class="collapse-btn" data-target="folder-list" title="Replier/Déplier">
+            <span class="chevron">▲</span>
+          </button>
+        </div>
+        <div id="folder-list" class="section-content"></div>
+      </div>
+
+      <!-- Section du rapport de matching -->
+      <div class="sidebar-section">
+        <div class="section-header">
+          <h3>📊 Rapport de matching</h3>
+          <button class="collapse-btn" data-target="matching-report" title="Replier/Déplier">
+            <span class="chevron">▲</span>
+          </button>
+        </div>
+        <div id="matching-report" class="section-content">
+          <!-- Le contenu sera généré par matchingUI.ts -->
+        </div>
       </div>
     </div>
 

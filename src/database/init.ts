@@ -3,6 +3,8 @@ import sqlite3 from 'sqlite3';
 import fs from 'fs/promises';
 import path from 'path';
 
+const currentSchemaVersion = '1.0';
+
 export class Database {
   private db: sqlite3.Database;
 
@@ -161,12 +163,18 @@ async function initSchema(db: Database): Promise<void> {
       sha1 TEXT,
       is_archive BOOLEAN DEFAULT 0,
       archive_type TEXT,
+      compression_level INTEGER,
+      has_comment BOOLEAN DEFAULT 0,
+      has_global_comment BOOLEAN DEFAULT 0,
       scanned_at DATETIME DEFAULT CURRENT_TIMESTAMP,
       FOREIGN KEY (folder_id) REFERENCES scanned_folders(id) ON DELETE CASCADE
     );
 
     CREATE INDEX IF NOT EXISTS idx_scanned_files_folder ON scanned_files(folder_id);
     CREATE INDEX IF NOT EXISTS idx_scanned_files_path ON scanned_files(file_path);
+    CREATE INDEX IF NOT EXISTS idx_scanned_files_compression ON scanned_files(compression_level);
+    CREATE INDEX IF NOT EXISTS idx_scanned_files_comment ON scanned_files(has_comment);
+    CREATE INDEX IF NOT EXISTS idx_scanned_files_global_comment ON scanned_files(has_global_comment);
 
     -- Table des contenus d'archives
     CREATE TABLE IF NOT EXISTS archive_contents (
@@ -177,10 +185,14 @@ async function initSchema(db: Database): Promise<void> {
       crc32 TEXT,
       md5 TEXT,
       sha1 TEXT,
+      compression_level INTEGER,
+      has_comment BOOLEAN DEFAULT 0,
       FOREIGN KEY (archive_id) REFERENCES scanned_files(id) ON DELETE CASCADE
     );
 
     CREATE INDEX IF NOT EXISTS idx_archive_contents_archive ON archive_contents(archive_id);
+    CREATE INDEX IF NOT EXISTS idx_archive_contents_compression ON archive_contents(compression_level);
+    CREATE INDEX IF NOT EXISTS idx_archive_contents_comment ON archive_contents(has_comment);
 
     -- Table des correspondances entre DAT et fichiers scannés
     CREATE TABLE IF NOT EXISTS rom_matches (
@@ -198,6 +210,21 @@ async function initSchema(db: Database): Promise<void> {
     CREATE INDEX IF NOT EXISTS idx_rom_matches_dat ON rom_matches(dat_rom_id);
     CREATE INDEX IF NOT EXISTS idx_rom_matches_file ON rom_matches(scanned_file_id);
   `);
+  
+  // Initialiser la version du schéma si elle n'existe pas
+  const schemaVersion = await db.get<{ value: string }>(
+    'SELECT value FROM metadata WHERE key = ?',
+    ['schema_version']
+  );
+  
+  if (!schemaVersion) {
+    await db.run(
+      'INSERT INTO metadata (key, value) VALUES (?, ?)',
+      ['schema_version', currentSchemaVersion]
+    );
+  }
+
+  console.log(`✅ Base de données initialisée (schéma v${currentSchemaVersion})`);
 }
 
 // Fonctions helper pour les métadonnées
@@ -230,3 +257,42 @@ export async function clearDatabase(db: Database): Promise<void> {
   `);
   console.log('Base de données vidée');
 }
+
+/*async function migrateSchemaIfNeeded(db: Database): Promise<void> {
+  const result = await db.get<{ value: string }>(
+    'SELECT value FROM metadata WHERE key = ?',
+    ['schema_version']
+  );
+  
+  const currentVersion = result ? parseInt(result.value) : 0;
+  
+  if (currentVersion < 1) {
+    // Migration vers v1 (pour bases créées avant v1.0)
+    await migrateToV1(db);
+  }
+  
+  if (currentVersion < 2) {
+    // Migration vers v2 (seulement si nécessaire un jour)
+    await migrateToV2(db);
+  }
+  
+  // etc.
+}*/
+
+/*async function migrateToV1(db: Database): Promise<void> {
+  console.log('Migration vers schéma v1...');
+  
+  await db.exec(`
+    -- Ajouter colonnes si elles n'existent pas
+    ALTER TABLE scanned_files ADD COLUMN compression_level INTEGER;
+    ALTER TABLE scanned_files ADD COLUMN has_comment BOOLEAN DEFAULT 0;
+    -- etc.
+  `);
+  
+  await db.run(
+    'UPDATE metadata SET value = ? WHERE key = ?',
+    ['1', 'schema_version']
+  );
+  
+  console.log('✅ Migration vers schéma v1 terminée');
+}*/

@@ -107,6 +107,7 @@ export interface DatabaseOpenResult {
   datPath: string | null;
   gamesCount: number;
   romsCount: number;
+  hasMatching: boolean;
   folders: Array<{
     path: string;
     fileCount: number;
@@ -204,20 +205,67 @@ export interface ArchiveCompatAPI {
   resetConfig: (systemId: string) => Promise<any>;
 }
 
-// Interface pour les résultats de matching
-export interface MatchingResult {
-  matches: any[];
-  stats: {
-    totalDatRoms: number;
-    perfectMatches: number;
-    goodMatches: number;
-    partialMatches: number;
-    missingRoms: number;
-    extraFiles: number;
-  };
+
+// ========================================
+// INTERFACES POUR LE MATCHING
+// ========================================
+
+/**
+ * Interface pour un match de ROM individuel
+ */
+export interface RomMatch {
+  datRomId: number;
+  datRomName: string;
+  gameName: string;
+  gameId: number;
+  scannedFileId?: number;
+  scannedFileName?: string;
+  scannedFilePath?: string;
+  archiveContentId?: number;
+  archiveFileName?: string;
+  archiveType?: string;  // 'zip', '7z', 'rar', 'iso', 'cso', 'chd', ou undefined pour fichiers non compressés
+  matchType: 'perfect' | 'none';
+  matchedBy: string[]; // ['crc32'] ou ['md5'] ou ['sha1'] ou combinaison
+  priorityScore: number; // Score de priorité basé sur le type d'archive (plus élevé = meilleur)
 }
 
-// Interface pour les contenus de dossiers
+/**
+ * Interface pour le statut de matching d'un jeu complet
+ */
+export interface GameMatchStatus {
+  gameId: number;
+  gameName: string;
+  totalRoms: number;
+  matchedRoms: number;
+  status: 'complete' | 'partial' | 'missing'; // ✅ | ⚠️ | ❌
+}
+
+/**
+ * Interface pour les statistiques globales de matching
+ */
+export interface MatchingStats {
+  totalGames: number;
+  completeGames: number;
+  partialGames: number;
+  missingGames: number;
+  totalDatRoms: number;
+  matchedRoms: number;
+  missingRoms: number;
+  extraFiles: number;
+}
+
+/**
+ * Interface pour les résultats de matching
+ */
+export interface MatchingResult {
+  matches: RomMatch[];
+  gameStatuses: GameMatchStatus[];
+  stats: MatchingStats;
+}
+
+/**
+ * Interface pour les contenus de dossiers
+ */
 export interface FolderContent {
   folders: Array<{
     path: string;
@@ -248,9 +296,14 @@ export interface FolderContent {
   }>;
 }
 
-// Déclaration globale pour étendre l'interface Window
+// ========================================
+// DÉCLARATION GLOBALE DES API POUR ETENDRE L'INTERFACE WINDOW
+// ========================================
 declare global {
   interface Window {
+    // ========================================
+    // API GÉNÉRIQUES (window.api)
+    // ========================================
     api: {
       // ========================================
       // API de boîtes de dialogue génériques
@@ -439,6 +492,35 @@ declare global {
       // ========================================
       archive: ArchiveAPI;
       
+      
+      // ========================================
+      // API de gestion des archives (NOUVELLES MÉTHODES)
+      // ========================================
+      
+      /**
+       * Efface les commentaires d'une archive (ZIP uniquement).
+       * @param archivePath - Le chemin de l'archive.
+       * @returns Un objet avec le statut de succès.
+       */
+      clearArchiveComments: (archivePath: string) => Promise<{ success: boolean; error?: string }>;
+      
+      /**
+       * Ajoute des fichiers à une archive existante (ZIP, 7z).
+       * @param archivePath - Le chemin de l'archive.
+       * @param files - Les chemins des fichiers à ajouter.
+       * @param compressionLevel - Le niveau de compression optionnel (0-9).
+       * @returns Un objet avec le statut de succès.
+       */
+      addFilesToArchive: (archivePath: string, files: string[], compressionLevel?: number) => Promise<{ success: boolean; error?: string }>;
+      
+      /**
+       * Supprime des fichiers d'une archive existante (ZIP, 7z).
+       * @param archivePath - Le chemin de l'archive.
+       * @param files - Les noms des fichiers à supprimer (chemins relatifs dans l'archive).
+       * @returns Un objet avec le statut de succès.
+       */
+      deleteFilesFromArchive: (archivePath: string, files: string[]) => Promise<{ success: boolean; error?: string }>;
+      
       // ========================================
       // API de compatibilité des archives
       // ========================================
@@ -459,14 +541,21 @@ declare global {
        * Récupère la liste des ROMs manquantes.
        * @returns La liste des ROMs manquantes.
        */
-      getMissingRoms: () => Promise<Array<{
-        datRomId: number;
-        datRomName: string;
-        gameName: string;
-        matchType: string;
-        matchScore: number;
-        matchedBy: string[];
-      }>>;
+      getMissingRoms: () => Promise<RomMatch[]>;
+      
+      /**
+       * Récupère les statuts de matching pour tous les jeux.
+       * @returns La liste des statuts par jeu.
+       */
+      getGameMatchStatuses: () => Promise<GameMatchStatus[]>;
+
+      /**
+       * Récupère les matches d'un jeu spécifique depuis la base de données.
+       * Ne relance PAS le matching complet.
+       * @param gameId - L'ID du jeu.
+       * @returns La liste des matches pour ce jeu.
+       */
+      getMatchesForGame: (gameId: number) => Promise<RomMatch[]>;
       
       /**
        * Récupère la liste des fichiers non matchés.

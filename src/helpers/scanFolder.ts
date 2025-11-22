@@ -36,6 +36,9 @@ export interface ArchiveContent {
   fileName: string;
   size: number;
   hashes?: FileHash;
+  compressionLevel?: number;    // Niveau de compression numérique de l'archive
+  hasComment?: boolean;         // Ce fichier a-t-il un commentaire individuel ?
+  hasGlobalComment?: boolean;   // L'archive a-t-elle un commentaire global ? (même valeur pour tous les fichiers)
 }
 
 export interface FolderStructure {
@@ -102,13 +105,17 @@ async function scanDirectoryRecursive(
         
         try {
           // Lister le contenu via archiveManager
+          // Les données compressionLevel, hasComment et hasGlobalComment sont déjà incluses
           const archiveContents = await archiveManager.listArchive(fullPath);
           
-          // Convertir au format attendu
+          // Récupérer TOUTES les infos retournées par list()
           scannedFile.contents = archiveContents.map(content => ({
             fileName: content.fileName,
             size: content.size,
-            hashes: content.hashes
+            hashes: content.hashes,
+            compressionLevel: content.compressionLevel,
+            hasComment: content.hasComment,
+            hasGlobalComment: content.hasGlobalComment
           }));
           
           console.log(`✅ Archive: ${entry.name} (${scannedFile.archiveType}) - ${scannedFile.contents.length} fichiers`);
@@ -170,17 +177,28 @@ export async function saveScanResultsWithStructure(
       // Insérer les fichiers de ce dossier
       const insertFile = db.prepare(`
         INSERT OR REPLACE INTO scanned_files 
-        (folder_id, file_path, file_name, size, crc32, md5, sha1, is_archive, archive_type)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+        (folder_id, file_path, file_name, size, crc32, md5, sha1, is_archive, archive_type, compression_level, has_comment, has_global_comment)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       `);
 
       const insertArchiveContent = db.prepare(`
         INSERT INTO archive_contents
-        (archive_id, file_name, size, crc32, md5, sha1)
-        VALUES (?, ?, ?, ?, ?, ?)
+        (archive_id, file_name, size, crc32, md5, sha1, compression_level, has_comment)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
       `);
 
       for (const file of struct.files) {
+        // Calculer has_comment et has_global_comment pour scanned_files
+        let hasComment = false;
+        let hasGlobalComment = false;
+        
+        if (file.contents && file.contents.length > 0) {
+          // has_comment : true si commentaire global OU au moins un fichier avec commentaire
+          hasGlobalComment = file.contents[0].hasGlobalComment || false;
+          const hasFileComment = file.contents.some(c => c.hasComment);
+          hasComment = hasGlobalComment || hasFileComment;
+        }
+        
         const fileResult = await new Promise<{ lastID: number }>((resolve, reject) => {
           insertFile.run(
             folderId,
@@ -192,6 +210,9 @@ export async function saveScanResultsWithStructure(
             file.hashes.sha1,
             file.isArchive ? 1 : 0,
             file.archiveType || null,
+            file.contents && file.contents.length > 0 ? file.contents[0].compressionLevel || null : null,
+            hasComment ? 1 : 0,              // has_comment: global OU au moins un fichier
+            hasGlobalComment ? 1 : 0,        // has_global_comment: commentaire global
             function(this: any, err: Error | null) {
               err ? reject(err) : resolve({ lastID: this.lastID })
             }
@@ -210,7 +231,11 @@ export async function saveScanResultsWithStructure(
                   content.hashes?.crc32 || null,
                   content.hashes?.md5 || null,
                   content.hashes?.sha1 || null,
-                  (err: Error | null) => err ? reject(err) : resolve()
+                  content.compressionLevel || null,
+                  content.hasComment ? 1 : 0,    // hasComment du fichier individuel
+                  function(this: any, err: Error | null) {
+                    err ? reject(err) : resolve()
+                  }
                 );
               })
             )
