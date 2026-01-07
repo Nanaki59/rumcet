@@ -471,7 +471,7 @@ function updateLeftSidebar() {
       const datFileName = currentDatPath.split(/[\\\/]/).pop() || 'Fichier DAT';
 
       div.innerHTML = `
-        <div style="font-weight: 600; margin-bottom: 5px;">📖 ${datFileName}</div>
+        <div style="font-weight: 600; margin-bottom: 5px;">${datFileName}</div>
         <div style="font-size: 11px; color: #7f8c8d; line-height: 1.4;">
           ${currentDatInfo.name ? `<div><strong>Nom:</strong> ${currentDatInfo.name}</div>` : ''}
           ${currentDatInfo.description ? `<div><strong>Description:</strong> ${currentDatInfo.description}</div>` : ''}
@@ -499,7 +499,7 @@ function updateLeftSidebar() {
       
       const name = folder.path.split(/[\\\/]/).pop() || folder.path;
       div.innerHTML = `
-        <div>${name}</div>
+        <div style="font-weight: 600; margin-bottom: 5px;">${name}</div>
         <div style="font-size: 11px; color: #7f8c8d;">${folder.fileCount} fichiers</div>
       `;
       
