@@ -378,6 +378,26 @@ function updateBreadcrumb(path: string) {
   });
 }
 
+// Mise à jour du bandeau d'information de la base de données
+function updateDbInfoBanner() {
+  const dbName = document.getElementById('db-info-name');
+  const dbPath = document.getElementById('db-info-path');
+
+  if (!dbName || !dbPath) return;
+
+  if (currentDbPath) {
+    const name = currentDbPath.split(/[\\\/]/).pop() || 'Base de données';
+    dbName.textContent = name;
+    dbPath.textContent = currentDbPath;
+    dbPath.title = currentDbPath; // Tooltip pour voir le chemin complet
+  } else {
+    // Vider les champs quand il n'y a pas de base de données
+    dbName.textContent = '';
+    dbPath.textContent = '';
+    dbPath.title = '';
+  }
+}
+
 // Réinitialisation de l'interface
 function resetInterface() {
   currentDatPath = null;
@@ -388,20 +408,25 @@ function resetInterface() {
   currentFolderPath = null;
   currentRootFolder = null; // Réinitialiser le dossier racine
   breadcrumbPath = [];
+
+  // Masquer le bandeau d'info DB
+  updateDbInfoBanner();
   
   const elements = {
     datSelect: document.getElementById('dat-select') as HTMLButtonElement,
     dbCreate: document.getElementById('db-create') as HTMLButtonElement,
     datLoad: document.getElementById('dat-load') as HTMLButtonElement,
     romAddFolder: document.getElementById('rom-add-folder') as HTMLButtonElement,
+    romAddFolderSidebar: document.getElementById('rom-add-folder-sidebar') as HTMLButtonElement,
     datQuickLoad: document.getElementById('dat-quick-load') as HTMLButtonElement,
     matchRoms: document.getElementById('match-roms') as HTMLButtonElement
   };
-  
+
   if (elements.datSelect) elements.datSelect.disabled = false;
   if (elements.dbCreate) elements.dbCreate.disabled = true;
   if (elements.datLoad) elements.datLoad.disabled = true;
   if (elements.romAddFolder) elements.romAddFolder.disabled = true;
+  if (elements.romAddFolderSidebar) elements.romAddFolderSidebar.disabled = true;
   if (elements.datQuickLoad) elements.datQuickLoad.disabled = false;
   if (elements.matchRoms) elements.matchRoms.disabled = true;
   
@@ -435,28 +460,26 @@ function resetInterface() {
 function updateLeftSidebar() {
   const datList = document.getElementById('dat-list');
   const folderList = document.getElementById('folder-list');
-  
+
+  // Section "Fichier DAT" - afficher uniquement les informations du DAT
   if (datList) {
     datList.innerHTML = '';
-    if (currentDbPath) {
-      const dbName = currentDbPath.split(/[\\\/]/).pop() || 'Base de données';
+    if (currentDatPath && currentDatInfo) {
       const div = document.createElement('div');
       div.className = 'sidebar-item';
 
-      // Afficher plus d'infos si disponibles
-      const datInfo = currentDatInfo;
+      const datFileName = currentDatPath.split(/[\\\/]/).pop() || 'Fichier DAT';
 
       div.innerHTML = `
-        <div>🗄️ ${dbName}</div>
-        <div style="font-size: 11px; color: #7f8c8d;">
-          DAT: ${currentDatPath?.split(/[\\\/]/).pop() || 'N/A'}
-          ${datInfo?.name ? `<br>Name: ${datInfo.name}` : ''}
-          ${datInfo?.description ? `<br>Description: ${datInfo.description}` : ''}
-          ${datInfo?.version ? `<br>Version: ${datInfo.version}` : ''}
-          ${datInfo?.date ? `<br>Date: ${datInfo.date}` : ''}
-          ${datInfo?.author ? `<br>Author: ${datInfo.author}` : ''}
-          ${datInfo?.homepage ? `<br>Homepage: ${datInfo.homepage}` : ''}
-          ${datInfo?.url ? `<br>URL: ${datInfo.url}` : ''}
+        <div style="font-weight: 600; margin-bottom: 5px;">📖 ${datFileName}</div>
+        <div style="font-size: 11px; color: #7f8c8d; line-height: 1.4;">
+          ${currentDatInfo.name ? `<div><strong>Nom:</strong> ${currentDatInfo.name}</div>` : ''}
+          ${currentDatInfo.description ? `<div><strong>Description:</strong> ${currentDatInfo.description}</div>` : ''}
+          ${currentDatInfo.version ? `<div><strong>Version:</strong> ${currentDatInfo.version}</div>` : ''}
+          ${currentDatInfo.date ? `<div><strong>Date:</strong> ${currentDatInfo.date}</div>` : ''}
+          ${currentDatInfo.author ? `<div><strong>Auteur:</strong> ${currentDatInfo.author}</div>` : ''}
+          ${currentDatInfo.homepage ? `<div><strong>Homepage:</strong> ${currentDatInfo.homepage}</div>` : ''}
+          ${currentDatInfo.url ? `<div><strong>URL:</strong> ${currentDatInfo.url}</div>` : ''}
         </div>
       `;
       div.addEventListener('click', () => {
@@ -1262,7 +1285,10 @@ async function openExistingDatabase() {
       currentDbPath = result.dbPath;
       currentDatPath = result.datPath;
       currentDatInfo = result.datInfo || null;
-      
+
+      // Mettre à jour le bandeau d'info DB
+      updateDbInfoBanner();
+
       log(`Base de données ouverte : ${result.dbPath}`, { context: 'database', state: 'success' });
       log(`Jeux trouvés : ${result.gamesCount}`, { context: 'game', state: 'count' });
       log(`ROMs référencées : ${result.romsCount}`, { context: 'romfile', state: 'count' });
@@ -1273,9 +1299,11 @@ async function openExistingDatabase() {
       }
       
       const romAddFolderButton = document.getElementById('rom-add-folder') as HTMLButtonElement;
+      const romAddFolderButtonSidebar = document.getElementById('rom-add-folder-sidebar') as HTMLButtonElement;
       const matchRomsButton = document.getElementById('match-roms') as HTMLButtonElement;
-      
+
       if (romAddFolderButton) romAddFolderButton.disabled = false;
+      if (romAddFolderButtonSidebar) romAddFolderButtonSidebar.disabled = false;
       if (matchRomsButton) matchRomsButton.disabled = false;
       
       updateLeftSidebar();
@@ -1609,6 +1637,7 @@ const datSelectButton = document.getElementById('dat-select') as HTMLButtonEleme
 const dbCreateButton = document.getElementById('db-create') as HTMLButtonElement;
 const datLoadButton = document.getElementById('dat-load') as HTMLButtonElement;
 const romAddFolderButton = document.getElementById('rom-add-folder') as HTMLButtonElement;
+const romAddFolderButtonSidebar = document.getElementById('rom-add-folder-sidebar') as HTMLButtonElement;
 const datQuickLoadButton = document.getElementById('dat-quick-load') as HTMLButtonElement;
 const matchRomsButton = document.getElementById('match-roms') as HTMLButtonElement;
 
@@ -1651,6 +1680,10 @@ dbCreateButton?.addEventListener('click', async () => {
     if (resultCreateDb) {
       log(`Base de données créée : ${resultCreateDb.dbPath}`, { context: 'database', state: 'success' });
       currentDbPath = resultCreateDb.dbPath;
+
+      // Mettre à jour le bandeau d'info DB
+      updateDbInfoBanner();
+
       datLoadButton.disabled = false;
     } else {
       log('Création annulée.', { context: 'database', state: 'cancel' });
@@ -1683,6 +1716,7 @@ datLoadButton?.addEventListener('click', async () => {
     currentDatInfo = resultLoadDatFile.datInfo || null;
     //console.log('DEBUG - resultLoadDatFile:', resultLoadDatFile);
     romAddFolderButton.disabled = false;
+    romAddFolderButtonSidebar.disabled = false;
     //matchRomsButton.disabled = false;
     updateLeftSidebar();
     //console.log('DEBUG - Avant displayInitialReport, gamesCount:', resultLoadDatFile.gamesCount);
@@ -1701,8 +1735,8 @@ datLoadButton?.addEventListener('click', async () => {
   }
 });
 
-// Étape 4 : Ajout de dossier de ROMs
-romAddFolderButton?.addEventListener('click', async () => {
+// Fonction réutilisable pour ajouter des dossiers de ROMs
+async function addRomsFolders() {
   if (!currentDbPath) {
     log('Veuillez d\'abord créer une base de données !', { severity: 'warning', context: 'folder' });
     return;
@@ -1711,6 +1745,7 @@ romAddFolderButton?.addEventListener('click', async () => {
   try {
     datQuickLoadButton.disabled = true;
     romAddFolderButton.disabled = true;
+    romAddFolderButtonSidebar.disabled = true;
     log('Sélection du/des dossier(s)...', { context: 'folder', state: 'question' });
 
     const folderPaths = await window.api.selectRomFolders();
@@ -1745,8 +1780,15 @@ romAddFolderButton?.addEventListener('click', async () => {
     log(`Erreur : ${error instanceof Error ? error.message : String(error)}`, { severity: 'error', context: 'folder' });
   } finally {
     romAddFolderButton.disabled = false;
+    romAddFolderButtonSidebar.disabled = false;
   }
-});
+}
+
+// Étape 4 : Ajout de dossier de ROMs
+romAddFolderButton?.addEventListener('click', addRomsFolders);
+
+// Bouton sidebar pour ajouter des dossiers de ROMs
+romAddFolderButtonSidebar?.addEventListener('click', addRomsFolders);
 
 // Étape 5 : Handler pour le matching
 matchRomsButton?.addEventListener('click', runMatching);
@@ -1760,6 +1802,7 @@ datQuickLoadButton?.addEventListener('click', async () => {
     dbCreateButton.disabled = allDisabled;
     datLoadButton.disabled = allDisabled;
     romAddFolderButton.disabled = allDisabled;
+    romAddFolderButtonSidebar.disabled = allDisabled;
 
     log('Ouverture de la boîte de dialogue...', { context: 'dat', state: 'question' });
 
@@ -1791,7 +1834,12 @@ datQuickLoadButton?.addEventListener('click', async () => {
 
     currentDbPath = resultQuick.dbPath;
     currentDatInfo = resultQuick.datInfo || null;
+
+    // Mettre à jour le bandeau d'info DB
+    updateDbInfoBanner();
+
     romAddFolderButton.disabled = false;
+    romAddFolderButtonSidebar.disabled = false;
     matchRomsButton.disabled = false;
     updateLeftSidebar();
     

@@ -140,3 +140,6 @@ vite.config.ts.timestamp-*
 
 # RUMCET development files
 LICENSE_HEADER
+
+#Claude AI
+CLAUDE.md
