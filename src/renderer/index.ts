@@ -27,6 +27,12 @@ let currentSearchQuery: string = '';
 let currentSearchScope: 'all' | 'games' | 'files' | 'archives' = 'all';
 let originalContent: HTMLElement[] = [];
 
+// Variables pour le groupement et le filtrage
+let currentGroupBy: 'none' | 'category' | 'letter' = 'none';
+let activeFilters: Set<string> = new Set();
+let allGames: GameInfo[] = [];
+let categoryCounts: Map<string, number> = new Map();
+
 // Types pour l'application
 interface GameInfo {
   id: number;
@@ -398,6 +404,65 @@ function updateDbInfoBanner() {
   }
 }
 
+// Fonction centralisée pour mettre à jour l'état des boutons workflow et des menus
+function updateWorkflowButtons() {
+  const elements = {
+    datSelect: document.getElementById('dat-select') as HTMLButtonElement,
+    dbCreate: document.getElementById('db-create') as HTMLButtonElement,
+    datLoad: document.getElementById('dat-load') as HTMLButtonElement,
+    romAddFolder: document.getElementById('rom-add-folder') as HTMLButtonElement,
+    romAddFolderSidebar: document.getElementById('rom-add-folder-sidebar') as HTMLButtonElement,
+    datQuickLoad: document.getElementById('dat-quick-load') as HTMLButtonElement,
+    matchRoms: document.getElementById('match-roms') as HTMLButtonElement
+  };
+
+  // Logique de mise à jour basée sur l'état de l'application
+
+  // Bouton "Chargement rapide" : toujours disponible
+  if (elements.datQuickLoad) {
+    elements.datQuickLoad.disabled = false;
+  }
+
+  // Bouton "Sélectionner DAT/XML" : disponible si aucun DAT n'est sélectionné
+  if (elements.datSelect) {
+    elements.datSelect.disabled = currentDatPath !== null;
+  }
+
+  // Bouton "Créer base de données" : disponible si DAT sélectionné mais pas de DB
+  if (elements.dbCreate) {
+    elements.dbCreate.disabled = !(currentDatPath && !currentDbPath);
+  }
+
+  // Bouton "Charger DAT" : disponible si DAT et DB existent mais DAT pas encore chargé
+  if (elements.datLoad) {
+    elements.datLoad.disabled = !(currentDatPath && currentDbPath && !currentDatInfo);
+  }
+
+  // Boutons "Ajouter dossier ROMs" : disponibles si currentDatPath existe ET currentDbPath existe ET DAT chargé dans la base
+  const canAddRoms = currentDatPath !== null && currentDbPath !== null && currentDatInfo !== null;
+  if (elements.romAddFolder) {
+    elements.romAddFolder.disabled = !canAddRoms;
+  }
+  if (elements.romAddFolderSidebar) {
+    elements.romAddFolderSidebar.disabled = !canAddRoms;
+  }
+
+  // Bouton "Matcher les ROMs" : disponible si des dossiers de ROMs ont été ajoutés
+  if (elements.matchRoms) {
+    elements.matchRoms.disabled = !(canAddRoms && loadedFolders.length > 0);
+  }
+
+  // Mettre à jour l'état des entrées du menu principal
+  const canLoadDat = !currentDatInfo; // On peut charger un DAT si pas déjà chargé (workflow rapide toujours disponible)
+  const canCloseDatabase = currentDbPath !== null; // On peut fermer la DB si une DB est ouverte
+
+  window.api.updateMenuState({
+    canLoadDat,
+    canAddFolder: canAddRoms,
+    canCloseDatabase
+  });
+}
+
 // Réinitialisation de l'interface
 function resetInterface() {
   currentDatPath = null;
@@ -411,7 +476,7 @@ function resetInterface() {
 
   // Masquer le bandeau d'info DB
   updateDbInfoBanner();
-  
+
   const elements = {
     datSelect: document.getElementById('dat-select') as HTMLButtonElement,
     dbCreate: document.getElementById('db-create') as HTMLButtonElement,
@@ -429,9 +494,9 @@ function resetInterface() {
   if (elements.romAddFolderSidebar) elements.romAddFolderSidebar.disabled = true;
   if (elements.datQuickLoad) elements.datQuickLoad.disabled = false;
   if (elements.matchRoms) elements.matchRoms.disabled = true;
-  
+
   updateLeftSidebar();
-  
+
   const gameList = document.getElementById('game-list');
   if (gameList) {
     gameList.innerHTML = `
@@ -448,10 +513,10 @@ function resetInterface() {
       </div>
     `;
   }
-  
+
   const breadcrumb = document.getElementById('breadcrumb');
   if (breadcrumb) breadcrumb.style.display = 'none';
-  
+
   const viewControls = document.getElementById('view-controls');
   if (viewControls) viewControls.style.display = 'none';
 }
@@ -471,8 +536,13 @@ function updateLeftSidebar() {
       const datFileName = currentDatPath.split(/[\\\/]/).pop() || 'Fichier DAT';
 
       div.innerHTML = `
-        <div style="font-weight: 600; margin-bottom: 5px;">${datFileName}</div>
-        <div style="font-size: 11px; color: #7f8c8d; line-height: 1.4;">
+        <div class="dat-header" style="display: flex; justify-content: space-between; align-items: center; font-weight: 600; margin-bottom: 5px;">
+          <span>${datFileName}</span>
+          <button class="dat-toggle-btn collapsed" title="Afficher/Masquer les détails">
+            <span class="chevron">▲</span>
+          </button>
+        </div>
+        <div class="dat-details collapsed" style="font-size: 11px; color: #7f8c8d; line-height: 1.4;">
           ${currentDatInfo.name ? `<div><strong>Nom:</strong> ${currentDatInfo.name}</div>` : ''}
           ${currentDatInfo.description ? `<div><strong>Description:</strong> ${currentDatInfo.description}</div>` : ''}
           ${currentDatInfo.version ? `<div><strong>Version:</strong> ${currentDatInfo.version}</div>` : ''}
@@ -482,9 +552,24 @@ function updateLeftSidebar() {
           ${currentDatInfo.url ? `<div><strong>URL:</strong> ${currentDatInfo.url}</div>` : ''}
         </div>
       `;
-      div.addEventListener('click', () => {
-        selectSidebarItem(div, 'dat', currentDbPath!);
+
+      // Gestion du clic sur le bouton chevron
+      const toggleBtn = div.querySelector('.dat-toggle-btn') as HTMLButtonElement;
+      const detailsDiv = div.querySelector('.dat-details') as HTMLDivElement;
+
+      toggleBtn?.addEventListener('click', (e) => {
+        e.stopPropagation(); // Empêcher la sélection du sidebar-item
+        toggleBtn.classList.toggle('collapsed');
+        detailsDiv.classList.toggle('collapsed');
       });
+
+      // Gestion du clic sur l'élément (sauf le bouton)
+      div.addEventListener('click', (e) => {
+        if (!(e.target as HTMLElement).closest('.dat-toggle-btn')) {
+          selectSidebarItem(div, 'dat', currentDbPath!);
+        }
+      });
+
       datList.appendChild(div);
     }
   }
@@ -496,19 +581,51 @@ function updateLeftSidebar() {
       div.className = 'sidebar-item';
       div.dataset.type = 'folder';
       div.dataset.path = folder.path;
-      
+
       const name = folder.path.split(/[\\\/]/).pop() || folder.path;
       div.innerHTML = `
-        <div style="font-weight: 600; margin-bottom: 5px;">${name}</div>
-        <div style="font-size: 11px; color: #7f8c8d;">${folder.fileCount} fichiers</div>
+        <div class="folder-header" style="display: flex; justify-content: space-between; align-items: center; gap: 8px;">
+          <div style="flex: 1; min-width: 0;">
+            <div style="font-weight: 600; margin-bottom: 5px;">${name}</div>
+            <div style="font-size: 11px; color: #7f8c8d;">${folder.fileCount} fichiers</div>
+          </div>
+          <button class="folder-remove-btn" title="Retirer le dossier de la base de données">×</button>
+        </div>
       `;
-      
-      // Clic gauche pour sélectionner
-      div.addEventListener('click', () => selectSidebarItem(div, 'folder', folder.path));
-      
+
+      // Gestion du clic sur le bouton de suppression
+      const removeBtn = div.querySelector('.folder-remove-btn') as HTMLButtonElement;
+      removeBtn?.addEventListener('click', async (e) => {
+        e.stopPropagation(); // Empêcher la sélection du sidebar-item
+
+        const confirmed = confirm(`Êtes-vous sûr de vouloir retirer "${folder.path}" de la base de données ?`);
+        if (confirmed) {
+          try {
+            await window.api.removeFolder(folder.path);
+            log(`Dossier retiré de la base : ${folder.path}`, { context: 'folder', state: 'deleted' });
+
+            // Retirer de la liste
+            loadedFolders = loadedFolders.filter(f => f.path !== folder.path);
+            updateLeftSidebar();
+
+            // Mettre à jour l'état des boutons workflow
+            updateWorkflowButtons();
+          } catch (error) {
+            log(`Erreur lors du retrait du dossier : ${error instanceof Error ? error.message : String(error)}`, { severity: 'error', context: 'folder' });
+          }
+        }
+      });
+
+      // Clic gauche pour sélectionner (sauf sur le bouton)
+      div.addEventListener('click', (e) => {
+        if (!(e.target as HTMLElement).closest('.folder-remove-btn')) {
+          selectSidebarItem(div, 'folder', folder.path);
+        }
+      });
+
       // Clic droit pour menu contextuel
       div.addEventListener('contextmenu', (e) => showContextMenu(e, div));
-      
+
       folderList.appendChild(div);
     });
   }
@@ -584,18 +701,32 @@ async function updateCenterContent(type: 'dat' | 'folder', path: string) {
   if (!gameList) return;
   
   gameList.innerHTML = '<div style="padding: 20px; text-align: center;">Chargement...</div>';
-  
+
   try {
     if (type === 'dat') {
       const games = await window.api.listGames();
-      displayGames(games);
-      
+
+      // Sauvegarder les jeux et initialiser le système de groupement/filtrage
+      allGames = games;
+      categoryCounts = extractCategoryCounts(games);
+      activeFilters.clear();
+
+      // Générer les boutons de filtrage
+      generateCategoryFilters();
+
+      // Afficher les jeux
+      applyFiltersAndGrouping();
+
+      // Afficher la barre de groupement/filtrage
+      const groupFilterBar = document.getElementById('group-filter-bar');
+      if (groupFilterBar) groupFilterBar.style.display = 'block';
+
       // Masquer les contrôles de vue et le breadcrumb
       const viewControls = document.getElementById('view-controls');
       if (viewControls) viewControls.style.display = 'none';
       const breadcrumb = document.getElementById('breadcrumb');
       if (breadcrumb) breadcrumb.style.display = 'none';
-      
+
       // Afficher la barre de recherche pour les jeux DAT
       const searchBar = document.getElementById('search-bar');
       if (searchBar) {
@@ -609,11 +740,15 @@ async function updateCenterContent(type: 'dat' | 'folder', path: string) {
     } else {
       currentFolderPath = path;
       await updateFolderContent(path);
-      
+
+      // Masquer la barre de groupement/filtrage pour les dossiers
+      const groupFilterBar = document.getElementById('group-filter-bar');
+      if (groupFilterBar) groupFilterBar.style.display = 'none';
+
       // Afficher les contrôles de vue
       const viewControls = document.getElementById('view-controls');
       if (viewControls) viewControls.style.display = 'flex';
-      
+
       // Afficher la barre de recherche pour les dossiers
       const searchBar = document.getElementById('search-bar');
       if (searchBar) {
@@ -756,9 +891,10 @@ function getIconGameCategory(category: string | undefined) {
 function displayGames(games: GameInfo[]) {
   const gameList = document.getElementById('game-list');
   if (!gameList) return;
-  
+
   gameList.innerHTML = '';
-  
+  gameList.classList.remove('has-groups');
+
   if (games.length === 0) {
     gameList.innerHTML = '<div style="padding: 20px; text-align: center;">Aucun jeu trouvé</div>';
     return;
@@ -804,6 +940,179 @@ function displayGames(games: GameInfo[]) {
 
     item.addEventListener('click', () => selectGame(item, game));
     gameList.appendChild(item);
+  });
+}
+
+// Extraction des catégories et comptage
+function extractCategoryCounts(games: GameInfo[]): Map<string, number> {
+  const counts = new Map<string, number>();
+
+  games.forEach(game => {
+    const category = game.category || 'Non catégorisé';
+    counts.set(category, (counts.get(category) || 0) + 1);
+  });
+
+  return counts;
+}
+
+// Génération des boutons de filtrage par catégorie
+function generateCategoryFilters() {
+  const filtersContainer = document.getElementById('category-filters');
+  if (!filtersContainer) return;
+
+  filtersContainer.innerHTML = '';
+
+  if (categoryCounts.size === 0) {
+    filtersContainer.innerHTML = '<span style="color: #7f8c8d; font-size: 12px;">Aucune catégorie disponible</span>';
+    return;
+  }
+
+  // Trier les catégories par ordre alphabétique
+  const sortedCategories = Array.from(categoryCounts.entries()).sort((a, b) => a[0].localeCompare(b[0]));
+
+  sortedCategories.forEach(([category, count]) => {
+    const btn = document.createElement('button');
+    btn.className = 'category-filter-btn';
+    btn.innerHTML = `
+      <span>${category}</span>
+      <span class="count">${count}</span>
+    `;
+
+    btn.addEventListener('click', () => {
+      if (activeFilters.has(category)) {
+        activeFilters.delete(category);
+        btn.classList.remove('active');
+      } else {
+        activeFilters.add(category);
+        btn.classList.add('active');
+      }
+      applyFiltersAndGrouping();
+      updateGroupFilterSummary();
+    });
+
+    filtersContainer.appendChild(btn);
+  });
+}
+
+// Application des filtres et du groupement
+function applyFiltersAndGrouping() {
+  let filteredGames = allGames;
+
+  // Appliquer les filtres de catégorie
+  if (activeFilters.size > 0) {
+    filteredGames = allGames.filter(game => {
+      const category = game.category || 'Non catégorisé';
+      return activeFilters.has(category);
+    });
+  }
+
+  // Mettre à jour les compteurs globaux
+  updateGlobalCounters(filteredGames.length, allGames.length);
+
+  // Afficher les jeux avec ou sans groupement
+  if (currentGroupBy === 'none') {
+    displayGames(filteredGames);
+  } else {
+    displayGroupedGames(filteredGames);
+  }
+}
+
+// Mise à jour des compteurs globaux
+function updateGlobalCounters(displayed: number, total: number) {
+  const counterDiv = document.getElementById('global-counters');
+  if (!counterDiv) return;
+
+  counterDiv.innerHTML = `<strong>${displayed}</strong> affiché${displayed > 1 ? 's' : ''} / <strong>${total}</strong>`;
+}
+
+// Affichage des jeux groupés
+function displayGroupedGames(games: GameInfo[]) {
+  const gameList = document.getElementById('game-list');
+  if (!gameList) return;
+
+  gameList.innerHTML = '';
+  gameList.classList.add('has-groups');
+
+  if (games.length === 0) {
+    gameList.innerHTML = '<div style="padding: 20px; text-align: center;">Aucun jeu trouvé</div>';
+    gameList.classList.remove('has-groups');
+    return;
+  }
+
+  // Grouper les jeux
+  const groups = new Map<string, GameInfo[]>();
+
+  games.forEach(game => {
+    let groupKey: string;
+
+    if (currentGroupBy === 'category') {
+      groupKey = game.category || 'Non catégorisé';
+    } else if (currentGroupBy === 'letter') {
+      groupKey = game.name.charAt(0).toUpperCase();
+      // Si le premier caractère n'est pas une lettre, utiliser '#'
+      if (!/[A-Z]/.test(groupKey)) {
+        groupKey = '#';
+      }
+    } else {
+      groupKey = 'Tous';
+    }
+
+    if (!groups.has(groupKey)) {
+      groups.set(groupKey, []);
+    }
+    groups.get(groupKey)!.push(game);
+  });
+
+  // Trier les groupes
+  const sortedGroups = Array.from(groups.entries()).sort((a, b) => {
+    // Pour le groupement par lettre, mettre '#' à la fin
+    if (currentGroupBy === 'letter') {
+      if (a[0] === '#') return 1;
+      if (b[0] === '#') return -1;
+    }
+    return a[0].localeCompare(b[0]);
+  });
+
+  // Afficher chaque groupe
+  sortedGroups.forEach(([groupName, groupGames]) => {
+    // Trier les jeux par nom dans chaque groupe
+    groupGames.sort((a, b) => a.name.localeCompare(b.name));
+
+    const groupDiv = document.createElement('div');
+    groupDiv.className = 'game-group';
+
+    const headerDiv = document.createElement('div');
+    headerDiv.className = 'game-group-header';
+    headerDiv.innerHTML = `
+      <span>${groupName}</span>
+      <span class="count">${groupGames.length}</span>
+    `;
+    groupDiv.appendChild(headerDiv);
+
+    const contentDiv = document.createElement('div');
+    contentDiv.className = 'game-group-content';
+
+    groupGames.forEach(game => {
+      const item = document.createElement('div');
+      item.className = 'list-item';
+      item.dataset.gameId = game.id.toString();
+
+      const icon = getIconGameCategory(game.category);
+
+      item.innerHTML = `
+        <div>
+          <div class="list-item-name">${icon} ${game.name}</div>
+          ${game.description ? `<div class="list-item-info">${game.description}</div>` : ''}
+          ${game.category ? `<div class="list-item-info"><strong>Categorie :</strong> ${game.category}</div>` : ''}
+        </div>
+      `;
+
+      item.addEventListener('click', () => selectGame(item, game));
+      contentDiv.appendChild(item);
+    });
+
+    groupDiv.appendChild(contentDiv);
+    gameList.appendChild(groupDiv);
   });
 }
 
@@ -1276,12 +1585,12 @@ function showModal(title: string, content: string) {
 async function openExistingDatabase() {
   try {
     log('Ouverture d\'une base de données...', { context: 'database', state: 'question' });
-    
+
     const result = await window.api.openDatabase();
-    
+
     if (result && result.success) {
       resetInterface();
-      
+
       currentDbPath = result.dbPath;
       currentDatPath = result.datPath;
       currentDatInfo = result.datInfo || null;
@@ -1292,22 +1601,17 @@ async function openExistingDatabase() {
       log(`Base de données ouverte : ${result.dbPath}`, { context: 'database', state: 'success' });
       log(`Jeux trouvés : ${result.gamesCount}`, { context: 'game', state: 'count' });
       log(`ROMs référencées : ${result.romsCount}`, { context: 'romfile', state: 'count' });
-      
+
       if (result.folders && result.folders.length > 0) {
         loadedFolders = result.folders;
         log(`Dossiers de ROMs trouvés : ${result.folders.length}`, { context: 'folder', state: 'count' });
       }
-      
-      const romAddFolderButton = document.getElementById('rom-add-folder') as HTMLButtonElement;
-      const romAddFolderButtonSidebar = document.getElementById('rom-add-folder-sidebar') as HTMLButtonElement;
-      const matchRomsButton = document.getElementById('match-roms') as HTMLButtonElement;
 
-      if (romAddFolderButton) romAddFolderButton.disabled = false;
-      if (romAddFolderButtonSidebar) romAddFolderButtonSidebar.disabled = false;
-      if (matchRomsButton) matchRomsButton.disabled = false;
-      
+      // Mettre à jour l'état des boutons workflow en fonction de l'état réel de la base de données
+      updateWorkflowButtons();
+
       updateLeftSidebar();
-      
+
       // Vérifier si un matching a déjà été effectué et afficher le rapport approprié
       if (result.hasMatching) {
         // Afficher le rapport complet depuis la base
@@ -1318,7 +1622,7 @@ async function openExistingDatabase() {
         await displayInitialReport(result.gamesCount, result.romsCount);
         log('📊 Rapport initial affiché (matching non effectué)', { context: 'match', state: 'waiting' });
       }
-      
+
       const datList = document.getElementById('dat-list');
       if (datList && datList.firstElementChild) {
         (datList.firstElementChild as HTMLElement).click();
@@ -1337,6 +1641,9 @@ async function closeDatabase() {
     if (closed) {
       log('Base de données fermée.', { context: 'database', state: 'complete' });
       resetInterface();
+
+      // Mettre à jour l'état des boutons workflow et des menus après fermeture
+      updateWorkflowButtons();
     }
   } catch (error) {
     log(`Erreur lors de la fermeture : ${error instanceof Error ? error.message : String(error)}`, { severity: 'error', context: 'database' });
@@ -1653,7 +1960,7 @@ datSelectButton?.addEventListener('click', async () => {
     if (filePath) {
       log(`Fichier DAT/XML sélectionné : ${filePath}`, { context: 'dat', state: 'select' });
       currentDatPath = filePath;
-      dbCreateButton.disabled = false;
+      updateWorkflowButtons();
     } else {
       log('Sélection annulée.', { context: 'dat', state: 'cancel' });
       datQuickLoadButton.disabled = false;
@@ -1684,7 +1991,7 @@ dbCreateButton?.addEventListener('click', async () => {
       // Mettre à jour le bandeau d'info DB
       updateDbInfoBanner();
 
-      datLoadButton.disabled = false;
+      updateWorkflowButtons();
     } else {
       log('Création annulée.', { context: 'database', state: 'cancel' });
       datQuickLoadButton.disabled = false;
@@ -1714,21 +2021,15 @@ datLoadButton?.addEventListener('click', async () => {
     log(`ROMs référencées : ${resultLoadDatFile.romsCount}`, { context: 'romfile', state: 'count' });
 
     currentDatInfo = resultLoadDatFile.datInfo || null;
-    //console.log('DEBUG - resultLoadDatFile:', resultLoadDatFile);
-    romAddFolderButton.disabled = false;
-    romAddFolderButtonSidebar.disabled = false;
-    //matchRomsButton.disabled = false;
     updateLeftSidebar();
-    //console.log('DEBUG - Avant displayInitialReport, gamesCount:', resultLoadDatFile.gamesCount);
-    
+
+    // Mettre à jour l'état des boutons workflow
+    updateWorkflowButtons();
+
     // Afficher le rapport initial avec tous les jeux/fichiers en "manquants"
     if (resultLoadDatFile.gamesCount > 0) {
-      //console.log('DEBUG - Appel de displayInitialReport');
       await displayInitialReport(resultLoadDatFile.gamesCount, resultLoadDatFile.romsCount);
       log('📊 Rapport de matching initialisé', { context: 'match', state: 'waiting' });
-      //console.log('DEBUG - Après displayInitialReport');
-    } else {
-      //console.log('DEBUG - gamesCount <= 0, pas d\'appel à displayInitialReport');
     }
   } catch (error) {
     log(`Erreur : ${error instanceof Error ? error.message : String(error)}`, { severity: 'error', context: 'dat' });
@@ -1772,7 +2073,9 @@ async function addRomsFolders() {
       loadedFolders = rootFolders;
 
       updateLeftSidebar();
-      matchRomsButton.disabled = false;
+
+      // Mettre à jour l'état des boutons workflow
+      updateWorkflowButtons();
     } else {
       log('Sélection annulée.', { context: 'folder', state: 'cancel' });
     }
@@ -1838,11 +2141,11 @@ datQuickLoadButton?.addEventListener('click', async () => {
     // Mettre à jour le bandeau d'info DB
     updateDbInfoBanner();
 
-    romAddFolderButton.disabled = false;
-    romAddFolderButtonSidebar.disabled = false;
-    matchRomsButton.disabled = false;
     updateLeftSidebar();
-    
+
+    // Mettre à jour l'état des boutons workflow
+    updateWorkflowButtons();
+
     // Afficher le rapport initial avec tous les jeux/fichiers en "manquants"
     if (resultQuick.gamesCount > 0) {
       await displayInitialReport(resultQuick.gamesCount, resultQuick.romsCount);
@@ -1940,12 +2243,76 @@ window.addEventListener('click', (event) => {
 (window as any).showExtraFiles = showExtraFiles;
 (window as any).exportReport = exportReport;
 
+// Configuration du groupement et filtrage
+function setupGroupingAndFiltering() {
+  const groupBySelect = document.getElementById('group-by') as HTMLSelectElement;
+  if (!groupBySelect) return;
+
+  groupBySelect.addEventListener('change', () => {
+    currentGroupBy = groupBySelect.value as 'none' | 'category' | 'letter';
+    applyFiltersAndGrouping();
+    updateGroupFilterSummary();
+  });
+
+  // Gestion du bouton de repliage
+  const toggleBtn = document.getElementById('group-filter-toggle') as HTMLButtonElement;
+  const controls = document.getElementById('group-filter-controls') as HTMLDivElement;
+  const summary = document.getElementById('group-filter-summary') as HTMLDivElement;
+
+  if (toggleBtn && controls && summary) {
+    let isCollapsed = false;
+
+    toggleBtn.addEventListener('click', () => {
+      isCollapsed = !isCollapsed;
+      toggleBtn.classList.toggle('collapsed');
+
+      if (isCollapsed) {
+        // Masquer les contrôles et afficher le résumé
+        controls.style.display = 'none';
+        summary.style.display = 'block';
+        updateGroupFilterSummary();
+      } else {
+        // Afficher les contrôles et masquer le résumé
+        controls.style.display = 'flex';
+        summary.style.display = 'none';
+      }
+    });
+  }
+}
+
+// Mise à jour du résumé de groupement et filtrage
+function updateGroupFilterSummary() {
+  const summary = document.getElementById('group-filter-summary');
+  if (!summary) return;
+
+  let summaryText = '';
+
+  // Groupement
+  const groupByLabels: Record<string, string> = {
+    'none': 'Aucun',
+    'category': 'Par catégorie',
+    'letter': 'Par première lettre'
+  };
+  summaryText += `<span class="gf-summary-item">Groupement : <span class="gf-summary-value">${groupByLabels[currentGroupBy]}</span></span>`;
+
+  // Filtres actifs
+  if (activeFilters.size > 0) {
+    const filterList = Array.from(activeFilters).join(', ');
+    summaryText += `<span class="gf-summary-item">Filtres : <span class="gf-summary-value">${filterList}</span></span>`;
+  } else {
+    summaryText += `<span class="gf-summary-item">Filtres : <span class="gf-summary-value">Aucun</span></span>`;
+  }
+
+  summary.innerHTML = summaryText;
+}
+
 // Initialisation
 document.addEventListener('DOMContentLoaded', () => {
   initSplitters();
   setupContextMenu();
   setupViewControls();
   setupSearch();
+  setupGroupingAndFiltering();
   initMatchingUI();
   setupCollapsibleSections();
   log('RUMCET est prêt ! Utilisez le menu Fichier ou les boutons pour commencer.', { context: 'welcome' });

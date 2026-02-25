@@ -611,10 +611,20 @@ declare global {
       // ========================================
       // API des événements
       // ========================================
-      
+
       onMenuAction: (callback: (action: string) => void) => void;
       onScanProgress: (callback: (data: any) => void) => void;
       onViewMode: (callback: (mode: string) => void) => void;
+
+      // ========================================
+      // API de mise à jour du menu
+      // ========================================
+
+      /**
+       * Met à jour l'état des entrées du menu.
+       * @param state - L'état des entrées du menu.
+       */
+      updateMenuState: (state: { canLoadDat: boolean; canAddFolder: boolean; canCloseDatabase: boolean }) => void;
       
       // ========================================
       // API des logs

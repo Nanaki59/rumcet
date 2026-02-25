@@ -239,7 +239,15 @@ contextBridge.exposeInMainWorld('api', {
     ipcRenderer.on('scan-progress', (_event, data) => callback(data));
   },
 
-  writeLog: (severity: string, context: string, message: string) => 
+  // ========================================
+  // API de mise à jour du menu
+  // ========================================
+
+  updateMenuState: (state: { canLoadDat: boolean; canAddFolder: boolean; canCloseDatabase: boolean }) => {
+    ipcRenderer.send('menu:update-state', state);
+  },
+
+  writeLog: (severity: string, context: string, message: string) =>
     ipcRenderer.invoke('log:write', severity, context, message),
   getLogHistory: () => ipcRenderer.invoke('log:get-history'),
   onLogMessage: (callback: (data: any) => void) => {

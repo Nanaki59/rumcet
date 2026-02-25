@@ -75,8 +75,6 @@ function createMainWindow(): void {
   mainWindow.on('closed', () => {
     mainWindow = null;
   });
-
-  registerDialogHandlers(ipcMain, mainWindow);
 }
 
 function createSettingsWindow(): void {
@@ -108,43 +106,50 @@ function createSettingsWindow(): void {
 // Menu de l'application
 // ==========================================
 
+// État du menu (pour synchronisation avec le renderer)
+let menuState = {
+  canLoadDat: false,
+  canAddFolder: false,
+  canCloseDatabase: false
+};
+
 function createMenu(): void {
   const template: MenuItemConstructorOptions[] = [
     {
       label: 'Fichier',
       submenu: [
         {
-          label: 'Nouvelle base de données...',
-          accelerator: 'CmdOrCtrl+N',
-          click: () => {
-            mainWindow?.webContents.send('menu-action', 'new-database');
-          }
-        },
-        {
           label: 'Ouvrir base de données...',
-          accelerator: 'CmdOrCtrl+Shift+O',
+          accelerator: 'CmdOrCtrl+O',
           click: () => {
             mainWindow?.webContents.send('menu-action', 'open-database');
           }
         },
         { type: 'separator' },
         {
+          id: 'load-dat',
           label: 'Charger DAT/XML',
-          accelerator: 'CmdOrCtrl+O',
+          accelerator: 'CmdOrCtrl+D',
+          enabled: menuState.canLoadDat,
           click: () => {
             mainWindow?.webContents.send('menu-action', 'load-dat');
           }
         },
         {
+          id: 'add-folder',
           label: 'Ajouter dossier ROMs',
-          accelerator: 'CmdOrCtrl+D',
+          accelerator: 'CmdOrCtrl+R',
+          enabled: menuState.canAddFolder,
           click: () => {
             mainWindow?.webContents.send('menu-action', 'add-folder');
           }
         },
         { type: 'separator' },
         {
+          id: 'close-database',
           label: 'Fermer base de données',
+          accelerator: 'CmdOrCtrl+Shift+Q',
+          enabled: menuState.canCloseDatabase,
           click: () => {
             mainWindow?.webContents.send('menu-action', 'close-database');
           }
@@ -288,6 +293,14 @@ function registerLogHandlers(): void {
   });
 }
 
+// Handler pour mettre à jour l'état du menu
+function registerMenuHandlers(): void {
+  ipcMain.on('menu:update-state', (_event, state: { canLoadDat: boolean; canAddFolder: boolean; canCloseDatabase: boolean }) => {
+    menuState = state;
+    createMenu(); // Recréer le menu avec le nouvel état
+  });
+}
+
 // ==========================================
 // Initialisation de l'application
 // ==========================================
@@ -339,12 +352,14 @@ async function initializeApp(): Promise<void> {
     registerArchiveHandlers(ipcMain, mainWindow);
     registerDatabaseHandlers(ipcMain, mainWindow);
     registerDatHandlers(ipcMain, mainWindow);
+    registerDialogHandlers(ipcMain, mainWindow);
     registerRomsHandlers(ipcMain, mainWindow);
     registerMatchingHandlers(ipcMain, mainWindow);
     registerNavigationHandlers(ipcMain);
     registerSettingsHandlers(ipcMain, mainWindow);
     registerSearchHandlers(ipcMain);
     registerLogHandlers();
+    registerMenuHandlers();
   }
 }
 
