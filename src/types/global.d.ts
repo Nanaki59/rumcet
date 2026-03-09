@@ -424,7 +424,21 @@ declare global {
        * @returns La liste des ROMs.
        */
       listRomsByGame: (gameId: number) => Promise<any[]>;
-      
+
+      /**
+       * Met à jour la sélection d'un jeu.
+       * @param gameId - L'ID du jeu.
+       * @param isSelected - true pour sélectionner, false pour désélectionner.
+       */
+      updateGameSelection: (gameId: number, isSelected: boolean) => Promise<void>;
+
+      /**
+       * Met à jour la sélection de plusieurs jeux.
+       * @param gameIds - Les IDs des jeux.
+       * @param isSelected - true pour sélectionner, false pour désélectionner.
+       */
+      updateGameSelectionBulk: (gameIds: number[], isSelected: boolean) => Promise<void>;
+
       /**
        * Liste les fichiers d'un dossier.
        * @param folderPath - Le chemin du dossier.

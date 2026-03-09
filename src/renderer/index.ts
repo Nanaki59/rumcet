@@ -28,10 +28,12 @@ let currentSearchScope: 'all' | 'games' | 'files' | 'archives' = 'all';
 let originalContent: HTMLElement[] = [];
 
 // Variables pour le groupement et le filtrage
-let currentGroupBy: 'none' | 'category' | 'letter' = 'none';
+let currentGroupBy: 'none' | 'category' | 'letter' | 'match-status' = 'none';
 let activeFilters: Set<string> = new Set();
+let activeMatchFilters: Set<string> = new Set();
 let allGames: GameInfo[] = [];
 let categoryCounts: Map<string, number> = new Map();
+let matchStatusCounts: Map<string, number> = new Map();
 
 // Types pour l'application
 interface GameInfo {
@@ -39,6 +41,8 @@ interface GameInfo {
   name: string;
   description?: string;
   category?: string;
+  is_selected?: number;
+  match_status?: 'complete' | 'partial' | 'missing';
   system_id?: number;
 }
 
@@ -706,20 +710,50 @@ async function updateCenterContent(type: 'dat' | 'folder', path: string) {
     if (type === 'dat') {
       const games = await window.api.listGames();
 
-      // Sauvegarder les jeux et initialiser le système de groupement/filtrage
+      // Charger les statuts de matching et les merger dans les jeux
+      try {
+        const statuses = await window.api.getGameMatchStatuses();
+        const statusMap = new Map<number, string>();
+        for (const s of statuses) {
+          statusMap.set(s.gameId, s.status);
+        }
+        for (const game of games) {
+          const status = statusMap.get(game.id);
+          game.match_status = status as GameInfo['match_status'];
+        }
+      } catch {
+        // Matching pas encore effectué, pas de statut
+      }
+
+      // Sauvegarder les jeux et recalculer les compteurs (sans effacer les filtres actifs)
       allGames = games;
       categoryCounts = extractCategoryCounts(games);
-      activeFilters.clear();
+      matchStatusCounts = extractMatchStatusCounts(games);
 
-      // Générer les boutons de filtrage
+      // Nettoyer les filtres qui ne correspondent plus aux données actuelles
+      for (const f of activeFilters) {
+        if (!categoryCounts.has(f)) activeFilters.delete(f);
+      }
+      for (const f of activeMatchFilters) {
+        if (!matchStatusCounts.has(f)) activeMatchFilters.delete(f);
+      }
+
+      // Générer les filtres (en restaurant l'état actif)
       generateCategoryFilters();
+      generateMatchStatusFilters();
+
+      // Restaurer la valeur du select de groupement
+      const groupBySelect = document.getElementById('group-by') as HTMLSelectElement;
+      if (groupBySelect) groupBySelect.value = currentGroupBy;
 
       // Afficher les jeux
       applyFiltersAndGrouping();
 
-      // Afficher la barre de groupement/filtrage
+      // Afficher la barre de groupement/filtrage et la barre de sélection
       const groupFilterBar = document.getElementById('group-filter-bar');
       if (groupFilterBar) groupFilterBar.style.display = 'block';
+      const selectAllBar = document.getElementById('select-all-bar');
+      if (selectAllBar) selectAllBar.style.display = 'flex';
 
       // Masquer les contrôles de vue et le breadcrumb
       const viewControls = document.getElementById('view-controls');
@@ -741,9 +775,11 @@ async function updateCenterContent(type: 'dat' | 'folder', path: string) {
       currentFolderPath = path;
       await updateFolderContent(path);
 
-      // Masquer la barre de groupement/filtrage pour les dossiers
+      // Masquer la barre de groupement/filtrage et la barre de sélection pour les dossiers
       const groupFilterBar = document.getElementById('group-filter-bar');
       if (groupFilterBar) groupFilterBar.style.display = 'none';
+      const selectAllBar = document.getElementById('select-all-bar');
+      if (selectAllBar) selectAllBar.style.display = 'none';
 
       // Afficher les contrôles de vue
       const viewControls = document.getElementById('view-controls');
@@ -930,17 +966,36 @@ function displayGames(games: GameInfo[]) {
     }*/
     let icon = getIconGameCategory(game.category);
 
+    const isChecked = game.is_selected !== 0;
+
     item.innerHTML = `
-      <div>
+      <input type="checkbox" class="game-checkbox" data-game-id="${game.id}" ${isChecked ? 'checked' : ''}>
+      <div style="flex: 1; min-width: 0;">
         <div class="list-item-name">${icon} ${game.name}</div>
         ${game.description ? `<div class="list-item-info">${game.description}</div>` : ''}
         ${game.category ? `<div class="list-item-info"><strong>Categorie :</strong> ${game.category}</div>` : ''}
       </div>
+      ${getMatchStatusBadgeHtml(game)}
     `;
+
+    if (!isChecked) item.classList.add('deselected');
+
+    // Checkbox click handler
+    const checkbox = item.querySelector('.game-checkbox') as HTMLInputElement;
+    checkbox.addEventListener('click', (e) => {
+      e.stopPropagation();
+      const selected = checkbox.checked;
+      game.is_selected = selected ? 1 : 0;
+      item.classList.toggle('deselected', !selected);
+      window.api.updateGameSelection(game.id, selected);
+      updateSelectAllCheckbox();
+    });
 
     item.addEventListener('click', () => selectGame(item, game));
     gameList.appendChild(item);
   });
+
+  updateSelectAllCheckbox();
 }
 
 // Extraction des catégories et comptage
@@ -955,43 +1010,178 @@ function extractCategoryCounts(games: GameInfo[]): Map<string, number> {
   return counts;
 }
 
-// Génération des boutons de filtrage par catégorie
-function generateCategoryFilters() {
-  const filtersContainer = document.getElementById('category-filters');
-  if (!filtersContainer) return;
+// Création d'un dropdown de filtrage avec checkboxes
+function createFilterDropdown(
+  containerId: string,
+  label: string,
+  items: Array<{ key: string; displayName: string; count: number }>,
+  activeSet: Set<string>,
+  onChangeCallback: () => void
+) {
+  const container = document.getElementById(containerId);
+  if (!container) return;
 
-  filtersContainer.innerHTML = '';
+  container.innerHTML = '';
 
-  if (categoryCounts.size === 0) {
-    filtersContainer.innerHTML = '<span style="color: #7f8c8d; font-size: 12px;">Aucune catégorie disponible</span>';
-    return;
+  if (items.length === 0) return;
+
+  const dropdown = document.createElement('div');
+  dropdown.className = 'filter-dropdown';
+
+  const activeCount = activeSet.size;
+  const btn = document.createElement('button');
+  btn.className = 'filter-dropdown-btn';
+  btn.type = 'button';
+  btn.innerHTML = `
+    ${label}${activeCount > 0 ? ` <span class="filter-active-count">(${activeCount})</span>` : ''}
+    <span class="chevron">▼</span>
+  `;
+
+  const menu = document.createElement('div');
+  menu.className = 'filter-dropdown-menu';
+
+  function updateBtnCount() {
+    const newCount = activeSet.size;
+    const countSpan = btn.querySelector('.filter-active-count');
+    if (newCount > 0) {
+      if (countSpan) {
+        countSpan.textContent = `(${newCount})`;
+      } else {
+        const span = document.createElement('span');
+        span.className = 'filter-active-count';
+        span.textContent = `(${newCount})`;
+        btn.insertBefore(span, btn.querySelector('.chevron'));
+      }
+    } else if (countSpan) {
+      countSpan.remove();
+    }
   }
 
-  // Trier les catégories par ordre alphabétique
-  const sortedCategories = Array.from(categoryCounts.entries()).sort((a, b) => a[0].localeCompare(b[0]));
+  items.forEach(item => {
+    const labelEl = document.createElement('label');
 
-  sortedCategories.forEach(([category, count]) => {
-    const btn = document.createElement('button');
-    btn.className = 'category-filter-btn';
-    btn.innerHTML = `
-      <span>${category}</span>
-      <span class="count">${count}</span>
-    `;
+    const checkbox = document.createElement('input');
+    checkbox.type = 'checkbox';
+    checkbox.value = item.key;
+    checkbox.checked = activeSet.has(item.key);
 
-    btn.addEventListener('click', () => {
-      if (activeFilters.has(category)) {
-        activeFilters.delete(category);
-        btn.classList.remove('active');
+    const nameSpan = document.createElement('span');
+    nameSpan.className = 'filter-item-name';
+    nameSpan.innerHTML = item.displayName;
+
+    const countSpan = document.createElement('span');
+    countSpan.className = 'filter-item-count';
+    countSpan.textContent = String(item.count);
+
+    checkbox.addEventListener('change', () => {
+      if (checkbox.checked) {
+        activeSet.add(item.key);
       } else {
-        activeFilters.add(category);
-        btn.classList.add('active');
+        activeSet.delete(item.key);
       }
-      applyFiltersAndGrouping();
-      updateGroupFilterSummary();
+      updateBtnCount();
+      onChangeCallback();
     });
 
-    filtersContainer.appendChild(btn);
+    labelEl.appendChild(checkbox);
+    labelEl.appendChild(nameSpan);
+    labelEl.appendChild(countSpan);
+    menu.appendChild(labelEl);
   });
+
+  // Empêcher la fermeture du dropdown quand on clique dans le menu
+  menu.addEventListener('click', (e) => {
+    e.stopPropagation();
+  });
+
+  btn.addEventListener('click', (e) => {
+    e.stopPropagation();
+    // Fermer les autres dropdowns ouverts
+    document.querySelectorAll('.filter-dropdown-menu.open').forEach(m => {
+      if (m !== menu) m.classList.remove('open');
+    });
+    menu.classList.toggle('open');
+  });
+
+  dropdown.appendChild(btn);
+  dropdown.appendChild(menu);
+  container.appendChild(dropdown);
+}
+
+// Fermer les dropdowns en cliquant en dehors
+document.addEventListener('click', () => {
+  document.querySelectorAll('.filter-dropdown-menu.open').forEach(m => m.classList.remove('open'));
+});
+
+// Génération du dropdown de filtrage par catégorie
+function generateCategoryFilters() {
+  const sortedCategories = Array.from(categoryCounts.entries()).sort((a, b) => a[0].localeCompare(b[0]));
+  const items = sortedCategories.map(([category, count]) => ({
+    key: category,
+    displayName: category,
+    count
+  }));
+
+  createFilterDropdown('category-filters-container', 'Catégorie', items, activeFilters, () => {
+    applyFiltersAndGrouping();
+    updateGroupFilterSummary();
+  });
+}
+
+// Labels et icônes pour les statuts de matching
+const matchStatusLabels: Record<string, string> = {
+  'unknown': 'Inconnu',
+  'missing': 'Manquant',
+  'partial': 'Partiel',
+  'complete': 'Complet'
+};
+
+const matchStatusIcons: Record<string, string> = {
+  'unknown': '❓',
+  'missing': '❌',
+  'partial': '⚠️',
+  'complete': '✅'
+};
+
+const matchStatusOrder = ['complete', 'partial', 'missing', 'unknown'];
+
+function getMatchStatusBadgeHtml(game: GameInfo): string {
+  const status = getGameMatchStatus(game);
+  const icon = matchStatusIcons[status];
+  const label = matchStatusLabels[status];
+  return `<span class="match-status-badge status-${status}">${icon} ${label}</span>`;
+}
+
+// Extraction des compteurs par statut de matching
+function extractMatchStatusCounts(games: GameInfo[]): Map<string, number> {
+  const counts = new Map<string, number>();
+  for (const status of matchStatusOrder) {
+    counts.set(status, 0);
+  }
+  games.forEach(game => {
+    const status = game.match_status || 'unknown';
+    counts.set(status, (counts.get(status) || 0) + 1);
+  });
+  return counts;
+}
+
+// Génération du dropdown de filtrage par statut de matching
+function generateMatchStatusFilters() {
+  const items = matchStatusOrder.map(status => ({
+    key: status,
+    displayName: `${matchStatusIcons[status]} ${matchStatusLabels[status]}`,
+    count: matchStatusCounts.get(status) || 0
+  }));
+
+  createFilterDropdown('match-status-filters-container', 'Statut', items, activeMatchFilters, () => {
+    applyFiltersAndGrouping();
+    updateGroupFilterSummary();
+  });
+}
+
+// Récupère le statut effectif d'un jeu (pour le filtrage)
+function getGameMatchStatus(game: GameInfo): string {
+  return game.match_status || 'unknown';
 }
 
 // Application des filtres et du groupement
@@ -1000,9 +1190,16 @@ function applyFiltersAndGrouping() {
 
   // Appliquer les filtres de catégorie
   if (activeFilters.size > 0) {
-    filteredGames = allGames.filter(game => {
+    filteredGames = filteredGames.filter(game => {
       const category = game.category || 'Non catégorisé';
       return activeFilters.has(category);
+    });
+  }
+
+  // Appliquer les filtres de statut de matching
+  if (activeMatchFilters.size > 0) {
+    filteredGames = filteredGames.filter(game => {
+      return activeMatchFilters.has(getGameMatchStatus(game));
     });
   }
 
@@ -1022,7 +1219,8 @@ function updateGlobalCounters(displayed: number, total: number) {
   const counterDiv = document.getElementById('global-counters');
   if (!counterDiv) return;
 
-  counterDiv.innerHTML = `<strong>${displayed}</strong> affiché${displayed > 1 ? 's' : ''} / <strong>${total}</strong>`;
+  //counterDiv.innerHTML = `Affiché${displayed > 1 ? 's' : ''} : <strong>${displayed}</strong> 👁️ / <strong>${total}</strong>`;
+  counterDiv.innerHTML = `👁️ <strong>${displayed}</strong> / <strong>${total}</strong>`;
 }
 
 // Affichage des jeux groupés
@@ -1049,10 +1247,11 @@ function displayGroupedGames(games: GameInfo[]) {
       groupKey = game.category || 'Non catégorisé';
     } else if (currentGroupBy === 'letter') {
       groupKey = game.name.charAt(0).toUpperCase();
-      // Si le premier caractère n'est pas une lettre, utiliser '#'
       if (!/[A-Z]/.test(groupKey)) {
         groupKey = '#';
       }
+    } else if (currentGroupBy === 'match-status') {
+      groupKey = getGameMatchStatus(game);
     } else {
       groupKey = 'Tous';
     }
@@ -1065,16 +1264,22 @@ function displayGroupedGames(games: GameInfo[]) {
 
   // Trier les groupes
   const sortedGroups = Array.from(groups.entries()).sort((a, b) => {
-    // Pour le groupement par lettre, mettre '#' à la fin
     if (currentGroupBy === 'letter') {
       if (a[0] === '#') return 1;
       if (b[0] === '#') return -1;
+    }
+    if (currentGroupBy === 'match-status') {
+      return matchStatusOrder.indexOf(a[0]) - matchStatusOrder.indexOf(b[0]);
     }
     return a[0].localeCompare(b[0]);
   });
 
   // Afficher chaque groupe
-  sortedGroups.forEach(([groupName, groupGames]) => {
+  sortedGroups.forEach(([groupKey, groupGames]) => {
+    // Nom d'affichage du groupe
+    const groupName = currentGroupBy === 'match-status'
+      ? `${matchStatusIcons[groupKey]} ${matchStatusLabels[groupKey]}`
+      : groupKey;
     // Trier les jeux par nom dans chaque groupe
     groupGames.sort((a, b) => a.name.localeCompare(b.name));
 
@@ -1083,10 +1288,53 @@ function displayGroupedGames(games: GameInfo[]) {
 
     const headerDiv = document.createElement('div');
     headerDiv.className = 'game-group-header';
+
+    const groupSelectedCount = groupGames.filter(g => g.is_selected !== 0).length;
+    const groupAllSelected = groupSelectedCount === groupGames.length;
+    const groupSomeSelected = groupSelectedCount > 0 && !groupAllSelected;
+
     headerDiv.innerHTML = `
-      <span>${groupName}</span>
-      <span class="count">${groupGames.length}</span>
+      <input type="checkbox" class="group-checkbox" ${groupAllSelected ? 'checked' : ''}>
+      <span class="group-header-label">${groupName}</span>
+      <!--span class="count group-count">Sélectionné${groupSelectedCount > 1 ? 's' : ''} : ${groupSelectedCount} ✔️ / ${groupGames.length}</span-->
+      <span class="count group-count">✔️ ${groupSelectedCount} / ${groupGames.length}</span>
     `;
+
+    const groupCheckbox = headerDiv.querySelector('.group-checkbox') as HTMLInputElement;
+    if (groupSomeSelected) groupCheckbox.indeterminate = true;
+
+    groupCheckbox.addEventListener('click', async (e) => {
+      e.stopPropagation();
+      const isSelected = groupCheckbox.checked;
+      groupCheckbox.indeterminate = false;
+
+      const gameIds = groupGames.map(g => g.id);
+      await window.api.updateGameSelectionBulk(gameIds, isSelected);
+      groupGames.forEach(g => g.is_selected = isSelected ? 1 : 0);
+
+      // Mettre à jour les checkboxes des jeux du groupe
+      const groupContent = groupDiv.querySelector('.game-group-content');
+      if (groupContent) {
+        const checkboxes = groupContent.querySelectorAll('.game-checkbox') as NodeListOf<HTMLInputElement>;
+        checkboxes.forEach(cb => {
+          cb.checked = isSelected;
+          const listItem = cb.closest('.list-item');
+          if (listItem) listItem.classList.toggle('deselected', !isSelected);
+        });
+      }
+
+      // Mettre à jour le compteur du groupe
+      const countSpan = headerDiv.querySelector('.group-count');
+      if (countSpan) {
+        const newCount = isSelected ? groupGames.length : 0;
+        //countSpan.textContent = `Sélectionné${newCount > 1 ? 's' : ''} : ${newCount} ✔️ / ${groupGames.length}`;
+        countSpan.textContent = `✔️ ${newCount} / ${groupGames.length}`;
+      }
+
+      updateSelectAllCheckbox();
+      updateSelectionCounter();
+    });
+
     groupDiv.appendChild(headerDiv);
 
     const contentDiv = document.createElement('div');
@@ -1099,13 +1347,30 @@ function displayGroupedGames(games: GameInfo[]) {
 
       const icon = getIconGameCategory(game.category);
 
+      const isChecked = game.is_selected !== 0;
+
       item.innerHTML = `
-        <div>
+        <input type="checkbox" class="game-checkbox" data-game-id="${game.id}" ${isChecked ? 'checked' : ''}>
+        <div style="flex: 1; min-width: 0;">
           <div class="list-item-name">${icon} ${game.name}</div>
           ${game.description ? `<div class="list-item-info">${game.description}</div>` : ''}
           ${game.category ? `<div class="list-item-info"><strong>Categorie :</strong> ${game.category}</div>` : ''}
         </div>
+        ${getMatchStatusBadgeHtml(game)}
       `;
+
+      if (!isChecked) item.classList.add('deselected');
+
+      const checkbox = item.querySelector('.game-checkbox') as HTMLInputElement;
+      checkbox.addEventListener('click', (e) => {
+        e.stopPropagation();
+        const selected = checkbox.checked;
+        game.is_selected = selected ? 1 : 0;
+        item.classList.toggle('deselected', !selected);
+        window.api.updateGameSelection(game.id, selected);
+        updateGroupCheckboxes();
+        updateSelectAllCheckbox();
+      });
 
       item.addEventListener('click', () => selectGame(item, game));
       contentDiv.appendChild(item);
@@ -1113,6 +1378,87 @@ function displayGroupedGames(games: GameInfo[]) {
 
     groupDiv.appendChild(contentDiv);
     gameList.appendChild(groupDiv);
+  });
+
+  updateSelectAllCheckbox();
+}
+
+// Retourne les jeux actuellement affichés (après filtrage)
+function getDisplayedGames(): GameInfo[] {
+  let result = allGames;
+  if (activeFilters.size > 0) {
+    result = result.filter(game => {
+      const category = game.category || 'Non catégorisé';
+      return activeFilters.has(category);
+    });
+  }
+  if (activeMatchFilters.size > 0) {
+    result = result.filter(game => activeMatchFilters.has(getGameMatchStatus(game)));
+  }
+  return result;
+}
+
+// Mise à jour de la checkbox "Tout sélectionner" en fonction des jeux affichés
+function updateSelectAllCheckbox() {
+  const selectAllCheckbox = document.getElementById('select-all-checkbox') as HTMLInputElement;
+  if (!selectAllCheckbox) return;
+
+  const checkboxes = document.querySelectorAll('.game-checkbox') as NodeListOf<HTMLInputElement>;
+  if (checkboxes.length === 0) return;
+
+  const checkedCount = Array.from(checkboxes).filter(cb => cb.checked).length;
+
+  if (checkedCount === 0) {
+    selectAllCheckbox.checked = false;
+    selectAllCheckbox.indeterminate = false;
+  } else if (checkedCount === checkboxes.length) {
+    selectAllCheckbox.checked = true;
+    selectAllCheckbox.indeterminate = false;
+  } else {
+    selectAllCheckbox.checked = false;
+    selectAllCheckbox.indeterminate = true;
+  }
+
+  updateSelectionCounter();
+}
+
+// Mise à jour du compteur de jeux sélectionnés
+function updateSelectionCounter() {
+  const counterSpan = document.getElementById('selection-counter');
+  if (!counterSpan) return;
+
+  const selectedCount = allGames.filter(g => g.is_selected !== 0).length;
+  //counterSpan.textContent = `Sélectionné${selectedCount > 1 ? 's' : ''} : ${selectedCount} ✔️ / ${allGames.length}`;
+  counterSpan.textContent = `✔️ ${selectedCount} / ${allGames.length}`;
+}
+
+// Mise à jour des checkboxes de groupes
+function updateGroupCheckboxes() {
+  const groupDivs = document.querySelectorAll('.game-group');
+  groupDivs.forEach(groupDiv => {
+    const groupCheckbox = groupDiv.querySelector('.group-checkbox') as HTMLInputElement;
+    if (!groupCheckbox) return;
+
+    const gameCheckboxes = groupDiv.querySelectorAll('.game-checkbox') as NodeListOf<HTMLInputElement>;
+    const checkedCount = Array.from(gameCheckboxes).filter(cb => cb.checked).length;
+
+    if (checkedCount === 0) {
+      groupCheckbox.checked = false;
+      groupCheckbox.indeterminate = false;
+    } else if (checkedCount === gameCheckboxes.length) {
+      groupCheckbox.checked = true;
+      groupCheckbox.indeterminate = false;
+    } else {
+      groupCheckbox.checked = false;
+      groupCheckbox.indeterminate = true;
+    }
+
+    // Mettre à jour le compteur du groupe
+    const countSpan = groupDiv.querySelector('.group-count');
+    if (countSpan) {
+      //countSpan.textContent = `Sélectionné${checkedCount > 1 ? 's' : ''} :✔️  ${checkedCount} / ${gameCheckboxes.length} `;
+      countSpan.textContent = `✔️ ${checkedCount} / ${gameCheckboxes.length} `;
+    }
   });
 }
 
@@ -1191,8 +1537,11 @@ async function selectGame(element: HTMLElement, game: GameInfo) {
   `;
   
   try {
-    const roms = await window.api.listRomsByGame(game.id);
-    displayRomDetails(game, roms);
+    const [roms, matches] = await Promise.all([
+      window.api.listRomsByGame(game.id),
+      window.api.getMatchesForGame(game.id).catch(() => [])
+    ]);
+    displayRomDetails(game, roms, matches);
   } catch (error) {
     detailView.innerHTML += `<div style="color: #e74c3c;">Erreur : ${error}</div>`;
   }
@@ -1216,39 +1565,88 @@ function selectFile(element: HTMLElement, file: any) {
 }
 
 // Affichage des détails d'une ROM
-function displayRomDetails(game: GameInfo, roms: RomInfo[]) {
+function displayRomDetails(game: GameInfo, roms: RomInfo[], matches: any[] = []) {
   const detailView = document.getElementById('detail-view');
   if (!detailView) return;
-  
+
+  // Créer un map datRomId → match pour lookup rapide
+  const matchMap = new Map<number, any>();
+  for (const m of matches) {
+    // Garder le meilleur match par ROM (perfect > none)
+    const existing = matchMap.get(m.datRomId);
+    if (!existing || (m.matchType === 'perfect' && existing.matchType !== 'perfect')) {
+      matchMap.set(m.datRomId, m);
+    }
+  }
+
   let icon = getIconGameCategory(game.category);
-  
+
+  // Statut global du jeu
+  const statusBadge = getMatchStatusBadgeHtml(game);
+
   let html = `<div class="detail-header">${icon} ${game.name}</div>`;
   html += `
     <div style="padding: 10px; font-size: 12px;">
       <div style="margin-bottom: 10px;">
-        <strong>Categorie :</strong> ${icon} ${game.category}
+        <strong>Catégorie :</strong> ${icon} ${game.category || 'Non catégorisé'}
+      </div>
+      <div style="margin-bottom: 10px;">
+        <strong>Statut :</strong> ${statusBadge}
       </div>
       <div style="margin-top: 15px;">
-        <strong>Fichier(s) de rom :</strong>
+        <strong>Fichier(s) de ROM :</strong> (${roms.length})
       </div>
     </div>`;
 
   if (roms.length === 0) {
     html += '<div style="padding: 10px;">Aucune ROM définie</div>';
   } else {
+    const matchingDone = game.match_status !== undefined;
+
     roms.forEach(rom => {
+      const match = matchMap.get(rom.id);
+      const isFound = match && match.matchType === 'perfect';
+
+      let statusIcon: string, statusClass: string, statusLabel: string;
+      if (!matchingDone) {
+        statusIcon = '❓';
+        statusClass = 'rom-unknown';
+        statusLabel = 'Inconnu';
+      } else if (isFound) {
+        statusIcon = '✅';
+        statusClass = 'rom-found';
+        statusLabel = 'Trouvé';
+      } else {
+        statusIcon = '❌';
+        statusClass = 'rom-missing';
+        statusLabel = 'Manquant';
+      }
+
+      let locationInfo = '';
+      if (isFound) {
+        if (match.archiveFileName) {
+          locationInfo = `<div class="file-hash"><strong>Source :</strong> ${match.scannedFileName} → ${match.archiveFileName}</div>`;
+        } else if (match.scannedFileName) {
+          locationInfo = `<div class="file-hash"><strong>Source :</strong> ${match.scannedFileName}</div>`;
+        }
+      }
+
       html += `
-        <div class="file-item">
-          <div>${rom.name}</div>
+        <div class="file-item ${statusClass}">
+          <div style="display: flex; justify-content: space-between; align-items: center;">
+            <div>${rom.name}</div>
+            <span class="rom-status-badge ${statusClass}">${statusIcon} ${statusLabel}</span>
+          </div>
           ${rom.size ? `<div style="font-size: 12px; color: #7f8c8d;"><strong>Taille :</strong> ${formatFileSize(rom.size)}</div>` : ''}
           ${rom.crc32 ? `<div class="file-hash"><strong>CRC32 :</strong> ${rom.crc32.toUpperCase()}</div>` : ''}
           ${rom.md5 ? `<div class="file-hash"><strong>MD5 :</strong> ${rom.md5.toUpperCase()}</div>` : ''}
           ${rom.sha1 ? `<div class="file-hash"><strong>SHA1 :</strong> ${rom.sha1.toUpperCase()}</div>` : ''}
+          ${locationInfo}
         </div>
       `;
     });
   }
-  
+
   detailView.innerHTML = html;
 }
 
@@ -2249,7 +2647,7 @@ function setupGroupingAndFiltering() {
   if (!groupBySelect) return;
 
   groupBySelect.addEventListener('change', () => {
-    currentGroupBy = groupBySelect.value as 'none' | 'category' | 'letter';
+    currentGroupBy = groupBySelect.value as 'none' | 'category' | 'letter' | 'match-status';
     applyFiltersAndGrouping();
     updateGroupFilterSummary();
   });
@@ -2278,6 +2676,38 @@ function setupGroupingAndFiltering() {
       }
     });
   }
+
+  // Gestion de la checkbox "Tout sélectionner"
+  const selectAllCheckbox = document.getElementById('select-all-checkbox') as HTMLInputElement;
+  if (selectAllCheckbox) {
+    selectAllCheckbox.addEventListener('change', async () => {
+      const isSelected = selectAllCheckbox.checked;
+      selectAllCheckbox.indeterminate = false;
+
+      // Récupérer les jeux actuellement affichés (filtrés)
+      const displayedGames = getDisplayedGames();
+      const gameIds = displayedGames.map((g: GameInfo) => g.id);
+
+      if (gameIds.length === 0) return;
+
+      // Mettre à jour en base
+      await window.api.updateGameSelectionBulk(gameIds, isSelected);
+
+      // Mettre à jour l'état local
+      displayedGames.forEach((g: GameInfo) => g.is_selected = isSelected ? 1 : 0);
+
+      // Mettre à jour les checkboxes dans le DOM
+      const checkboxes = document.querySelectorAll('.game-checkbox') as NodeListOf<HTMLInputElement>;
+      checkboxes.forEach(cb => {
+        cb.checked = isSelected;
+        const listItem = cb.closest('.list-item');
+        if (listItem) listItem.classList.toggle('deselected', !isSelected);
+      });
+
+      updateGroupCheckboxes();
+      updateSelectionCounter();
+    });
+  }
 }
 
 // Mise à jour du résumé de groupement et filtrage
@@ -2291,14 +2721,22 @@ function updateGroupFilterSummary() {
   const groupByLabels: Record<string, string> = {
     'none': 'Aucun',
     'category': 'Par catégorie',
-    'letter': 'Par première lettre'
+    'letter': 'Par première lettre',
+    'match-status': 'Par statut de matching'
   };
   summaryText += `<span class="gf-summary-item">Groupement : <span class="gf-summary-value">${groupByLabels[currentGroupBy]}</span></span>`;
 
-  // Filtres actifs
+  // Filtres catégorie actifs
+  const allFilterLabels: string[] = [];
   if (activeFilters.size > 0) {
-    const filterList = Array.from(activeFilters).join(', ');
-    summaryText += `<span class="gf-summary-item">Filtres : <span class="gf-summary-value">${filterList}</span></span>`;
+    allFilterLabels.push(...Array.from(activeFilters));
+  }
+  if (activeMatchFilters.size > 0) {
+    allFilterLabels.push(...Array.from(activeMatchFilters).map(s => matchStatusLabels[s]));
+  }
+
+  if (allFilterLabels.length > 0) {
+    summaryText += `<span class="gf-summary-item">Filtres : <span class="gf-summary-value">${allFilterLabels.join(', ')}</span></span>`;
   } else {
     summaryText += `<span class="gf-summary-item">Filtres : <span class="gf-summary-value">Aucun</span></span>`;
   }

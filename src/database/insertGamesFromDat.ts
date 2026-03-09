@@ -71,11 +71,18 @@ export async function insertGamesFromDat(
   await db.run('BEGIN TRANSACTION');
 
   try {
+    // Sauvegarder les sélections existantes avant suppression
+    const existingSelections = new Map<string, number>();
+    const existingGames = await db.all<{ name: string; is_selected: number }>('SELECT name, is_selected FROM games');
+    for (const g of existingGames) {
+      existingSelections.set(g.name, g.is_selected);
+    }
+
     // Supprimer les anciennes données
     await db.run('DELETE FROM games');
 
     // Préparer les statements
-    const insertGame = db.prepare('INSERT OR REPLACE INTO games (name, description, category) VALUES (?, ?, ?)');
+    const insertGame = db.prepare('INSERT OR REPLACE INTO games (name, description, category, is_selected) VALUES (?, ?, ?, ?)');
     const getGameId = db.prepare('SELECT id FROM games WHERE name = ?');
     const insertRom = db.prepare(
       'INSERT INTO dat_roms (game_id, name, size, crc32, md5, sha1) VALUES (?, ?, ?, ?, ?, ?)'
@@ -90,9 +97,12 @@ export async function insertGamesFromDat(
 
       const category = game.category?.[0] || null;
 
+      // Restaurer la sélection existante ou sélectionner par défaut
+      const isSelected = existingSelections.has(gameName) ? existingSelections.get(gameName)! : 1;
+
       // Promisifier l'insertion du jeu
       await new Promise<void>((resolve, reject) => {
-        insertGame.run(gameName, description, category, function(err: Error | null) {
+        insertGame.run(gameName, description, category, isSelected, function(err: Error | null) {
           if (err) reject(err);
           else resolve();
         });

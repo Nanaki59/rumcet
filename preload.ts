@@ -189,6 +189,8 @@ contextBridge.exposeInMainWorld('api', {
 
   listGames: (systemId?: number) => ipcRenderer.invoke('games:list', systemId),
   listRomsByGame: (gameId: number) => ipcRenderer.invoke('roms:list-by-game', gameId),
+  updateGameSelection: (gameId: number, isSelected: boolean) => ipcRenderer.invoke('games:update-selection', gameId, isSelected),
+  updateGameSelectionBulk: (gameIds: number[], isSelected: boolean) => ipcRenderer.invoke('games:update-selection-bulk', gameIds, isSelected),
   listFolderFiles: (folderPath: string) => ipcRenderer.invoke('folder:list-files', folderPath),
   listFolderContents: (folderPath: string, viewMode?: 'hierarchical' | 'flat') => 
     ipcRenderer.invoke('folder:list-contents', folderPath, viewMode),

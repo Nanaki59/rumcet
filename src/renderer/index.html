@@ -688,12 +688,18 @@
     }
 
     .search-bar select {
-      padding: 8px 12px;
+      padding: 8px 28px 8px 12px;
       border: 1px solid #ced4da;
       border-radius: 4px;
       font-size: 14px;
+      font-family: inherit;
       background: white;
       cursor: pointer;
+      appearance: none;
+      -webkit-appearance: none;
+      background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='6' viewBox='0 0 10 6'%3E%3Cpath fill='%23555' d='M0 0l5 6 5-6z'/%3E%3C/svg%3E");
+      background-repeat: no-repeat;
+      background-position: right 10px center;
     }
 
     .search-bar button {
@@ -721,9 +727,7 @@
     .group-filter-main {
       display: flex;
       align-items: center;
-      flex-wrap: wrap;
       padding: 10px 15px;
-      gap: 5px 0;
     }
 
     .group-filter-content {
@@ -822,12 +826,18 @@
     }
 
     .group-control select {
-      padding: 6px 10px;
+      padding: 6px 28px 6px 10px;
       border: 1px solid #ced4da;
       border-radius: 4px;
       font-size: 13px;
+      font-family: inherit;
       background: white;
       cursor: pointer;
+      appearance: none;
+      -webkit-appearance: none;
+      background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='6' viewBox='0 0 10 6'%3E%3Cpath fill='%23555' d='M0 0l5 6 5-6z'/%3E%3C/svg%3E");
+      background-repeat: no-repeat;
+      background-position: right 10px center;
     }
 
     .filter-control {
@@ -844,49 +854,177 @@
       padding-top: 4px;
     }
 
-    .category-filters {
-      display: flex;
-      flex-wrap: wrap;
-      gap: 6px;
-      flex: 1;
+    /* Dropdowns de filtrage */
+    .filter-dropdown {
+      position: relative;
+      display: inline-block;
     }
 
-    .category-filter-btn {
-      padding: 5px 10px;
+    .filter-dropdown-btn {
+      padding: 6px 28px 6px 10px;
       border: 1px solid #ced4da;
       border-radius: 4px;
       background: white;
       cursor: pointer;
-      font-size: 12px;
-      transition: all 0.2s;
+      font-size: 13px;
       display: flex;
       align-items: center;
       gap: 5px;
+      white-space: nowrap;
+      color: #2c3e50;
+      font-weight: normal;
+      font-family: inherit;
+      line-height: normal;
+      background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='6' viewBox='0 0 10 6'%3E%3Cpath fill='%23555' d='M0 0l5 6 5-6z'/%3E%3C/svg%3E");
+      background-repeat: no-repeat;
+      background-position: right 10px center;
     }
 
-    .category-filter-btn .count {
-      background-color: #e9ecef;
-      padding: 2px 6px;
-      border-radius: 3px;
-      font-weight: 600;
-      font-size: 11px;
-      color: #495057;
-    }
-
-    .category-filter-btn:hover {
+    .filter-dropdown-btn:hover {
       border-color: #3498db;
       background-color: #f0f8ff;
     }
 
-    .category-filter-btn.active {
-      background-color: #3498db;
-      color: white;
-      border-color: #2980b9;
+    .filter-dropdown-btn .filter-active-count {
+      color: #3498db;
+      font-weight: 700;
     }
 
-    .category-filter-btn.active .count {
-      background-color: rgba(255, 255, 255, 0.3);
-      color: white;
+    .filter-dropdown-btn .chevron {
+      display: none;
+    }
+
+    .filter-dropdown-menu {
+      display: none;
+      position: absolute;
+      top: 100%;
+      left: 0;
+      z-index: 100;
+      background: white;
+      border: 1px solid #dee2e6;
+      border-radius: 6px;
+      box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15);
+      min-width: 220px;
+      max-height: 300px;
+      overflow-y: auto;
+      margin-top: 4px;
+    }
+
+    .filter-dropdown-menu.open {
+      display: block;
+    }
+
+    .filter-dropdown-menu label {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      padding: 7px 12px;
+      cursor: pointer;
+      font-size: 12px;
+      color: #2c3e50;
+      user-select: none;
+      border-bottom: 1px solid #f0f0f0;
+    }
+
+    .filter-dropdown-menu label:last-child {
+      border-bottom: none;
+    }
+
+    .filter-dropdown-menu label:hover {
+      background-color: #f0f8ff;
+    }
+
+    .filter-dropdown-menu label input[type="checkbox"] {
+      width: 14px;
+      height: 14px;
+      accent-color: #3498db;
+      flex-shrink: 0;
+    }
+
+    .filter-dropdown-menu label .filter-item-name {
+      flex: 1;
+    }
+
+    .filter-dropdown-menu label .filter-item-count {
+      color: #7f8c8d;
+      font-size: 11px;
+      font-weight: 600;
+    }
+
+    /* Checkbox de sélection des jeux */
+    .select-all-bar {
+      display: none;
+      align-items: center;
+      justify-content: space-between;
+      padding: 6px 15px;
+      background-color: #f0f4f8;
+      border-bottom: 1px solid #dee2e6;
+      flex-shrink: 0;
+    }
+
+    .select-all-bar label {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      font-size: 13px;
+      font-weight: 600;
+      color: #2c3e50;
+      cursor: pointer;
+      user-select: none;
+    }
+
+    .select-all-bar input[type="checkbox"] {
+      width: 16px;
+      height: 16px;
+      cursor: pointer;
+      accent-color: #3498db;
+    }
+
+    .selection-counter {
+      font-size: 13px;
+      color: #2c3e50;
+      font-weight: 600;
+    }
+
+    .game-checkbox {
+      width: 16px;
+      height: 16px;
+      cursor: pointer;
+      accent-color: #3498db;
+      flex-shrink: 0;
+    }
+
+    .list-item.deselected {
+      opacity: 0.5;
+    }
+
+    .match-status-badge {
+      font-size: 11px;
+      font-weight: 600;
+      padding: 3px 8px;
+      border-radius: 4px;
+      white-space: nowrap;
+      flex-shrink: 0;
+    }
+
+    .match-status-badge.status-complete {
+      color: #27ae60;
+      background-color: rgba(46, 204, 113, 0.1);
+    }
+
+    .match-status-badge.status-partial {
+      color: #e67e22;
+      background-color: rgba(241, 196, 15, 0.1);
+    }
+
+    .match-status-badge.status-missing {
+      color: #e74c3c;
+      background-color: rgba(231, 76, 60, 0.1);
+    }
+
+    .match-status-badge.status-unknown {
+      color: #95a5a6;
+      background-color: rgba(149, 165, 166, 0.1);
     }
 
     /* Surlignage des résultats de recherche */
@@ -916,15 +1054,24 @@
       top: 0;
       z-index: 1;
       display: flex;
-      justify-content: space-between;
       align-items: center;
+      gap: 8px;
+    }
+
+    .game-group-header .group-header-label {
+      flex: 1;
+    }
+
+    .game-group-header .group-checkbox {
+      width: 16px;
+      height: 16px;
+      cursor: pointer;
+      accent-color: #3498db;
+      flex-shrink: 0;
     }
 
     .game-group-header .count {
-      background-color: #3498db;
-      color: white;
-      padding: 3px 8px;
-      border-radius: 12px;
+      color: #7f8c8d;
       font-size: 12px;
       font-weight: 600;
     }
@@ -994,21 +1141,17 @@
     .content-area {
       flex: 1;
       overflow-y: auto;
-      padding: 15px;
-    }
-
-    /* Quand il y a des groupes, pas de padding pour éviter les espaces */
-    .content-area.has-groups {
       padding: 0;
     }
 
     .list-item {
-      padding: 10px;
+      padding: 10px 10px 10px 15px;
       border-bottom: 1px solid #ecf0f1;
       cursor: pointer;
       display: flex;
       justify-content: space-between;
       align-items: center;
+      gap: 8px;
     }
 
     .list-item.folder {
@@ -1085,6 +1228,41 @@
       border-radius: 4px;
       margin-bottom: 8px;
       font-size: 13px;
+    }
+
+    .file-item.rom-found {
+      border-left: 3px solid #27ae60;
+    }
+
+    .file-item.rom-missing {
+      border-left: 3px solid #e74c3c;
+    }
+
+    .rom-status-badge {
+      font-size: 11px;
+      font-weight: 600;
+      padding: 2px 6px;
+      border-radius: 3px;
+      white-space: nowrap;
+    }
+
+    .rom-status-badge.rom-found {
+      color: #27ae60;
+      background-color: rgba(46, 204, 113, 0.1);
+    }
+
+    .rom-status-badge.rom-missing {
+      color: #e74c3c;
+      background-color: rgba(231, 76, 60, 0.1);
+    }
+
+    .file-item.rom-unknown {
+      border-left: 3px solid #95a5a6;
+    }
+
+    .rom-status-badge.rom-unknown {
+      color: #95a5a6;
+      background-color: rgba(149, 165, 166, 0.1);
     }
 
     .file-hash {
@@ -1478,14 +1656,11 @@
                   <option value="none">Aucun</option>
                   <option value="category">Catégorie</option>
                   <option value="letter">Première lettre</option>
+                  <option value="match-status">Statut de matching</option>
                 </select>
               </div>
-              <div class="filter-control">
-                <label>Filtrer par catégorie :</label>
-                <div id="category-filters" class="category-filters">
-                  <!-- Les boutons de filtrage seront générés dynamiquement -->
-                </div>
-              </div>
+              <div id="category-filters-container"></div>
+              <div id="match-status-filters-container"></div>
             </div>
             <div class="group-filter-summary" id="group-filter-summary" style="display: none;">
               <!-- Le résumé sera affiché quand la barre est repliée -->
@@ -1498,6 +1673,15 @@
             </button>
           </div>
         </div>
+      </div>
+
+      <!-- Barre de sélection globale -->
+      <div class="select-all-bar" id="select-all-bar">
+        <label>
+          <input type="checkbox" id="select-all-checkbox" checked>
+          Tout sélectionner
+        </label>
+        <span class="selection-counter" id="selection-counter"></span>
       </div>
 
       <!-- Contrôles de vue maintenant dans le volet central -->

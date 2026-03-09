@@ -3,7 +3,7 @@ import sqlite3 from 'sqlite3';
 import fs from 'fs/promises';
 import path from 'path';
 
-const currentSchemaVersion = '1.0';
+const currentSchemaVersion = '1.1';
 
 export class Database {
   private db: sqlite3.Database;
@@ -114,6 +114,7 @@ async function initSchema(db: Database): Promise<void> {
       name TEXT NOT NULL UNIQUE,
       description TEXT,
       category TEXT,
+      is_selected INTEGER DEFAULT 1,
       system_id INTEGER,
       created_at DATETIME DEFAULT CURRENT_TIMESTAMP
     );
@@ -216,12 +217,15 @@ async function initSchema(db: Database): Promise<void> {
     'SELECT value FROM metadata WHERE key = ?',
     ['schema_version']
   );
-  
+
   if (!schemaVersion) {
     await db.run(
       'INSERT INTO metadata (key, value) VALUES (?, ?)',
       ['schema_version', currentSchemaVersion]
     );
+  } else {
+    // Appliquer les migrations si nécessaire
+    await migrateSchemaIfNeeded(db, schemaVersion.value);
   }
 
   console.log(`✅ Base de données initialisée (schéma v${currentSchemaVersion})`);
@@ -258,41 +262,27 @@ export async function clearDatabase(db: Database): Promise<void> {
   console.log('Base de données vidée');
 }
 
-/*async function migrateSchemaIfNeeded(db: Database): Promise<void> {
-  const result = await db.get<{ value: string }>(
-    'SELECT value FROM metadata WHERE key = ?',
-    ['schema_version']
-  );
-  
-  const currentVersion = result ? parseInt(result.value) : 0;
-  
-  if (currentVersion < 1) {
-    // Migration vers v1 (pour bases créées avant v1.0)
-    await migrateToV1(db);
+async function migrateSchemaIfNeeded(db: Database, currentVersion: string): Promise<void> {
+  if (currentVersion < '1.1') {
+    await migrateToV1_1(db);
   }
-  
-  if (currentVersion < 2) {
-    // Migration vers v2 (seulement si nécessaire un jour)
-    await migrateToV2(db);
-  }
-  
-  // etc.
-}*/
+}
 
-/*async function migrateToV1(db: Database): Promise<void> {
-  console.log('Migration vers schéma v1...');
-  
-  await db.exec(`
-    -- Ajouter colonnes si elles n'existent pas
-    ALTER TABLE scanned_files ADD COLUMN compression_level INTEGER;
-    ALTER TABLE scanned_files ADD COLUMN has_comment BOOLEAN DEFAULT 0;
-    -- etc.
-  `);
-  
+async function migrateToV1_1(db: Database): Promise<void> {
+  console.log('Migration vers schéma v1.1...');
+
+  // Vérifier si la colonne existe déjà
+  const columns = await db.all<{ name: string }>('PRAGMA table_info(games)');
+  const hasIsSelected = columns.some(col => col.name === 'is_selected');
+
+  if (!hasIsSelected) {
+    await db.run('ALTER TABLE games ADD COLUMN is_selected INTEGER DEFAULT 1');
+  }
+
   await db.run(
-    'UPDATE metadata SET value = ? WHERE key = ?',
-    ['1', 'schema_version']
+    'UPDATE metadata SET value = ?, updated_at = CURRENT_TIMESTAMP WHERE key = ?',
+    [currentSchemaVersion, 'schema_version']
   );
-  
-  console.log('✅ Migration vers schéma v1 terminée');
-}*/
+
+  console.log('✅ Migration vers schéma v1.1 terminée');
+}

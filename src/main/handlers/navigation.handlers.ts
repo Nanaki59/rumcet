@@ -87,6 +87,34 @@ export function registerNavigationHandlers(ipcMain: IpcMain) {
     }
   });
 
+  // Mettre à jour la sélection d'un jeu
+  ipcMain.handle('games:update-selection', async (_event, gameId: number, isSelected: boolean) => {
+    const database = databaseService.getDatabase();
+    if (!database) return;
+
+    try {
+      await database.run('UPDATE games SET is_selected = ? WHERE id = ?', [isSelected ? 1 : 0, gameId]);
+    } catch (error) {
+      console.error('Erreur lors de la mise à jour de la sélection:', error);
+    }
+  });
+
+  // Mettre à jour la sélection de plusieurs jeux
+  ipcMain.handle('games:update-selection-bulk', async (_event, gameIds: number[], isSelected: boolean) => {
+    const database = databaseService.getDatabase();
+    if (!database) return;
+
+    try {
+      const placeholders = gameIds.map(() => '?').join(',');
+      await database.run(
+        `UPDATE games SET is_selected = ? WHERE id IN (${placeholders})`,
+        [isSelected ? 1 : 0, ...gameIds]
+      );
+    } catch (error) {
+      console.error('Erreur lors de la mise à jour de la sélection en masse:', error);
+    }
+  });
+
   // Lister le contenu d'un dossier
   ipcMain.handle('folder:list-contents', async (_event, folderPath: string, viewMode: 'hierarchical' | 'flat' = 'hierarchical') => {
     let database = databaseService.getDatabase();
