@@ -28,9 +28,10 @@ let currentSearchScope: 'all' | 'games' | 'files' | 'archives' = 'all';
 let originalContent: HTMLElement[] = [];
 
 // Variables pour le groupement et le filtrage
-let currentGroupBy: 'none' | 'category' | 'letter' | 'match-status' = 'none';
+let currentGroupBy: 'none' | 'category' | 'letter' | 'match-status' | 'selection' = 'none';
 let activeFilters: Set<string> = new Set();
 let activeMatchFilters: Set<string> = new Set();
+let activeSelectionFilters: Set<string> = new Set();
 let allGames: GameInfo[] = [];
 let categoryCounts: Map<string, number> = new Map();
 let matchStatusCounts: Map<string, number> = new Map();
@@ -741,6 +742,7 @@ async function updateCenterContent(type: 'dat' | 'folder', path: string) {
       // Générer les filtres (en restaurant l'état actif)
       generateCategoryFilters();
       generateMatchStatusFilters();
+      generateSelectionFilters();
 
       // Restaurer la valeur du select de groupement
       const groupBySelect = document.getElementById('group-by') as HTMLSelectElement;
@@ -1173,7 +1175,23 @@ function generateMatchStatusFilters() {
     count: matchStatusCounts.get(status) || 0
   }));
 
-  createFilterDropdown('match-status-filters-container', 'Statut', items, activeMatchFilters, () => {
+  createFilterDropdown('match-status-filters-container', 'Matching', items, activeMatchFilters, () => {
+    applyFiltersAndGrouping();
+    updateGroupFilterSummary();
+  });
+}
+
+// Génération du dropdown de filtrage par statut de sélection
+function generateSelectionFilters() {
+  const selectedCount = allGames.filter(g => g.is_selected !== 0).length;
+  const unselectedCount = allGames.length - selectedCount;
+
+  const items = [
+    { key: 'selected', displayName: '✅ Sélectionné', count: selectedCount },
+    { key: 'unselected', displayName: '⬜ Non sélectionné', count: unselectedCount }
+  ];
+
+  createFilterDropdown('selection-filters-container', 'Sélection', items, activeSelectionFilters, () => {
     applyFiltersAndGrouping();
     updateGroupFilterSummary();
   });
@@ -1200,6 +1218,16 @@ function applyFiltersAndGrouping() {
   if (activeMatchFilters.size > 0) {
     filteredGames = filteredGames.filter(game => {
       return activeMatchFilters.has(getGameMatchStatus(game));
+    });
+  }
+
+  // Appliquer les filtres de sélection
+  if (activeSelectionFilters.size > 0) {
+    filteredGames = filteredGames.filter(game => {
+      const isSelected = game.is_selected !== 0;
+      if (activeSelectionFilters.has('selected') && isSelected) return true;
+      if (activeSelectionFilters.has('unselected') && !isSelected) return true;
+      return false;
     });
   }
 
@@ -1252,6 +1280,8 @@ function displayGroupedGames(games: GameInfo[]) {
       }
     } else if (currentGroupBy === 'match-status') {
       groupKey = getGameMatchStatus(game);
+    } else if (currentGroupBy === 'selection') {
+      groupKey = game.is_selected !== 0 ? 'selected' : 'unselected';
     } else {
       groupKey = 'Tous';
     }
@@ -1271,14 +1301,21 @@ function displayGroupedGames(games: GameInfo[]) {
     if (currentGroupBy === 'match-status') {
       return matchStatusOrder.indexOf(a[0]) - matchStatusOrder.indexOf(b[0]);
     }
+    if (currentGroupBy === 'selection') {
+      const selectionOrder = ['selected', 'unselected'];
+      return selectionOrder.indexOf(a[0]) - selectionOrder.indexOf(b[0]);
+    }
     return a[0].localeCompare(b[0]);
   });
 
   // Afficher chaque groupe
   sortedGroups.forEach(([groupKey, groupGames]) => {
     // Nom d'affichage du groupe
+    const selectionLabelsMap: Record<string, string> = { 'selected': '✅ Sélectionné', 'unselected': '⬜ Non sélectionné' };
     const groupName = currentGroupBy === 'match-status'
       ? `${matchStatusIcons[groupKey]} ${matchStatusLabels[groupKey]}`
+      : currentGroupBy === 'selection'
+      ? selectionLabelsMap[groupKey]
       : groupKey;
     // Trier les jeux par nom dans chaque groupe
     groupGames.sort((a, b) => a.name.localeCompare(b.name));
@@ -1394,6 +1431,14 @@ function getDisplayedGames(): GameInfo[] {
   }
   if (activeMatchFilters.size > 0) {
     result = result.filter(game => activeMatchFilters.has(getGameMatchStatus(game)));
+  }
+  if (activeSelectionFilters.size > 0) {
+    result = result.filter(game => {
+      const isSelected = game.is_selected !== 0;
+      if (activeSelectionFilters.has('selected') && isSelected) return true;
+      if (activeSelectionFilters.has('unselected') && !isSelected) return true;
+      return false;
+    });
   }
   return result;
 }
@@ -2647,35 +2692,10 @@ function setupGroupingAndFiltering() {
   if (!groupBySelect) return;
 
   groupBySelect.addEventListener('change', () => {
-    currentGroupBy = groupBySelect.value as 'none' | 'category' | 'letter' | 'match-status';
+    currentGroupBy = groupBySelect.value as 'none' | 'category' | 'letter' | 'match-status' | 'selection';
     applyFiltersAndGrouping();
     updateGroupFilterSummary();
   });
-
-  // Gestion du bouton de repliage
-  const toggleBtn = document.getElementById('group-filter-toggle') as HTMLButtonElement;
-  const controls = document.getElementById('group-filter-controls') as HTMLDivElement;
-  const summary = document.getElementById('group-filter-summary') as HTMLDivElement;
-
-  if (toggleBtn && controls && summary) {
-    let isCollapsed = false;
-
-    toggleBtn.addEventListener('click', () => {
-      isCollapsed = !isCollapsed;
-      toggleBtn.classList.toggle('collapsed');
-
-      if (isCollapsed) {
-        // Masquer les contrôles et afficher le résumé
-        controls.style.display = 'none';
-        summary.style.display = 'block';
-        updateGroupFilterSummary();
-      } else {
-        // Afficher les contrôles et masquer le résumé
-        controls.style.display = 'flex';
-        summary.style.display = 'none';
-      }
-    });
-  }
 
   // Gestion de la checkbox "Tout sélectionner"
   const selectAllCheckbox = document.getElementById('select-all-checkbox') as HTMLInputElement;
@@ -2722,7 +2742,8 @@ function updateGroupFilterSummary() {
     'none': 'Aucun',
     'category': 'Par catégorie',
     'letter': 'Par première lettre',
-    'match-status': 'Par statut de matching'
+    'match-status': 'Par statut de matching',
+    'selection': 'Par sélection'
   };
   summaryText += `<span class="gf-summary-item">Groupement : <span class="gf-summary-value">${groupByLabels[currentGroupBy]}</span></span>`;
 
@@ -2733,6 +2754,10 @@ function updateGroupFilterSummary() {
   }
   if (activeMatchFilters.size > 0) {
     allFilterLabels.push(...Array.from(activeMatchFilters).map(s => matchStatusLabels[s]));
+  }
+  if (activeSelectionFilters.size > 0) {
+    const selectionLabels: Record<string, string> = { 'selected': '✅ Sélectionné', 'unselected': '⬜ Non sélectionné' };
+    allFilterLabels.push(...Array.from(activeSelectionFilters).map(s => selectionLabels[s]));
   }
 
   if (allFilterLabels.length > 0) {

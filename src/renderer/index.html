@@ -745,26 +745,6 @@
       min-width: 0;
     }
 
-    .group-filter-summary {
-      font-size: 13px;
-      color: #2c3e50;
-      white-space: nowrap;
-    }
-
-    .group-filter-summary .gf-summary-item {
-      display: inline;
-      margin-right: 20px;
-      font-weight: 600;
-      width: auto;
-      padding: 0;
-    }
-
-    .group-filter-summary .gf-summary-value {
-      color: #3498db;
-      margin-left: 5px;
-      display: inline;
-    }
-
     .group-filter-actions {
       display: flex;
       align-items: center;
@@ -784,35 +764,6 @@
       color: #3498db;
     }
 
-    .group-filter-toggle-btn {
-      background: none;
-      border: none;
-      cursor: pointer;
-      padding: 4px 8px;
-      border-radius: 3px;
-      display: flex;
-      align-items: center;
-      justify-content: center;
-      transition: background-color 0.2s;
-      color: #7f8c8d;
-      font-size: 12px;
-      flex-shrink: 0;
-    }
-
-    .group-filter-toggle-btn:hover {
-      background-color: rgba(52, 152, 219, 0.1);
-      color: #3498db;
-    }
-
-    .group-filter-toggle-btn .chevron {
-      transition: transform 0.3s ease;
-      display: inline-block;
-    }
-
-    .group-filter-toggle-btn.collapsed .chevron {
-      transform: rotate(180deg);
-    }
-
     .group-control {
       display: flex;
       align-items: center;
@@ -823,6 +774,13 @@
       font-size: 13px;
       font-weight: 600;
       color: #2c3e50;
+    }
+
+    .filter-label {
+      font-size: 13px;
+      font-weight: 600;
+      color: #2c3e50;
+      white-space: nowrap;
     }
 
     .group-control select {
@@ -920,7 +878,8 @@
       gap: 8px;
       padding: 7px 12px;
       cursor: pointer;
-      font-size: 12px;
+      font-size: 13px;
+      font-family: inherit;
       color: #2c3e50;
       user-select: none;
       border-bottom: 1px solid #f0f0f0;
@@ -1654,23 +1613,19 @@
                 <label for="group-by">Grouper par :</label>
                 <select id="group-by">
                   <option value="none">Aucun</option>
-                  <option value="category">Catégorie</option>
                   <option value="letter">Première lettre</option>
                   <option value="match-status">Statut de matching</option>
+                  <option value="selection">Sélection</option>
                 </select>
               </div>
+              <span class="filter-label">Filtres :</span>
               <div id="category-filters-container"></div>
               <div id="match-status-filters-container"></div>
+              <div id="selection-filters-container"></div>
             </div>
-            <div class="group-filter-summary" id="group-filter-summary" style="display: none;">
-              <!-- Le résumé sera affiché quand la barre est repliée -->
             </div>
-          </div>
           <div class="group-filter-actions">
             <div id="global-counters" class="global-counters"></div>
-            <button class="group-filter-toggle-btn" id="group-filter-toggle" title="Replier/Déplier">
-              <span class="chevron">▲</span>
-            </button>
           </div>
         </div>
       </div>
