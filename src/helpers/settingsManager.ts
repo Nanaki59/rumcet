@@ -6,7 +6,22 @@ import fs from 'fs/promises';
 
 export type ArchiveFormat = '7z' | 'zip' | 'chd';
 export type CompressionLevel = 'fastest' | 'normal' | 'maximum';
+export type CleanupScope = 'used-only' | 'all-matched';
 export type RarTool = '7zip' | 'winrar' | 'unrar';
+
+export type SystemCategory = 'Nintendo' | 'Sega' | 'Sony' | 'Arcade' | 'Ordinateurs' | 'Autres';
+
+export type SystemSubcategory = 'Consoles de salon' | 'Consoles portables';
+
+export interface SystemCompatibility {
+  systemId: string;
+  systemName: string;
+  category: SystemCategory;
+  subcategory?: SystemSubcategory;
+  supportedFormats: ArchiveFormat[];
+  warningFormats?: ArchiveFormat[];
+  unsupportedFormats?: ArchiveFormat[];
+}
 
 export interface AppSettings {
   // Dossiers par défaut
@@ -14,7 +29,14 @@ export interface AppSettings {
   defaultDatabaseFolder: string;
   defaultRomsFolder: string;
   unmatchedRomsFolder: string;
-  
+  validatedRomsFolder: string;
+  tempExtractionFolder: string;
+
+  // Consolidation — Nettoyage
+  cleanSourceAfterConsolidation: boolean;
+  cleanupScope: CleanupScope;
+  protectFilesForUnselectedGames: boolean;
+
   // Autres paramètres
   theme: 'light' | 'dark';
   language: 'fr' | 'en';
@@ -35,7 +57,10 @@ export interface AppSettings {
   chdmanPath?: string;
   useEmbeddedChdman?: boolean;
   rarToolPriority?: RarTool[];
-  
+
+  // Compatibilité archives par système
+  systemCompatibility?: SystemCompatibility[];
+
   settingsVersion?: number;
 }
 
@@ -53,7 +78,48 @@ export const compressionLevelToZip = {
   maximum: 9     // DEFLATE level 9 (best)
 };
 
-const CURRENT_SETTINGS_VERSION = 3;
+const CURRENT_SETTINGS_VERSION = 5;
+
+/**
+ * Valeurs par défaut de compatibilité archives par système
+ */
+export const DEFAULT_SYSTEM_COMPATIBILITY: SystemCompatibility[] = [
+  // ── Nintendo — Consoles de salon ──
+  { systemId: 'nes', systemName: 'Nintendo Entertainment System (NES)', category: 'Nintendo', subcategory: 'Consoles de salon', supportedFormats: ['zip', '7z'], unsupportedFormats: ['chd'] },
+  { systemId: 'snes', systemName: 'Super Nintendo (SNES)', category: 'Nintendo', subcategory: 'Consoles de salon', supportedFormats: ['zip', '7z'], unsupportedFormats: ['chd'] },
+  { systemId: 'n64', systemName: 'Nintendo 64', category: 'Nintendo', subcategory: 'Consoles de salon', supportedFormats: ['7z', 'zip'], unsupportedFormats: ['chd'] },
+  { systemId: 'gamecube', systemName: 'Nintendo GameCube', category: 'Nintendo', subcategory: 'Consoles de salon', supportedFormats: ['7z'], warningFormats: ['zip'], unsupportedFormats: ['chd'] },
+  { systemId: 'wii', systemName: 'Nintendo Wii', category: 'Nintendo', subcategory: 'Consoles de salon', supportedFormats: ['7z'], warningFormats: ['zip'], unsupportedFormats: ['chd'] },
+  // ── Nintendo — Portables ──
+  { systemId: 'gb', systemName: 'Game Boy', category: 'Nintendo', subcategory: 'Consoles portables', supportedFormats: ['zip', '7z'], unsupportedFormats: ['chd'] },
+  { systemId: 'gbc', systemName: 'Game Boy Color', category: 'Nintendo', subcategory: 'Consoles portables', supportedFormats: ['zip', '7z'], unsupportedFormats: ['chd'] },
+  { systemId: 'gba', systemName: 'Game Boy Advance', category: 'Nintendo', subcategory: 'Consoles portables', supportedFormats: ['zip', '7z'], unsupportedFormats: ['chd'] },
+  { systemId: 'nds', systemName: 'Nintendo DS', category: 'Nintendo', subcategory: 'Consoles portables', supportedFormats: ['7z', 'zip'], unsupportedFormats: ['chd'] },
+  { systemId: '3ds', systemName: 'Nintendo 3DS', category: 'Nintendo', subcategory: 'Consoles portables', supportedFormats: ['7z'], warningFormats: ['zip'], unsupportedFormats: ['chd'] },
+  // ── Sega — Consoles de salon ──
+  { systemId: 'mastersystem', systemName: 'Sega Master System', category: 'Sega', subcategory: 'Consoles de salon', supportedFormats: ['zip', '7z'], unsupportedFormats: ['chd'] },
+  { systemId: 'genesis', systemName: 'Sega Genesis / Mega Drive', category: 'Sega', subcategory: 'Consoles de salon', supportedFormats: ['zip', '7z'], unsupportedFormats: ['chd'] },
+  { systemId: 'sega32x', systemName: 'Sega 32X', category: 'Sega', subcategory: 'Consoles de salon', supportedFormats: ['zip', '7z'], unsupportedFormats: ['chd'] },
+  { systemId: 'segacd', systemName: 'Sega CD / Mega CD', category: 'Sega', subcategory: 'Consoles de salon', supportedFormats: ['chd'], warningFormats: ['7z', 'zip'], unsupportedFormats: [] },
+  { systemId: 'saturn', systemName: 'Sega Saturn', category: 'Sega', subcategory: 'Consoles de salon', supportedFormats: ['chd'], warningFormats: ['7z'], unsupportedFormats: ['zip'] },
+  { systemId: 'dreamcast', systemName: 'Sega Dreamcast', category: 'Sega', subcategory: 'Consoles de salon', supportedFormats: ['chd'], warningFormats: ['7z'], unsupportedFormats: ['zip'] },
+  // ── Sega — Portables ──
+  { systemId: 'gamegear', systemName: 'Sega Game Gear', category: 'Sega', subcategory: 'Consoles portables', supportedFormats: ['zip', '7z'], unsupportedFormats: ['chd'] },
+  // ── Sony — Consoles de salon ──
+  { systemId: 'psx', systemName: 'PlayStation (PSX)', category: 'Sony', subcategory: 'Consoles de salon', supportedFormats: ['chd'], warningFormats: ['7z', 'zip'], unsupportedFormats: [] },
+  { systemId: 'ps2', systemName: 'PlayStation 2 (PS2)', category: 'Sony', subcategory: 'Consoles de salon', supportedFormats: ['chd', '7z'], warningFormats: [], unsupportedFormats: ['zip'] },
+  // ── Sony — Portables ──
+  { systemId: 'psp', systemName: 'PlayStation Portable (PSP)', category: 'Sony', subcategory: 'Consoles portables', supportedFormats: ['chd', '7z'], warningFormats: ['zip'], unsupportedFormats: [] },
+  // ── Arcade ──
+  { systemId: 'mame', systemName: 'Arcade (MAME)', category: 'Arcade', supportedFormats: ['zip'], warningFormats: ['7z'], unsupportedFormats: ['chd'] },
+  { systemId: 'fba', systemName: 'Arcade (FinalBurn Neo)', category: 'Arcade', supportedFormats: ['zip'], warningFormats: ['7z'], unsupportedFormats: ['chd'] },
+  { systemId: 'neogeo', systemName: 'Neo Geo', category: 'Arcade', supportedFormats: ['zip'], warningFormats: ['7z'], unsupportedFormats: ['chd'] },
+  // ── Ordinateurs ──
+  { systemId: 'pc', systemName: 'PC (DOS / Windows)', category: 'Ordinateurs', supportedFormats: ['7z', 'zip'], warningFormats: ['chd'], unsupportedFormats: [] },
+  // ── Autres ──
+  { systemId: 'pcengine', systemName: 'PC Engine / TurboGrafx-16', category: 'Autres', supportedFormats: ['chd', '7z', 'zip'], unsupportedFormats: [] },
+  { systemId: 'atari2600', systemName: 'Atari 2600', category: 'Autres', supportedFormats: ['zip', '7z'], unsupportedFormats: ['chd'] },
+];
 
 class SettingsManager {
   private settingsPath: string;
@@ -71,6 +137,12 @@ class SettingsManager {
       defaultDatabaseFolder: path.join(app.getPath('userData'), 'databases'),
       defaultRomsFolder: path.join(documentsPath, 'ROMs'),
       unmatchedRomsFolder: path.join(documentsPath, 'ROMs', 'Unmatched'),
+      validatedRomsFolder: path.join(documentsPath, 'ROMs', 'Validated'),
+      tempExtractionFolder: path.join(app.getPath('temp'), 'RUMCET'),
+
+      cleanSourceAfterConsolidation: true,
+      cleanupScope: 'used-only',
+      protectFilesForUnselectedGames: true,
 
       theme: 'light',
       language: 'fr',
@@ -91,7 +163,10 @@ class SettingsManager {
       chdmanPath: undefined,
       useEmbeddedChdman: true,
       rarToolPriority: ['7zip', 'winrar', 'unrar'],
-      
+
+      // Compatibilité archives par système
+      systemCompatibility: DEFAULT_SYSTEM_COMPATIBILITY,
+
       settingsVersion: CURRENT_SETTINGS_VERSION
     };
     
@@ -152,7 +227,30 @@ class SettingsManager {
       // Supprimer l'ancien champ
       delete migratedSettings.preferredArchiveFormat;
     }
-    
+
+    // Migration v3 -> v4 : Ajout des paramètres de consolidation
+    if (version < 4) {
+      console.log('Migration v3 -> v4 : Ajout des paramètres de consolidation');
+      migratedSettings = {
+        ...migratedSettings,
+        validatedRomsFolder: this.defaultSettings.validatedRomsFolder,
+        tempExtractionFolder: this.defaultSettings.tempExtractionFolder,
+        cleanSourceAfterConsolidation: this.defaultSettings.cleanSourceAfterConsolidation,
+        settingsVersion: 4
+      };
+    }
+
+    // Migration v4 -> v5 : Ajout des paramètres de nettoyage avancés
+    if (version < 5) {
+      console.log('Migration v4 -> v5 : Ajout des paramètres de nettoyage avancés');
+      migratedSettings = {
+        ...migratedSettings,
+        cleanupScope: this.defaultSettings.cleanupScope,
+        protectFilesForUnselectedGames: this.defaultSettings.protectFilesForUnselectedGames,
+        settingsVersion: 5
+      };
+    }
+
     return migratedSettings as AppSettings;
   }
 
@@ -241,7 +339,9 @@ class SettingsManager {
   private async ensureFoldersExist(): Promise<void> {
     const folders = [
       this.settings.defaultDatabaseFolder,
-      this.settings.unmatchedRomsFolder
+      this.settings.unmatchedRomsFolder,
+      this.settings.validatedRomsFolder,
+      this.settings.tempExtractionFolder
     ];
     
     for (const folder of folders) {

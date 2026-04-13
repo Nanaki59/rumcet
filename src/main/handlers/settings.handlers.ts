@@ -103,6 +103,14 @@ export function registerSettingsHandlers(ipcMain: IpcMain, mainWindow: BrowserWi
         title = 'Sélectionner le dossier pour les ROMs non référencées';
         defaultPath = settingsManager.get('unmatchedRomsFolder');
         break;
+      case 'validated':
+        title = 'Sélectionner le dossier pour les ROMs validées';
+        defaultPath = settingsManager.get('validatedRomsFolder');
+        break;
+      case 'temp':
+        title = 'Sélectionner le dossier temporaire d\'extraction';
+        defaultPath = settingsManager.get('tempExtractionFolder');
+        break;
     }
 
     const result = await dialog.showOpenDialog(mainWindow, {

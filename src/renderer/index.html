@@ -930,6 +930,7 @@
       color: #2c3e50;
       cursor: pointer;
       user-select: none;
+      flex: 1;
     }
 
     .select-all-bar input[type="checkbox"] {
@@ -1009,6 +1010,8 @@
       font-size: 14px;
       color: #2c3e50;
       border-bottom: 2px solid #bdc3c7;
+      cursor: pointer;
+      user-select: none;
       position: sticky;
       top: 0;
       z-index: 1;
@@ -1533,6 +1536,10 @@
           <span class="workflow-arrow">→</span>
           <button id="match-roms" disabled class="match-action" title="🎯 Étape 5 : Analyser et matcher les ROMs">
             🎯 5. Matcher les ROMs
+          </button>
+          <span class="workflow-arrow">→</span>
+          <button id="consolidate-roms" disabled class="match-action" title="🧹 Étape 6 : Consolider les ROMs validées">
+            🧹 6. Consolider
           </button>
         </div>
       </div>

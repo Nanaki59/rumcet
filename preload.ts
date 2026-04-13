@@ -205,7 +205,21 @@ contextBridge.exposeInMainWorld('api', {
   getGameMatchStatuses: () => ipcRenderer.invoke('matching:get-game-statuses'),
   getMatchesForGame: (gameId: number) => ipcRenderer.invoke('matching:get-matches-for-game', gameId),
   getExtraFiles: () => ipcRenderer.invoke('matching:get-extras'),
+  getFilesMatchInfo: (fileIds: number[]) => ipcRenderer.invoke('matching:get-files-match-info', fileIds),
   exportMatchingReport: () => ipcRenderer.invoke('matching:export-report'),
+
+  // ========================================
+  // API de consolidation
+  // ========================================
+
+  runConsolidation: () => ipcRenderer.invoke('consolidation:run'),
+  getConsolidationLog: () => ipcRenderer.invoke('consolidation:get-log'),
+  onConsolidationProgress: (callback: (data: any) => void) => {
+    const handler = (_event: any, data: any) => callback(data);
+    ipcRenderer.on('consolidation-progress', handler);
+    // Retourner une fonction pour retirer le listener
+    return () => ipcRenderer.removeListener('consolidation-progress', handler);
+  },
 
   // ========================================
   // API de recherche

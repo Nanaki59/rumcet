@@ -239,9 +239,10 @@ export class ArchiveManager extends EventEmitter {
     // Ajuster le chemin de sortie avec la bonne extension
     const ext = this.formatToExtension.get(targetFormat)!;
     if (!outputPath.toLowerCase().endsWith(ext)) {
-      // Remplacer l'extension ou l'ajouter
+      // Remplacer l'extension existante uniquement si c'est une vraie extension de fichier
+      // (courte, sans espaces) — sinon, simplement ajouter la nouvelle extension
       const currentExt = path.extname(outputPath);
-      if (currentExt) {
+      if (currentExt && currentExt.length <= 5 && !/\s/.test(currentExt)) {
         outputPath = outputPath.slice(0, -currentExt.length) + ext;
       } else {
         outputPath = outputPath + ext;
@@ -256,11 +257,21 @@ export class ArchiveManager extends EventEmitter {
     });
     
     try {
+      // Mapper le niveau de compression textuel vers une valeur numérique
+      const compressionMap: Record<string, number> = {
+        'fastest': 1,
+        'normal': 5,
+        'maximum': 9
+      };
+      const numericLevel = settings?.compressionLevel
+        ? compressionMap[settings.compressionLevel] ?? 5
+        : undefined;
+
       // Options de création
       const options: ArchiveCreateOptions = {
         files: files,
         outputPath: outputPath,
-        compressionLevel: undefined,  // Géré dans chaque handler via settings
+        compressionLevel: numericLevel,
         solidArchive: settings?.solidArchive !== undefined ? settings.solidArchive : true,
         multithreading: settings?.multithreading !== undefined ? settings.multithreading : true
       };

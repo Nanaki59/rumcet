@@ -3,7 +3,7 @@ import sqlite3 from 'sqlite3';
 import fs from 'fs/promises';
 import path from 'path';
 
-const currentSchemaVersion = '1.1';
+const currentSchemaVersion = '1.4';
 
 export class Database {
   private db: sqlite3.Database;
@@ -196,20 +196,51 @@ async function initSchema(db: Database): Promise<void> {
     CREATE INDEX IF NOT EXISTS idx_archive_contents_comment ON archive_contents(has_comment);
 
     -- Table des correspondances entre DAT et fichiers scannés
+    -- Contient TOUS les matches (un fichier peut matcher plusieurs ROMs du DAT)
+    -- scanned_file_id pointe toujours vers le fichier physique sur disque
+    --   (fichier loose OU fichier archive contenant le fichier matché)
+    -- archive_content_id est renseigné uniquement si le match vient d'un contenu d'archive
     CREATE TABLE IF NOT EXISTS rom_matches (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
-      dat_rom_id INTEGER,
-      scanned_file_id INTEGER,
+      dat_rom_id INTEGER NOT NULL,
+      scanned_file_id INTEGER NOT NULL,
       archive_content_id INTEGER,
-      match_type TEXT,
-      match_score INTEGER DEFAULT 0,
-      FOREIGN KEY (dat_rom_id) REFERENCES dat_roms(id),
-      FOREIGN KEY (scanned_file_id) REFERENCES scanned_files(id),
-      FOREIGN KEY (archive_content_id) REFERENCES archive_contents(id)
+      archive_is_perfect BOOLEAN DEFAULT 0,
+      FOREIGN KEY (dat_rom_id) REFERENCES dat_roms(id) ON DELETE CASCADE,
+      FOREIGN KEY (scanned_file_id) REFERENCES scanned_files(id) ON DELETE CASCADE,
+      FOREIGN KEY (archive_content_id) REFERENCES archive_contents(id) ON DELETE CASCADE
     );
 
     CREATE INDEX IF NOT EXISTS idx_rom_matches_dat ON rom_matches(dat_rom_id);
     CREATE INDEX IF NOT EXISTS idx_rom_matches_file ON rom_matches(scanned_file_id);
+    CREATE INDEX IF NOT EXISTS idx_rom_matches_archive_content ON rom_matches(archive_content_id);
+
+    -- Table de suivi de consolidation
+    CREATE TABLE IF NOT EXISTS consolidation_log (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      game_id INTEGER NOT NULL,
+      game_name TEXT NOT NULL,
+      output_path TEXT,
+      output_format TEXT,
+      status TEXT DEFAULT 'pending',
+      roms_consolidated INTEGER DEFAULT 0,
+      roms_total INTEGER DEFAULT 0,
+      error_message TEXT,
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      FOREIGN KEY (game_id) REFERENCES games(id) ON DELETE CASCADE
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_consolidation_log_game ON consolidation_log(game_id);
+    CREATE INDEX IF NOT EXISTS idx_consolidation_log_status ON consolidation_log(status);
+
+    -- Table de suivi des fichiers non matchés déplacés
+    CREATE TABLE IF NOT EXISTS unmatched_moves (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      original_path TEXT NOT NULL,
+      destination_path TEXT NOT NULL,
+      status TEXT DEFAULT 'pending',
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+    );
   `);
   
   // Initialiser la version du schéma si elle n'existe pas
@@ -266,6 +297,15 @@ async function migrateSchemaIfNeeded(db: Database, currentVersion: string): Prom
   if (currentVersion < '1.1') {
     await migrateToV1_1(db);
   }
+  if (currentVersion < '1.2') {
+    await migrateToV1_2(db);
+  }
+  if (currentVersion < '1.3') {
+    await migrateToV1_3(db);
+  }
+  if (currentVersion < '1.4') {
+    await migrateToV1_4(db);
+  }
 }
 
 async function migrateToV1_1(db: Database): Promise<void> {
@@ -285,4 +325,107 @@ async function migrateToV1_1(db: Database): Promise<void> {
   );
 
   console.log('✅ Migration vers schéma v1.1 terminée');
+}
+
+async function migrateToV1_2(db: Database): Promise<void> {
+  console.log('Migration vers schéma v1.2...');
+
+  await db.exec(`
+    CREATE TABLE IF NOT EXISTS consolidation_log (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      game_id INTEGER NOT NULL,
+      game_name TEXT NOT NULL,
+      output_path TEXT,
+      output_format TEXT,
+      status TEXT DEFAULT 'pending',
+      roms_consolidated INTEGER DEFAULT 0,
+      roms_total INTEGER DEFAULT 0,
+      error_message TEXT,
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      FOREIGN KEY (game_id) REFERENCES games(id) ON DELETE CASCADE
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_consolidation_log_game ON consolidation_log(game_id);
+    CREATE INDEX IF NOT EXISTS idx_consolidation_log_status ON consolidation_log(status);
+
+    CREATE TABLE IF NOT EXISTS unmatched_moves (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      original_path TEXT NOT NULL,
+      destination_path TEXT NOT NULL,
+      status TEXT DEFAULT 'pending',
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+    );
+  `);
+
+  await db.run(
+    'UPDATE metadata SET value = ?, updated_at = CURRENT_TIMESTAMP WHERE key = ?',
+    [currentSchemaVersion, 'schema_version']
+  );
+
+  console.log('✅ Migration vers schéma v1.2 terminée');
+}
+
+async function migrateToV1_3(db: Database): Promise<void> {
+  console.log('Migration vers schéma v1.3...');
+
+  // Recréer la table rom_matches avec le nouveau schéma
+  // (suppression match_type/match_score, ajout archive_is_perfect,
+  //  scanned_file_id pointe désormais vers le fichier physique y compris pour les archives)
+  await db.exec(`
+    DROP TABLE IF EXISTS rom_matches;
+
+    CREATE TABLE rom_matches (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      dat_rom_id INTEGER NOT NULL,
+      scanned_file_id INTEGER NOT NULL,
+      archive_content_id INTEGER,
+      archive_is_perfect BOOLEAN DEFAULT 0,
+      FOREIGN KEY (dat_rom_id) REFERENCES dat_roms(id) ON DELETE CASCADE,
+      FOREIGN KEY (scanned_file_id) REFERENCES scanned_files(id) ON DELETE CASCADE,
+      FOREIGN KEY (archive_content_id) REFERENCES archive_contents(id) ON DELETE CASCADE
+    );
+
+    CREATE INDEX idx_rom_matches_dat ON rom_matches(dat_rom_id);
+    CREATE INDEX idx_rom_matches_file ON rom_matches(scanned_file_id);
+    CREATE INDEX idx_rom_matches_archive_content ON rom_matches(archive_content_id);
+  `);
+
+  await db.run(
+    'UPDATE metadata SET value = ?, updated_at = CURRENT_TIMESTAMP WHERE key = ?',
+    [currentSchemaVersion, 'schema_version']
+  );
+
+  console.log('✅ Migration vers schéma v1.3 terminée (rom_matches recréée — relancer le matching)');
+}
+
+async function migrateToV1_4(db: Database): Promise<void> {
+  console.log('Migration vers schéma v1.4...');
+
+  // Recréer rom_matches avec ON DELETE CASCADE sur toutes les FK
+  // (v1.3 manquait les CASCADE, ce qui bloquait la suppression de dossiers)
+  await db.exec(`
+    DROP TABLE IF EXISTS rom_matches;
+
+    CREATE TABLE rom_matches (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      dat_rom_id INTEGER NOT NULL,
+      scanned_file_id INTEGER NOT NULL,
+      archive_content_id INTEGER,
+      archive_is_perfect BOOLEAN DEFAULT 0,
+      FOREIGN KEY (dat_rom_id) REFERENCES dat_roms(id) ON DELETE CASCADE,
+      FOREIGN KEY (scanned_file_id) REFERENCES scanned_files(id) ON DELETE CASCADE,
+      FOREIGN KEY (archive_content_id) REFERENCES archive_contents(id) ON DELETE CASCADE
+    );
+
+    CREATE INDEX idx_rom_matches_dat ON rom_matches(dat_rom_id);
+    CREATE INDEX idx_rom_matches_file ON rom_matches(scanned_file_id);
+    CREATE INDEX idx_rom_matches_archive_content ON rom_matches(archive_content_id);
+  `);
+
+  await db.run(
+    'UPDATE metadata SET value = ?, updated_at = CURRENT_TIMESTAMP WHERE key = ?',
+    [currentSchemaVersion, 'schema_version']
+  );
+
+  console.log('✅ Migration vers schéma v1.4 terminée (rom_matches recréée avec CASCADE — relancer le matching)');
 }

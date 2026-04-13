@@ -1,21 +1,18 @@
 // src/helpers/matchRoms.ts
 import { Database } from '../database/init';
-import { settingsManager } from './settingsManager';
 
 export interface RomMatch {
   datRomId: number;
   datRomName: string;
   gameName: string;
   gameId: number;
-  scannedFileId?: number;
-  scannedFileName?: string;
-  scannedFilePath?: string;
-  archiveContentId?: number;
-  archiveFileName?: string;
-  archiveType?: string;  // 'zip', '7z', 'rar', 'iso', 'cso', 'chd', ou null pour fichiers non compressés
-  matchType: 'perfect' | 'none';
-  matchedBy: string[]; // ['crc32'] ou ['md5'] ou ['sha1'] ou combinaison
-  priorityScore: number; // Score de priorité basé sur le type d'archive (plus élevé = meilleur)
+  scannedFileId: number;           // Toujours le fichier physique (loose OU archive)
+  scannedFileName: string;
+  scannedFilePath: string;
+  archiveContentId?: number;       // Renseigné uniquement si le match vient d'un contenu d'archive
+  archiveFileName?: string;        // Nom du fichier dans l'archive (ex: "archive.zip > rom.bin")
+  archiveType?: string;            // 'zip', '7z', 'rar', 'iso', 'cso', 'chd', ou undefined pour fichiers loose
+  archiveIsPerfect: boolean;       // L'archive contient toutes les ROMs du jeu
 }
 
 export interface GameMatchStatus {
@@ -32,41 +29,18 @@ interface MatchingStats {
   completeGames: number;       // ✅
   partialGames: number;        // ⚠️
   missingGames: number;        // ❌
-  
-  // Statistiques par ROM
+
+  // Statistiques par ROM (sans doublons de matching)
   totalDatRoms: number;
-  matchedRoms: number;
-  missingRoms: number;
-  extraFiles: number;
+  matchedRoms: number;         // ROMs du DAT ayant au moins 1 match
+  missingRoms: number;         // ROMs du DAT sans aucun match
+  extraFiles: number;          // Fichiers sur disque sans aucun match
 }
 
 /**
- * Priorité des formats d'archive pour le matching
- * Plus le score est élevé, plus le format est prioritaire
- */
-const DEFAULT_ARCHIVE_PRIORITY: Record<string, number> = {
-  'none': 1000,    // Fichiers non compressés (priorité maximale)
-  'zip': 900,
-  '7z': 800,
-  'rar': 700,
-  'iso': 600,
-  'cso': 500,
-  'chd': 400
-};
-
-/**
- * Obtenir le score de priorité pour un type d'archive
- */
-function getArchivePriorityScore(archiveType: string | null | undefined): number {
-  if (!archiveType) return DEFAULT_ARCHIVE_PRIORITY['none'];
-  const type = archiveType.toLowerCase();
-  return DEFAULT_ARCHIVE_PRIORITY[type] || 0;
-}
-
-/**
- * Trouve les correspondances entre les ROMs du DAT et les fichiers scannés
- * Logique simplifiée : si au moins un hash correspond, c'est un match parfait
- * Priorise les fichiers non compressés, puis par type d'archive selon les préférences
+ * Trouve TOUTES les correspondances entre les ROMs du DAT et les fichiers scannés.
+ * Chaque fichier/contenu d'archive peut matcher plusieurs ROMs du DAT.
+ * Chaque ROM du DAT peut avoir plusieurs matches (fichiers différents avec le même hash).
  */
 export async function matchRomsWithFiles(db: Database): Promise<{
   matches: RomMatch[],
@@ -74,7 +48,7 @@ export async function matchRomsWithFiles(db: Database): Promise<{
   stats: MatchingStats
 }> {
   console.log('🔍 Début du matching des ROMs...');
-  
+
   // Récupérer toutes les ROMs du DAT avec leurs jeux
   const datRoms = await db.all<{
     rom_id: number;
@@ -85,7 +59,7 @@ export async function matchRomsWithFiles(db: Database): Promise<{
     md5: string | null;
     sha1: string | null;
   }>(`
-    SELECT 
+    SELECT
       dr.id as rom_id,
       dr.name as rom_name,
       dr.game_id as game_id,
@@ -100,30 +74,29 @@ export async function matchRomsWithFiles(db: Database): Promise<{
 
   console.log(`📊 ${datRoms.length} ROMs à matcher`);
 
-  // Récupérer tous les fichiers scannés (non-archives uniquement pour les fichiers directs)
-  const scannedFiles = await db.all<{
+  // Récupérer tous les fichiers scannés non-archives (fichiers loose)
+  const looseFiles = await db.all<{
     id: number;
     file_name: string;
     file_path: string;
     crc32: string | null;
     md5: string | null;
     sha1: string | null;
-    is_archive: number;
   }>(`
-    SELECT 
+    SELECT
       sf.id,
       sf.file_name,
       sf.file_path,
       sf.crc32,
       sf.md5,
-      sf.sha1,
-      sf.is_archive
+      sf.sha1
     FROM scanned_files sf
+    WHERE sf.is_archive = 0
   `);
 
-  console.log(`📂 ${scannedFiles.length} fichiers scannés`);
+  console.log(`📂 ${looseFiles.length} fichiers loose`);
 
-  // Récupérer tous les contenus d'archives avec leur type
+  // Récupérer tous les contenus d'archives avec info de l'archive parente
   const archiveContents = await db.all<{
     id: number;
     file_name: string;
@@ -135,7 +108,7 @@ export async function matchRomsWithFiles(db: Database): Promise<{
     archive_path: string;
     archive_type: string;
   }>(`
-    SELECT 
+    SELECT
       ac.id,
       ac.file_name,
       ac.crc32,
@@ -152,29 +125,15 @@ export async function matchRomsWithFiles(db: Database): Promise<{
   console.log(`🗜️ ${archiveContents.length} fichiers dans les archives`);
 
   const matches: RomMatch[] = [];
-  const matchedFileIds = new Set<number>();
-  const matchedArchiveContentIds = new Set<number>();
 
-  // Pour chaque ROM du DAT, chercher la MEILLEURE correspondance
+  // Pour chaque ROM du DAT, chercher TOUTES les correspondances
   for (const datRom of datRoms) {
-    const candidates: RomMatch[] = [];
 
-    // Chercher dans les fichiers scannés directs (non-archives)
-    for (const file of scannedFiles) {
-      // Ne matcher que les fichiers qui ne sont PAS des archives
-      if (file.is_archive) continue;
-      
-      // Ne pas réutiliser un fichier déjà matché
-      if (matchedFileIds.has(file.id)) continue;
-
-      const hashMatch = compareHashes(datRom, {
-        crc32: file.crc32,
-        md5: file.md5,
-        sha1: file.sha1
-      });
-
+    // Chercher dans les fichiers loose
+    for (const file of looseFiles) {
+      const hashMatch = compareHashes(datRom, file);
       if (hashMatch.matched) {
-        candidates.push({
+        matches.push({
           datRomId: datRom.rom_id,
           datRomName: datRom.rom_name,
           gameName: datRom.game_name,
@@ -182,76 +141,38 @@ export async function matchRomsWithFiles(db: Database): Promise<{
           scannedFileId: file.id,
           scannedFileName: file.file_name,
           scannedFilePath: file.file_path,
-          archiveType: undefined, // Fichier non compressé
-          matchType: 'perfect',
-          matchedBy: hashMatch.matchedBy,
-          priorityScore: getArchivePriorityScore(null)
+          archiveType: undefined,
+          archiveIsPerfect: false, // Sera calculé après pour les archives
         });
       }
     }
 
     // Chercher dans les contenus d'archives
     for (const content of archiveContents) {
-      // Ne pas réutiliser un contenu déjà matché
-      if (matchedArchiveContentIds.has(content.id)) continue;
-
-      const hashMatch = compareHashes(datRom, {
-        crc32: content.crc32,
-        md5: content.md5,
-        sha1: content.sha1
-      });
-
+      const hashMatch = compareHashes(datRom, content);
       if (hashMatch.matched) {
-        candidates.push({
+        matches.push({
           datRomId: datRom.rom_id,
           datRomName: datRom.rom_name,
           gameName: datRom.game_name,
           gameId: datRom.game_id,
+          scannedFileId: content.archive_id,      // Le fichier physique = l'archive
+          scannedFileName: content.archive_name,
+          scannedFilePath: content.archive_path,
           archiveContentId: content.id,
           archiveFileName: `${content.archive_name} > ${content.file_name}`,
-          scannedFilePath: content.archive_path,
           archiveType: content.archive_type,
-          matchType: 'perfect',
-          matchedBy: hashMatch.matchedBy,
-          priorityScore: getArchivePriorityScore(content.archive_type)
+          archiveIsPerfect: false, // Sera calculé ci-dessous
         });
       }
     }
-
-    // Sélectionner le meilleur candidat (priorité la plus élevée)
-    let bestMatch: RomMatch;
-    
-    if (candidates.length > 0) {
-      // Trier par priorityScore décroissant
-      candidates.sort((a, b) => b.priorityScore - a.priorityScore);
-      bestMatch = candidates[0];
-
-      // Marquer le fichier/contenu comme matché
-      if (bestMatch.scannedFileId) {
-        matchedFileIds.add(bestMatch.scannedFileId);
-      }
-      if (bestMatch.archiveContentId) {
-        matchedArchiveContentIds.add(bestMatch.archiveContentId);
-      }
-
-      console.log(`✅ Match trouvé pour "${datRom.rom_name}" : ${bestMatch.scannedFileName || bestMatch.archiveFileName} (${bestMatch.matchedBy.join(', ')}) [priorité: ${bestMatch.priorityScore}]`);
-    } else {
-      // Aucun match trouvé
-      bestMatch = {
-        datRomId: datRom.rom_id,
-        datRomName: datRom.rom_name,
-        gameName: datRom.game_name,
-        gameId: datRom.game_id,
-        matchType: 'none',
-        matchedBy: [],
-        priorityScore: 0
-      };
-
-      console.log(`❌ Aucun match pour "${datRom.rom_name}"`);
-    }
-
-    matches.push(bestMatch);
   }
+
+  // Calculer archiveIsPerfect : pour chaque jeu, vérifier si une archive
+  // contient TOUTES les ROMs du jeu
+  computeArchiveIsPerfect(datRoms, matches);
+
+  console.log(`💾 ${matches.length} correspondances trouvées au total`);
 
   // Sauvegarder les correspondances dans la base
   await saveMatches(db, matches);
@@ -259,8 +180,8 @@ export async function matchRomsWithFiles(db: Database): Promise<{
   // Calculer les statuts par jeu
   const gameStatuses = await calculateGameStatuses(db);
 
-  // Calculer les statistiques globales
-  const stats = calculateStats(datRoms, matches, scannedFiles, archiveContents, matchedFileIds, matchedArchiveContentIds, gameStatuses);
+  // Calculer les statistiques globales (sans doublons)
+  const stats = calculateStats(datRoms, db, looseFiles, archiveContents, gameStatuses, matches);
 
   console.log('✅ Matching terminé !');
   console.log(`📊 Statistiques :`);
@@ -274,38 +195,72 @@ export async function matchRomsWithFiles(db: Database): Promise<{
 }
 
 /**
+ * Calcule le flag archiveIsPerfect pour chaque match provenant d'une archive.
+ * Une archive est "parfaite" pour un jeu si elle contient toutes les ROMs de ce jeu.
+ */
+function computeArchiveIsPerfect(
+  datRoms: Array<{ rom_id: number; game_id: number }>,
+  matches: RomMatch[]
+): void {
+  // Nombre de ROMs par jeu dans le DAT
+  const romsPerGame = new Map<number, number>();
+  for (const rom of datRoms) {
+    romsPerGame.set(rom.game_id, (romsPerGame.get(rom.game_id) || 0) + 1);
+  }
+
+  // Pour chaque combinaison (gameId, archiveFileId), compter les ROMs distinctes matchées
+  // Clé = "gameId|scannedFileId"
+  const archiveGameMatches = new Map<string, Set<number>>();
+  for (const match of matches) {
+    if (match.archiveContentId == null) continue; // Pas un match d'archive
+    const key = `${match.gameId}|${match.scannedFileId}`;
+    if (!archiveGameMatches.has(key)) archiveGameMatches.set(key, new Set());
+    archiveGameMatches.get(key)!.add(match.datRomId);
+  }
+
+  // Identifier les archives parfaites
+  const perfectKeys = new Set<string>();
+  for (const [key, matchedRomIds] of archiveGameMatches) {
+    const gameId = parseInt(key.split('|')[0]);
+    const totalRoms = romsPerGame.get(gameId) || 0;
+    if (matchedRomIds.size === totalRoms) {
+      perfectKeys.add(key);
+    }
+  }
+
+  // Mettre à jour le flag sur les matches correspondants
+  for (const match of matches) {
+    if (match.archiveContentId == null) continue;
+    const key = `${match.gameId}|${match.scannedFileId}`;
+    if (perfectKeys.has(key)) {
+      match.archiveIsPerfect = true;
+    }
+  }
+}
+
+/**
  * Compare les hashes entre une ROM du DAT et un fichier
  * Retourne true si AU MOINS UN hash correspond
  */
 function compareHashes(
   datRom: { crc32: string | null; md5: string | null; sha1: string | null },
   file: { crc32: string | null; md5: string | null; sha1: string | null }
-): { matched: boolean; matchedBy: string[] } {
-  const matchedBy: string[] = [];
-
-  // Vérifier CRC32
+): { matched: boolean } {
   if (datRom.crc32 && file.crc32 && datRom.crc32.toUpperCase() === file.crc32.toUpperCase()) {
-    matchedBy.push('crc32');
+    return { matched: true };
   }
-
-  // Vérifier MD5
   if (datRom.md5 && file.md5 && datRom.md5.toUpperCase() === file.md5.toUpperCase()) {
-    matchedBy.push('md5');
+    return { matched: true };
   }
-
-  // Vérifier SHA1
   if (datRom.sha1 && file.sha1 && datRom.sha1.toUpperCase() === file.sha1.toUpperCase()) {
-    matchedBy.push('sha1');
+    return { matched: true };
   }
-
-  return {
-    matched: matchedBy.length > 0,
-    matchedBy
-  };
+  return { matched: false };
 }
 
 /**
- * Calcule le statut de matching pour chaque jeu
+ * Calcule le statut de matching pour chaque jeu.
+ * Compte les ROMs DISTINCTES du DAT ayant au moins 1 match (pas de doublons).
  */
 async function calculateGameStatuses(db: Database): Promise<GameMatchStatus[]> {
   const gameStatuses = await db.all<{
@@ -314,27 +269,29 @@ async function calculateGameStatuses(db: Database): Promise<GameMatchStatus[]> {
     total_roms: number;
     matched_roms: number;
   }>(`
-    SELECT 
+    SELECT
       g.id as game_id,
       g.name as game_name,
       COUNT(dr.id) as total_roms,
-      SUM(CASE WHEN rm.match_type = 'perfect' THEN 1 ELSE 0 END) as matched_roms
+      (SELECT COUNT(DISTINCT rm.dat_rom_id)
+       FROM rom_matches rm
+       WHERE rm.dat_rom_id IN (SELECT dr2.id FROM dat_roms dr2 WHERE dr2.game_id = g.id)
+      ) as matched_roms
     FROM games g
     JOIN dat_roms dr ON g.id = dr.game_id
-    LEFT JOIN rom_matches rm ON dr.id = rm.dat_rom_id
     GROUP BY g.id, g.name
     ORDER BY g.name
   `);
 
   return gameStatuses.map(gs => {
     let status: 'complete' | 'partial' | 'missing';
-    
+
     if (gs.matched_roms === gs.total_roms) {
-      status = 'complete'; // ✅
+      status = 'complete';
     } else if (gs.matched_roms > 0) {
-      status = 'partial'; // ⚠️
+      status = 'partial';
     } else {
-      status = 'missing'; // ❌
+      status = 'missing';
     }
 
     return {
@@ -348,28 +305,36 @@ async function calculateGameStatuses(db: Database): Promise<GameMatchStatus[]> {
 }
 
 /**
- * Calcule les statistiques globales
+ * Calcule les statistiques globales sans doublons de matching.
+ * matchedRoms = nombre de ROMs DAT distinctes ayant au moins 1 match.
  */
 function calculateStats(
   datRoms: any[],
-  matches: RomMatch[],
-  scannedFiles: any[],
+  _db: Database,
+  looseFiles: any[],
   archiveContents: any[],
-  matchedFileIds: Set<number>,
-  matchedArchiveContentIds: Set<number>,
-  gameStatuses: GameMatchStatus[]
+  gameStatuses: GameMatchStatus[],
+  matches: RomMatch[]
 ): MatchingStats {
-  const matchedRoms = matches.filter(m => m.matchType === 'perfect').length;
-  const missingRoms = matches.filter(m => m.matchType === 'none').length;
-  
+  // ROMs du DAT distinctes ayant au moins 1 match
+  const matchedDatRomIds = new Set(matches.map(m => m.datRomId));
+  const matchedRoms = matchedDatRomIds.size;
+  const missingRoms = datRoms.length - matchedRoms;
+
   const completeGames = gameStatuses.filter(gs => gs.status === 'complete').length;
   const partialGames = gameStatuses.filter(gs => gs.status === 'partial').length;
   const missingGames = gameStatuses.filter(gs => gs.status === 'missing').length;
 
-  // Fichiers non matchés = fichiers non-archives non matchés + contenus d'archives non matchés
-  const unmatchedFiles = scannedFiles.filter(f => !f.is_archive && !matchedFileIds.has(f.id)).length;
-  const unmatchedArchiveContents = archiveContents.length - matchedArchiveContentIds.size;
-  const extraFiles = unmatchedFiles + unmatchedArchiveContents;
+  // Fichiers non matchés : fichiers loose et contenus d'archive sans aucun match
+  const matchedLooseFileIds = new Set(
+    matches.filter(m => m.archiveContentId == null).map(m => m.scannedFileId)
+  );
+  const matchedArchiveContentIds = new Set(
+    matches.filter(m => m.archiveContentId != null).map(m => m.archiveContentId)
+  );
+
+  const unmatchedLoose = looseFiles.filter(f => !matchedLooseFileIds.has(f.id)).length;
+  const unmatchedArchiveContents = archiveContents.filter(ac => !matchedArchiveContentIds.has(ac.id)).length;
 
   return {
     totalGames: gameStatuses.length,
@@ -379,33 +344,29 @@ function calculateStats(
     totalDatRoms: datRoms.length,
     matchedRoms,
     missingRoms,
-    extraFiles
+    extraFiles: unmatchedLoose + unmatchedArchiveContents
   };
 }
 
 /**
  * Sauvegarde les correspondances sans démarrer de nouvelle transaction
- * (pour éviter les transactions imbriquées)
  */
 async function saveMatchesWithoutTransaction(db: Database, matches: RomMatch[]): Promise<void> {
-  // Effacer les anciennes correspondances
   await db.run('DELETE FROM rom_matches');
 
-  // Insérer les nouvelles correspondances
   const insertMatch = db.prepare(`
-    INSERT INTO rom_matches 
-    (dat_rom_id, scanned_file_id, archive_content_id, match_type, match_score)
-    VALUES (?, ?, ?, ?, ?)
+    INSERT INTO rom_matches
+    (dat_rom_id, scanned_file_id, archive_content_id, archive_is_perfect)
+    VALUES (?, ?, ?, ?)
   `);
 
   for (const match of matches) {
     await new Promise<void>((resolve, reject) => {
       insertMatch.run(
         match.datRomId,
-        match.scannedFileId || null,
+        match.scannedFileId,
         match.archiveContentId || null,
-        match.matchType,
-        match.priorityScore,
+        match.archiveIsPerfect ? 1 : 0,
         (err: Error | null) => err ? reject(err) : resolve()
       );
     });
@@ -420,28 +381,23 @@ async function saveMatchesWithoutTransaction(db: Database, matches: RomMatch[]):
  * Gère automatiquement les transactions imbriquées
  */
 async function saveMatches(db: Database, matches: RomMatch[]): Promise<void> {
-  // Essayer de démarrer une transaction IMMEDIATE
-  // Si une transaction est déjà active, SQLite retournera une erreur
   let hasOwnTransaction = false;
-  
+
   try {
     await db.run('BEGIN IMMEDIATE TRANSACTION');
     hasOwnTransaction = true;
   } catch (error: any) {
-    // Si l'erreur indique qu'une transaction est déjà active, on continue sans
     const errorMsg = error?.message?.toLowerCase() || '';
-    if (errorMsg.includes('cannot start a transaction') || 
+    if (errorMsg.includes('cannot start a transaction') ||
         errorMsg.includes('transaction') ||
         error?.errno === 1) {
       console.log('⚠️ Transaction déjà active, sauvegarde sans nouvelle transaction');
       await saveMatchesWithoutTransaction(db, matches);
       return;
     }
-    // Pour toute autre erreur, on la propage
     throw error;
   }
 
-  // Si on a réussi à démarrer une transaction, on l'utilise
   try {
     await saveMatchesWithoutTransaction(db, matches);
     await db.run('COMMIT');
@@ -458,55 +414,45 @@ async function saveMatches(db: Database, matches: RomMatch[]): Promise<void> {
 }
 
 /**
- * Récupère les ROMs manquantes
+ * Récupère les ROMs manquantes (ROMs du DAT sans aucun match)
  */
-export async function getMissingRoms(db: Database): Promise<RomMatch[]> {
-  const matches = await db.all<{
-    datRomId: number;
-    datRomName: string;
-    gameName: string;
-    gameId: number;
-    matchType: string;
-  }>(`
-    SELECT 
+export async function getMissingRoms(db: Database): Promise<any[]> {
+  return await db.all(`
+    SELECT
       dr.id as datRomId,
       dr.name as datRomName,
       g.name as gameName,
-      g.id as gameId,
-      COALESCE(rm.match_type, 'none') as matchType
+      g.id as gameId
     FROM dat_roms dr
     JOIN games g ON dr.game_id = g.id
-    LEFT JOIN rom_matches rm ON dr.id = rm.dat_rom_id
-    WHERE rm.match_type = 'none' OR rm.match_type IS NULL
+    WHERE NOT EXISTS (
+      SELECT 1 FROM rom_matches rm WHERE rm.dat_rom_id = dr.id
+    )
     ORDER BY g.name, dr.name
   `);
-
-  return matches.map(m => ({
-    ...m,
-    matchType: (m.matchType === 'perfect' || m.matchType === 'none' ? m.matchType : 'none') as 'perfect' | 'none',
-    matchedBy: [],
-    priorityScore: 0
-  }));
 }
 
 /**
  * Récupère les fichiers non matchés (extras)
  */
 export async function getExtraFiles(db: Database): Promise<any[]> {
-  const extraFiles = await db.all(`
-    SELECT 
+  return await db.all(`
+    SELECT
       sf.id,
       sf.file_name,
       sf.file_path,
       sf.size,
       'file' as type
     FROM scanned_files sf
-    LEFT JOIN rom_matches rm ON sf.id = rm.scanned_file_id
-    WHERE rm.id IS NULL AND sf.is_archive = 0
-    
+    WHERE sf.is_archive = 0
+    AND NOT EXISTS (
+      SELECT 1 FROM rom_matches rm
+      WHERE rm.scanned_file_id = sf.id AND rm.archive_content_id IS NULL
+    )
+
     UNION ALL
-    
-    SELECT 
+
+    SELECT
       ac.id,
       ac.file_name,
       sf.file_name || ' > ' || ac.file_name as file_path,
@@ -514,13 +460,12 @@ export async function getExtraFiles(db: Database): Promise<any[]> {
       'archive_content' as type
     FROM archive_contents ac
     JOIN scanned_files sf ON ac.archive_id = sf.id
-    LEFT JOIN rom_matches rm ON ac.id = rm.archive_content_id
-    WHERE rm.id IS NULL
-    
+    WHERE NOT EXISTS (
+      SELECT 1 FROM rom_matches rm WHERE rm.archive_content_id = ac.id
+    )
+
     ORDER BY file_name
   `);
-
-  return extraFiles;
 }
 
 /**

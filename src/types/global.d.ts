@@ -2,16 +2,23 @@
 
 export type ArchiveFormat = '7z' | 'zip' | 'chd';
 export type CompressionLevel = 'fastest' | 'normal' | 'maximum';
+export type CleanupScope = 'used-only' | 'all-matched';
 export type RarTool = '7zip' | 'winrar' | 'unrar';
 export type Theme = 'light' | 'dark';
 export type Language = 'fr' | 'en';
+
+export type SystemCategory = 'Nintendo' | 'Sega' | 'Sony' | 'Arcade' | 'Ordinateurs' | 'Autres';
+export type SystemSubcategory = 'Consoles de salon' | 'Consoles portables';
 
 // Interface pour la compatibilité des systèmes
 export interface SystemCompatibility {
   systemId: string;
   systemName: string;
+  category: SystemCategory;
+  subcategory?: SystemSubcategory;
   supportedFormats: ArchiveFormat[];
   warningFormats?: ArchiveFormat[];
+  unsupportedFormats?: ArchiveFormat[];
 }
 
 // Interface principale des paramètres de l'application
@@ -34,7 +41,16 @@ export interface AppSettings {
   defaultDatabaseFolder: string;
   defaultRomsFolder: string;
   unmatchedRomsFolder: string;
-  
+  validatedRomsFolder: string;
+  tempExtractionFolder: string;
+
+  // ========================================
+  // ONGLET CONSOLIDATION - Nettoyage
+  // ========================================
+  cleanSourceAfterConsolidation: boolean;
+  cleanupScope: CleanupScope;
+  protectFilesForUnselectedGames: boolean;
+
   // ========================================
   // ONGLET ARCHIVES - Niveau de compression
   // ========================================
@@ -207,6 +223,31 @@ export interface ArchiveCompatAPI {
 
 
 // ========================================
+// INTERFACES POUR LA CONSOLIDATION
+// ========================================
+
+export interface ConsolidationProgress {
+  phase: 'preparing' | 'consolidating' | 'moving-unmatched' | 'complete';
+  currentGame?: string;
+  currentGameIndex: number;
+  totalGames: number;
+  message: string;
+}
+
+export interface ConsolidationResult {
+  stats: {
+    totalGamesProcessed: number;
+    gamesConsolidated: number;
+    gamesSkipped: number;
+    gamesErrored: number;
+    romsExtracted: number;
+    archivesCreated: number;
+    unmatchedFilesMoved: number;
+  };
+  errors: Array<{ gameName: string; error: string }>;
+}
+
+// ========================================
 // INTERFACES POUR LE MATCHING
 // ========================================
 
@@ -218,15 +259,13 @@ export interface RomMatch {
   datRomName: string;
   gameName: string;
   gameId: number;
-  scannedFileId?: number;
+  scannedFileId?: number;          // Fichier physique (loose ou archive)
   scannedFileName?: string;
   scannedFilePath?: string;
-  archiveContentId?: number;
+  archiveContentId?: number;       // Renseigné si le match vient d'un contenu d'archive
   archiveFileName?: string;
-  archiveType?: string;  // 'zip', '7z', 'rar', 'iso', 'cso', 'chd', ou undefined pour fichiers non compressés
-  matchType: 'perfect' | 'none';
-  matchedBy: string[]; // ['crc32'] ou ['md5'] ou ['sha1'] ou combinaison
-  priorityScore: number; // Score de priorité basé sur le type d'archive (plus élevé = meilleur)
+  archiveType?: string;            // 'zip', '7z', 'rar', 'iso', 'cso', 'chd', ou undefined pour fichiers loose
+  archiveIsPerfect: boolean;       // L'archive contient toutes les ROMs du jeu
 }
 
 /**
@@ -575,6 +614,23 @@ declare global {
        * Récupère la liste des fichiers non matchés.
        * @returns La liste des fichiers extras.
        */
+      /**
+       * Récupère les infos de matching pour une liste de fichiers scannés.
+       * @param fileIds - Les IDs des fichiers scannés.
+       * @returns Un objet indexé par fileId avec les matches loose et archive.
+       */
+      getFilesMatchInfo: (fileIds: number[]) => Promise<Record<number, {
+        looseMatches: Array<{ gameId: number; gameName: string; datRomName: string }>;
+        archiveGames: Array<{
+          gameId: number;
+          gameName: string;
+          matchedRoms: number;
+          totalRoms: number;
+          isPerfect: boolean;
+        }>;
+        matchedContents: Record<string, Array<{ gameId: number; gameName: string }>>;
+      }>>;
+
       getExtraFiles: () => Promise<Array<{
         id: number;
         file_name: string;
@@ -588,6 +644,25 @@ declare global {
        * @returns Le résultat de l'export.
        */
       exportMatchingReport: () => Promise<{ success: boolean; filePath: string } | null>;
+
+      // ========================================
+      // API de consolidation
+      // ========================================
+
+      /**
+       * Étape 6 - Lance la consolidation des ROMs.
+       */
+      runConsolidation: () => Promise<ConsolidationResult>;
+
+      /**
+       * Récupère le log de consolidation.
+       */
+      getConsolidationLog: () => Promise<any[]>;
+
+      /**
+       * Écoute les événements de progression de la consolidation.
+       */
+      onConsolidationProgress: (callback: (data: ConsolidationProgress) => void) => () => void;
 
       // ========================================
       // API de recherche

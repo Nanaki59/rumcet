@@ -193,18 +193,30 @@ export class SevenZipHandler implements IArchiveHandler {
     const mx = compressionLevels[compressionLevel] || compressionLevel;
     
     return new Promise((resolve, reject) => {
+      // Arguments bruts passés via $raw (node-7z ignore les options non reconnues comme mx, ms, mmt)
+      const rawArgs = [
+        `-mx=${mx}`,
+        `-ms=${options.solidArchive ? 'on' : 'off'}`,
+        `-mmt=${options.multithreading ? 'on' : 'off'}`
+      ];
+
+      // Pour les niveaux élevés : dictionnaire 128 Mo et word size 273
+      if (parseInt(mx) >= 7) {
+        rawArgs.push('-md=128m', '-mfb=273');
+      }
+
+      console.log(`[7z] compression mx=${mx}, solid=${options.solidArchive}, mt=${options.multithreading}`);
+
       const addOptions: any = {
         $bin: this.sevenZipPath,
-        method: ['0=LZMA2'],           // Méthode de compression
-        mx: mx,                         // Niveau de compression
-        ms: options.solidArchive ? 'on' : 'off',  // Archive solide
-        mmt: options.multithreading ? 'on' : 'off' // Multithreading
+        method: ['0=LZMA2'],
+        $raw: rawArgs
       };
       
       const myStream = Seven.add(options.outputPath, options.files, addOptions);
       
       myStream.on('end', () => {
-        console.log(`✅ Archive 7z créée: ${options.outputPath}`);
+        console.log(`[7z] ✓ archive créée : ${options.outputPath}`);
         resolve();
       });
       
@@ -246,9 +258,9 @@ export class SevenZipHandler implements IArchiveHandler {
       const addOptions: any = {
         $bin: this.sevenZipPath,
         method: ['0=LZMA2'],
-        mx: mx
+        $raw: [`-mx=${mx}`]
       };
-      
+
       const myStream = Seven.add(options.archivePath, options.files, addOptions);
       
       myStream.on('end', () => {

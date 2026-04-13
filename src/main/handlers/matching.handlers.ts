@@ -76,26 +76,26 @@ export function registerMatchingHandlers(ipcMain: IpcMain, mainWindow: BrowserWi
     }
 
     try {
+      // Récupérer tous les matches pour ce jeu
+      // scanned_file_id pointe vers le fichier physique (loose ou archive)
       const matches = await database.all(`
-        SELECT 
+        SELECT
           dr.id as datRomId,
           dr.name as datRomName,
           g.name as gameName,
           g.id as gameId,
-          sf.id as scannedFileId,
+          rm.scanned_file_id as scannedFileId,
           sf.file_name as scannedFileName,
           sf.file_path as scannedFilePath,
-          ac.id as archiveContentId,
+          rm.archive_content_id as archiveContentId,
           ac.file_name as archiveFileName,
-          sf2.archive_type as archiveType,
-          rm.match_type as matchType,
-          rm.match_score as priorityScore
-        FROM dat_roms dr
+          sf.archive_type as archiveType,
+          rm.archive_is_perfect as archiveIsPerfect
+        FROM rom_matches rm
+        JOIN dat_roms dr ON rm.dat_rom_id = dr.id
         JOIN games g ON dr.game_id = g.id
-        LEFT JOIN rom_matches rm ON dr.id = rm.dat_rom_id
-        LEFT JOIN scanned_files sf ON rm.scanned_file_id = sf.id
+        JOIN scanned_files sf ON rm.scanned_file_id = sf.id
         LEFT JOIN archive_contents ac ON rm.archive_content_id = ac.id
-        LEFT JOIN scanned_files sf2 ON ac.archive_id = sf2.id
         WHERE g.id = ?
         ORDER BY dr.name
       `, [gameId]);
@@ -105,15 +105,13 @@ export function registerMatchingHandlers(ipcMain: IpcMain, mainWindow: BrowserWi
         datRomName: m.datRomName,
         gameName: m.gameName,
         gameId: m.gameId,
-        scannedFileId: m.scannedFileId,
-        scannedFileName: m.scannedFileName,
-        scannedFilePath: m.scannedFilePath,
-        archiveContentId: m.archiveContentId,
-        archiveFileName: m.archiveFileName,
-        archiveType: m.archiveType,
-        matchType: m.matchType || 'none',
-        matchedBy: [], // On pourrait stocker ça dans la DB si nécessaire
-        priorityScore: m.priorityScore || 0
+        scannedFileId: m.scannedFileId || undefined,
+        scannedFileName: m.scannedFileName || undefined,
+        scannedFilePath: m.scannedFilePath || undefined,
+        archiveContentId: m.archiveContentId || undefined,
+        archiveFileName: m.archiveFileName || undefined,
+        archiveType: m.archiveType || undefined,
+        archiveIsPerfect: !!m.archiveIsPerfect
       }));
     } catch (error) {
       console.error('Erreur lors de la récupération des matches du jeu:', error);
@@ -133,6 +131,122 @@ export function registerMatchingHandlers(ipcMain: IpcMain, mainWindow: BrowserWi
     } catch (error) {
       console.error('Erreur lors de la récupération des fichiers extras:', error);
       throw error;
+    }
+  });
+
+  // Récupérer les infos de matching pour une liste de fichiers scannés (vue dossier)
+  ipcMain.handle('matching:get-files-match-info', async (_event, fileIds: number[]) => {
+    const database = databaseService.getDatabase();
+    if (!database || fileIds.length === 0) {
+      return {};
+    }
+
+    try {
+      const placeholders = fileIds.map(() => '?').join(',');
+
+      // Pour les fichiers loose : matches directs (archive_content_id IS NULL)
+      const looseMatches = await database.all(`
+        SELECT
+          rm.scanned_file_id as fileId,
+          g.id as gameId,
+          g.name as gameName,
+          dr.id as datRomId,
+          dr.name as datRomName
+        FROM rom_matches rm
+        JOIN dat_roms dr ON rm.dat_rom_id = dr.id
+        JOIN games g ON dr.game_id = g.id
+        WHERE rm.scanned_file_id IN (${placeholders})
+          AND rm.archive_content_id IS NULL
+      `, fileIds);
+
+      // Pour les archives : matches via archive_contents
+      const archiveMatches = await database.all(`
+        SELECT
+          rm.scanned_file_id as fileId,
+          g.id as gameId,
+          g.name as gameName,
+          dr.id as datRomId,
+          dr.name as datRomName,
+          ac.file_name as contentFileName,
+          rm.archive_is_perfect as archiveIsPerfect,
+          (SELECT COUNT(*) FROM dat_roms dr2 WHERE dr2.game_id = g.id) as totalGameRoms,
+          (SELECT COUNT(DISTINCT rm2.dat_rom_id) FROM rom_matches rm2
+           JOIN dat_roms dr3 ON rm2.dat_rom_id = dr3.id
+           WHERE rm2.scanned_file_id = rm.scanned_file_id
+             AND dr3.game_id = g.id
+             AND rm2.archive_content_id IS NOT NULL
+          ) as matchedGameRoms
+        FROM rom_matches rm
+        JOIN dat_roms dr ON rm.dat_rom_id = dr.id
+        JOIN games g ON dr.game_id = g.id
+        JOIN archive_contents ac ON rm.archive_content_id = ac.id
+        WHERE rm.scanned_file_id IN (${placeholders})
+          AND rm.archive_content_id IS NOT NULL
+      `, fileIds);
+
+      // Construire le résultat par fileId
+      const result: Record<number, {
+        looseMatches: Array<{ gameId: number; gameName: string; datRomName: string }>;
+        archiveGames: Array<{
+          gameId: number;
+          gameName: string;
+          matchedRoms: number;
+          totalRoms: number;
+          isPerfect: boolean;
+        }>;
+        matchedContents: Record<string, Array<{ gameId: number; gameName: string }>>;
+      }> = {};
+
+      // Initialiser tous les fichiers demandés
+      for (const id of fileIds) {
+        result[id] = { looseMatches: [], archiveGames: [], matchedContents: {} };
+      }
+
+      // Remplir les matches loose
+      for (const m of looseMatches) {
+        result[m.fileId].looseMatches.push({
+          gameId: m.gameId,
+          gameName: m.gameName,
+          datRomName: m.datRomName
+        });
+      }
+
+      // Remplir les matches archive (groupés par jeu) + détail par fichier dans l'archive
+      const archiveGameSeen = new Map<string, boolean>();
+      const contentGameSeen = new Map<string, boolean>();
+      for (const m of archiveMatches) {
+        const gameKey = `${m.fileId}-${m.gameId}`;
+        if (!archiveGameSeen.has(gameKey)) {
+          archiveGameSeen.set(gameKey, true);
+          result[m.fileId].archiveGames.push({
+            gameId: m.gameId,
+            gameName: m.gameName,
+            matchedRoms: m.matchedGameRoms,
+            totalRoms: m.totalGameRoms,
+            isPerfect: !!m.archiveIsPerfect
+          });
+        }
+        // Associer chaque fichier de l'archive aux jeux auxquels il correspond
+        if (m.contentFileName) {
+          const entry = result[m.fileId];
+          if (!entry.matchedContents[m.contentFileName]) {
+            entry.matchedContents[m.contentFileName] = [];
+          }
+          const cgKey = `${m.fileId}-${m.contentFileName}-${m.gameId}`;
+          if (!contentGameSeen.has(cgKey)) {
+            contentGameSeen.set(cgKey, true);
+            entry.matchedContents[m.contentFileName].push({
+              gameId: m.gameId,
+              gameName: m.gameName
+            });
+          }
+        }
+      }
+
+      return result;
+    } catch (error) {
+      console.error('Erreur lors de la récupération des infos de matching fichiers:', error);
+      return {};
     }
   });
 
@@ -159,32 +273,35 @@ export function registerMatchingHandlers(ipcMain: IpcMain, mainWindow: BrowserWi
 
     try {
       const matches = await database.all(`
-        SELECT 
+        SELECT
           g.id as game_id,
           g.name as game_name,
           dr.name as rom_name,
           dr.crc32 as expected_crc32,
-          CASE 
-            WHEN sf.file_name IS NOT NULL THEN sf.file_name
-            WHEN ac.file_name IS NOT NULL THEN sf2.file_name || ' > ' || ac.file_name
+          CASE
+            WHEN rm.archive_content_id IS NOT NULL THEN sf.file_name || ' > ' || ac.file_name
+            WHEN rm.scanned_file_id IS NOT NULL THEN sf.file_name
             ELSE 'MANQUANT'
           END as found_file,
-          rm.match_type,
-          rm.match_score as priority_score,
-          sf2.archive_type
+          CASE WHEN rm.id IS NOT NULL THEN 'matched' ELSE 'missing' END as match_status,
+          CASE
+            WHEN rm.archive_content_id IS NOT NULL THEN sf.archive_type
+            ELSE 'non compressé'
+          END as archive_type,
+          rm.archive_is_perfect
         FROM dat_roms dr
         JOIN games g ON dr.game_id = g.id
         LEFT JOIN rom_matches rm ON dr.id = rm.dat_rom_id
         LEFT JOIN scanned_files sf ON rm.scanned_file_id = sf.id
         LEFT JOIN archive_contents ac ON rm.archive_content_id = ac.id
-        LEFT JOIN scanned_files sf2 ON ac.archive_id = sf2.id
         ORDER BY g.name, dr.name
       `);
 
-      let csvContent = 'Jeu,ROM,CRC32 Attendu,Fichier Trouvé,Type de Match,Priorité,Type d\'Archive\n';
+      let csvContent = 'Jeu,ROM,CRC32 Attendu,Fichier Trouvé,Statut,Type d\'Archive,Archive Parfaite\n';
       for (const match of matches) {
         const archiveType = match.archive_type || 'non compressé';
-        csvContent += `"${match.game_name}","${match.rom_name}","${match.expected_crc32 || ''}","${match.found_file}","${match.match_type || 'none'}","${match.priority_score || 0}","${archiveType}"\n`;
+        const isPerfect = match.archive_is_perfect ? 'Oui' : 'Non';
+        csvContent += `"${match.game_name}","${match.rom_name}","${match.expected_crc32 || ''}","${match.found_file}","${match.match_status}","${archiveType}","${isPerfect}"\n`;
       }
 
       await fs.writeFile(result.filePath, csvContent, 'utf8');

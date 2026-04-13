@@ -37,6 +37,7 @@ import { registerMatchingHandlers } from './handlers/matching.handlers.js';
 import { registerNavigationHandlers } from './handlers/navigation.handlers.js';
 import { registerSettingsHandlers } from './handlers/settings.handlers.js';
 import { registerSearchHandlers } from './handlers/search.handlers.js';
+import { registerConsolidationHandlers } from './handlers/consolidation.handlers.js';
 
 // Définition de __dirname pour les modules ES6
 const __filename = fileURLToPath(import.meta.url);
@@ -355,6 +356,7 @@ async function initializeApp(): Promise<void> {
     registerDialogHandlers(ipcMain, mainWindow);
     registerRomsHandlers(ipcMain, mainWindow);
     registerMatchingHandlers(ipcMain, mainWindow);
+    registerConsolidationHandlers(ipcMain, mainWindow);
     registerNavigationHandlers(ipcMain);
     registerSettingsHandlers(ipcMain, mainWindow);
     registerSearchHandlers(ipcMain);

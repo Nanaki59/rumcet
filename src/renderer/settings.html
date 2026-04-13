@@ -67,6 +67,19 @@
       font-size: 18px;
     }
 
+    .tab-group {
+      margin-bottom: 8px;
+    }
+
+    .tab-group-header {
+      padding: 12px 20px 6px;
+      font-size: 11px;
+      font-weight: 600;
+      text-transform: uppercase;
+      letter-spacing: 0.08em;
+      color: rgba(255, 255, 255, 0.4);
+    }
+
     /* ========== CONTENU ========== */
     .tabs-content {
       flex: 1;
@@ -318,19 +331,67 @@
     }
 
     /* ========== COMPATIBILITÉ SYSTÈME ========== */
+    .system-category-section {
+      margin-bottom: 20px;
+    }
+
+    .system-category-section h4 {
+      color: #2c3e50;
+      font-size: 15px;
+      font-weight: 700;
+      margin: 0 0 8px 0;
+      padding-bottom: 5px;
+      border-bottom: 2px solid #3498db;
+    }
+
+    .system-subcategory-title {
+      color: #7f8c8d;
+      font-size: 12px;
+      font-weight: 600;
+      text-transform: uppercase;
+      letter-spacing: 0.5px;
+      margin: 10px 0 6px 4px;
+      padding: 0;
+    }
+
     .system-compatibility-item {
       background: #f8f9fa;
       border: 1px solid #dee2e6;
       border-radius: 4px;
-      padding: 15px;
-      margin-bottom: 15px;
+      padding: 10px 15px;
+      margin-bottom: 6px;
+    }
+
+    .system-compatibility-header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      margin-bottom: 8px;
     }
 
     .system-compatibility-item h5 {
       color: #2c3e50;
-      margin-bottom: 10px;
-      font-size: 14px;
+      margin: 0;
+      font-size: 13px;
       font-weight: 600;
+    }
+
+    .btn-reset-system {
+      background: none;
+      border: 1px solid #ccc;
+      border-radius: 4px;
+      cursor: pointer;
+      padding: 2px 6px;
+      font-size: 14px;
+      color: #666;
+      line-height: 1;
+      transition: all 0.2s;
+    }
+
+    .btn-reset-system:hover {
+      background: #e9ecef;
+      border-color: #999;
+      color: #333;
     }
 
     .format-checkboxes {
@@ -344,7 +405,19 @@
       align-items: center;
       gap: 8px;
       cursor: pointer;
-      font-size: 14px;
+      font-size: 13px;
+    }
+
+    .format-icon-warning {
+      color: #e67e22;
+      font-size: 12px;
+      cursor: help;
+    }
+
+    .format-icon-unsupported {
+      color: #e74c3c;
+      font-size: 12px;
+      cursor: help;
     }
 
     .format-checkboxes input[type="checkbox"] {
@@ -418,31 +491,38 @@
   <!-- ========== BARRE LATÉRALE ========== -->
   <nav class="tabs-sidebar">
     <h2>⚙️ Paramètres</h2>
-    
-    <button class="tab-button active" data-tab="general">
-      <span class="tab-icon">🏠</span>
-      Général
-    </button>
-    
-    <button class="tab-button" data-tab="folders">
-      <span class="tab-icon">📁</span>
-      Dossiers
-    </button>
-    
-    <button class="tab-button" data-tab="archives">
-      <span class="tab-icon">📦</span>
-      Archives
-    </button>
-    
-    <button class="tab-button" data-tab="tools">
-      <span class="tab-icon">🛠️</span>
-      Outils externes
-    </button>
-    
-    <button class="tab-button" data-tab="compatibility">
-      <span class="tab-icon">🎮</span>
-      Compatibilité
-    </button>
+
+    <div class="tab-group">
+      <div class="tab-group-header">Général</div>
+      <button class="tab-button active" data-tab="general">
+        <span class="tab-icon">🏠</span>
+        Interface
+      </button>
+      <button class="tab-button" data-tab="folders">
+        <span class="tab-icon">📁</span>
+        Dossiers
+      </button>
+      <button class="tab-button" data-tab="tools">
+        <span class="tab-icon">🛠️</span>
+        Outils externes
+      </button>
+    </div>
+
+    <div class="tab-group">
+      <div class="tab-group-header">Consolidation</div>
+      <button class="tab-button" data-tab="archives">
+        <span class="tab-icon">📦</span>
+        Compression
+      </button>
+      <button class="tab-button" data-tab="compatibility">
+        <span class="tab-icon">🎮</span>
+        Compatibilité par système
+      </button>
+      <button class="tab-button" data-tab="cleanup">
+        <span class="tab-icon">🧹</span>
+        Nettoyage
+      </button>
+    </div>
   </nav>
 
   <!-- ========== CONTENU ========== -->
@@ -450,7 +530,7 @@
     
     <!-- ===== ONGLET GÉNÉRAL ===== -->
     <div id="tab-general" class="tab-pane active">
-      <h3>Paramètres généraux</h3>
+      <h3>Interface</h3>
       
       <div class="settings-section">
         <h4>Interface</h4>
@@ -513,7 +593,7 @@
         </div>
 
         <div class="setting-row">
-          <label for="defaultRomsFolder">Dossier des ROMs :</label>
+          <label for="defaultRomsFolder">Dossier source des ROMs :</label>
           <div class="setting-row-inline">
             <input type="text" id="defaultRomsFolder" readonly placeholder="Non configuré">
             <button class="btn-browse" onclick="browseFolder('defaultRomsFolder')">Parcourir</button>
@@ -522,101 +602,30 @@
         </div>
 
         <div class="setting-row">
-          <label for="unmatchedRomsFolder">Dossier des ROMs non référencées :</label>
+          <label for="unmatchedRomsFolder">Dossier cible des ROMs non référencées :</label>
           <div class="setting-row-inline">
             <input type="text" id="unmatchedRomsFolder" readonly placeholder="Non configuré">
             <button class="btn-browse" onclick="browseFolder('unmatchedRomsFolder')">Parcourir</button>
           </div>
           <p class="info-text">Emplacement pour stocker les ROMs qui ne correspondent à aucune entrée du DAT</p>
         </div>
-      </div>
-    </div>
 
-    <!-- ===== ONGLET ARCHIVES ===== -->
-    <div id="tab-archives" class="tab-pane">
-      <h3>Compression des archives</h3>
-      
-      <div class="settings-section">
-        <h4>Niveau de compression</h4>
-        
         <div class="setting-row">
-          <label for="compressionLevel">Niveau de compression :</label>
+          <label for="validatedRomsFolder">Dossier cible des ROMs validées :</label>
           <div class="setting-row-inline">
-            <select id="compressionLevel">
-              <option value="fastest">Rapide (compression minimale)</option>
-              <option value="normal" selected>Normal (équilibré)</option>
-              <option value="maximum">Maximum (meilleure compression)</option>
-            </select>
+            <input type="text" id="validatedRomsFolder" readonly placeholder="Non configuré">
+            <button class="btn-browse" onclick="browseFolder('validatedRomsFolder')">Parcourir</button>
           </div>
-          <p class="info-text">Détermine le niveau de compression pour les archives ZIP/7Z</p>
+          <p class="info-text">Emplacement où seront stockées les archives de ROMs consolidées</p>
         </div>
-      </div>
 
-      <div class="settings-section">
-        <h4>Ordre de priorité des formats</h4>
-        
-        <div class="setting-row-vertical">
-          <label>Glissez-déposez pour réordonner :</label>
-          <div class="format-priority-container">
-            <div class="format-priority-list" id="formatPriorityList">
-              <!-- Rempli dynamiquement -->
-            </div>
+        <div class="setting-row">
+          <label for="tempExtractionFolder">Dossier temporaire d'extraction :</label>
+          <div class="setting-row-inline">
+            <input type="text" id="tempExtractionFolder" readonly placeholder="Non configuré">
+            <button class="btn-browse" onclick="browseFolder('tempExtractionFolder')">Parcourir</button>
           </div>
-        </div>
-        <p class="info-text">
-          Les formats d'archives seront choisis dans cet ordre en fonction 
-          de la compatibilité avec le système du fichier DAT.
-        </p>
-      </div>
-
-      <div class="settings-section">
-        <h4>Options avancées</h4>
-        
-        <div class="setting-row">
-          <label>
-            <input type="checkbox" id="recreateArchivesIfNeeded">
-            Recréer les archives si le niveau de compression ne correspond pas
-          </label>
-          <p class="info-text">Si activé, les archives seront recompressées pour respecter le niveau sélectionné</p>
-        </div>
-
-        <div class="setting-row">
-          <label>
-            <input type="checkbox" id="useBestCompression" onchange="toggleBestCompressionWarning(this.checked)">
-            Utiliser la meilleure compression possible
-          </label>
-          <div id="bestCompressionWarning" class="warning-box" style="display: none;">
-            <strong>⚠️ ATTENTION : Cette option ralentit FORTEMENT le processus !</strong>
-            <p>
-              L'application va tester TOUS les formats d'archives disponibles pour chaque jeu
-              et ne garder que le format le plus compact.
-            </p>
-            <ul>
-              <li>Temps de traitement : <strong>x3 à x5 plus lent</strong></li>
-              <li>Utilisation CPU : <strong>Maximale</strong></li>
-              <li>Utilisation disque : <strong>Temporairement doublée</strong></li>
-            </ul>
-            <p>
-              Recommandé uniquement si l'espace disque final est critique.
-            </p>
-          </div>
-          <p class="info-text">Teste tous les formats et garde le plus compact (très lent)</p>
-        </div>
-
-        <div class="setting-row">
-          <label>
-            <input type="checkbox" id="solidArchive" checked>
-            Utiliser la compression solide (7Z uniquement)
-          </label>
-          <p class="info-text">La compression solide améliore le taux de compression mais ralentit l'extraction</p>
-        </div>
-
-        <div class="setting-row">
-          <label>
-            <input type="checkbox" id="multithreading" checked>
-            Activer le multi-threading
-          </label>
-          <p class="info-text">Utilise plusieurs cœurs du processeur pour accélérer la compression</p>
+          <p class="info-text">Dossier utilisé temporairement lors de l'extraction et du renommage des ROMs</p>
         </div>
       </div>
     </div>
@@ -638,6 +647,27 @@
             </div>
           </div>
           <p class="info-text">Utilisé pour lire et créer les archives .7z et .rar</p>
+        </div>
+      </div>
+
+      <div class="settings-section">
+        <h4>chdman (MAME)</h4>
+        
+        <div class="setting-row">
+          <label>
+            <input type="checkbox" id="useEmbeddedChdman" checked>
+            Utiliser la version embarquée de chdman
+          </label>
+          <p class="info-text">Version fournie avec l'application (recommandé)</p>
+        </div>
+
+        <div class="setting-row">
+          <label for="chdmanPath">Chemin vers chdman personnalisé :</label>
+          <div class="setting-row-inline">
+            <input type="text" id="chdmanPath" readonly placeholder="Version embarquée par défaut">
+            <button class="btn-browse" onclick="browseFile('chdmanPath', 'chdman.exe')">Parcourir</button>
+          </div>
+          <p class="info-text">Utilisé pour créer/extraire les images CD/DVD au format CHD (si version embarquée désactivée)</p>
         </div>
       </div>
 
@@ -674,27 +704,6 @@
       </div>
 
       <div class="settings-section">
-        <h4>chdman (MAME)</h4>
-        
-        <div class="setting-row">
-          <label>
-            <input type="checkbox" id="useEmbeddedChdman" checked>
-            Utiliser la version embarquée de chdman
-          </label>
-          <p class="info-text">Version fournie avec l'application (recommandé)</p>
-        </div>
-
-        <div class="setting-row">
-          <label for="chdmanPath">Chemin vers chdman personnalisé :</label>
-          <div class="setting-row-inline">
-            <input type="text" id="chdmanPath" readonly placeholder="Version embarquée par défaut">
-            <button class="btn-browse" onclick="browseFile('chdmanPath', 'chdman.exe')">Parcourir</button>
-          </div>
-          <p class="info-text">Utilisé pour créer/extraire les images CD/DVD au format CHD (si version embarquée désactivée)</p>
-        </div>
-      </div>
-
-      <div class="settings-section">
         <h4>Ordre de priorité pour les archives RAR</h4>
         
         <div class="setting-row-vertical">
@@ -712,16 +721,158 @@
       </div>
     </div>
 
-    <!-- ===== ONGLET COMPATIBILITÉ ===== -->
-    <div id="tab-compatibility" class="tab-pane">
-      <h3>Compatibilité archives par système</h3>
+    <!-- ===== ONGLET ARCHIVES ===== -->
+    <div id="tab-archives" class="tab-pane">
+      <h3>Compression</h3>
+
+      <div class="settings-section">
+        <h4>Ordre de priorité des formats d'archives cibles</h4>
+        
+        <div class="setting-row-vertical">
+          <label>Glissez-déposez pour réordonner :</label>
+          <div class="format-priority-container">
+            <div class="format-priority-list" id="formatPriorityList">
+              <!-- Rempli dynamiquement -->
+            </div>
+          </div>
+        </div>
+        <p class="info-text">
+          Les formats d'archives seront choisis dans cet ordre en fonction 
+          de la compatibilité avec le système du fichier DAT.
+        </p>
+      </div>
       
       <div class="settings-section">
-        <p class="info-text">
-          Configurez les formats d'archives compatibles par système.
-          Certains émulateurs ne supportent pas tous les formats.
-          Les formats avec ⚠️ fonctionnent mais peuvent avoir des limitations.
-        </p>
+        <h4>Options de compression</h4>
+        
+        <div class="setting-row">
+          <label for="compressionLevel">Niveau de compression :</label>
+          <div class="setting-row-inline">
+            <select id="compressionLevel">
+              <option value="fastest">Rapide (compression minimale)</option>
+              <option value="normal" selected>Normal (équilibré)</option>
+              <option value="maximum">Maximum (meilleure compression)</option>
+            </select>
+          </div>
+          <p class="info-text">Détermine le niveau de compression pour les archives ZIP/7Z</p>
+        </div>
+        
+        <div class="setting-row">
+          <label>
+            <input type="checkbox" id="recreateArchivesIfNeeded">
+            Recréer les archives déjà parfaites
+          </label>
+          <p class="info-text">Si désactivé, les archives dont le format et le contenu sont déjà conformes seront copiées directement sans recompression</p>
+        </div>
+
+        <div class="setting-row">
+          <label>
+            <input type="checkbox" id="useBestCompression" onchange="toggleBestCompressionWarning(this.checked)">
+            Tester tous les formats compatibles et conserver le plus léger
+          </label>
+          <div id="bestCompressionWarning" class="warning-box" style="display: none;">
+            <strong>⚠️ ATTENTION : Cette option ralentit FORTEMENT le processus !</strong>
+            <p>
+              L'application va créer une archive dans CHAQUE format compatible pour chaque jeu
+              et ne conserver que celle dont la taille est la plus petite.
+            </p>
+            <ul>
+              <li>Temps de traitement : <strong>x3 à x5 plus lent</strong></li>
+              <li>Utilisation CPU : <strong>Maximale</strong></li>
+              <li>Utilisation disque : <strong>Temporairement doublée</strong></li>
+            </ul>
+            <p>
+              Recommandé uniquement si l'espace disque final est critique.
+            </p>
+          </div>
+          <p class="info-text">Pour chaque jeu, toutes les variantes d'archives compatibles sont créées, puis seule la plus compacte est gardée (très lent)</p>
+        </div>
+
+        <div class="setting-row">
+          <label>
+            <input type="checkbox" id="solidArchive" checked>
+            Utiliser la compression solide (7Z uniquement)
+          </label>
+          <p class="info-text">La compression solide améliore le taux de compression mais ralentit l'extraction</p>
+        </div>
+
+        <div class="setting-row">
+          <label>
+            <input type="checkbox" id="multithreading" checked>
+            Activer le multi-threading (7Z & ZIP uniquement)
+          </label>
+          <p class="info-text">Utilise plusieurs cœurs du processeur pour accélérer la compression</p>
+        </div>
+      </div>
+
+    </div>
+
+    <!-- ===== ONGLET NETTOYAGE ===== -->
+    <div id="tab-cleanup" class="tab-pane">
+      <h3>Nettoyage</h3>
+
+      <div class="settings-section">
+        <h4>Nettoyage après consolidation</h4>
+
+        <div class="setting-row">
+          <label>
+            <input type="checkbox" id="cleanSourceAfterConsolidation" onchange="toggleCleanupOptions()">
+            Activer le nettoyage des dossiers sources
+          </label>
+          <p class="info-text">Si désactivé, les dossiers sources restent intacts et les ROMs sont simplement copiées</p>
+        </div>
+
+        <div class="setting-row">
+          <label for="cleanupScope">Portée du nettoyage :</label>
+          <div class="setting-row-inline">
+            <select id="cleanupScope">
+              <option value="used-only">Fichiers utilisés uniquement</option>
+              <option value="all-matched">Tous les fichiers matchés</option>
+            </select>
+          </div>
+          <p class="info-text">
+            « Fichiers utilisés uniquement » ne supprime que les fichiers ayant servi à créer les archives consolidées.<br>
+            « Tous les fichiers matchés » supprime aussi les doublons (archives ou fichiers loose redondants), libérant plus d'espace.
+          </p>
+        </div>
+
+        <div class="setting-row">
+          <label>
+            <input type="checkbox" id="protectFilesForUnselectedGames" checked>
+            Conserver les fichiers utilisés par des jeux non sélectionnés
+          </label>
+          <p class="info-text">Si activé, un fichier ne sera pas supprimé s'il correspond à un jeu du DAT qui n'est pas coché pour la consolidation</p>
+        </div>
+      </div>
+
+      <div class="settings-section">
+        <h4>Déplacement des fichiers résiduels</h4>
+
+        <div class="setting-row">
+          <label>
+            <input type="checkbox" id="moveUnmatchedFiles" checked>
+            Déplacer les fichiers non matchés vers le dossier dédié
+          </label>
+          <p class="info-text">Les fichiers qui ne correspondent à aucun jeu du DAT seront déplacés dans le dossier configuré dans Dossiers</p>
+        </div>
+      </div>
+    </div>
+
+    <!-- ===== ONGLET COMPATIBILITÉ ===== -->
+    <div id="tab-compatibility" class="tab-pane">
+      <h3>Compatibilité par système</h3>
+
+      <div class="settings-section">
+        <div style="display: flex; justify-content: space-between; align-items: start; margin-bottom: 10px;">
+          <p class="info-text" style="margin: 0;">
+            Configurez les formats d'archives compatibles par système.
+            Certains émulateurs ne supportent pas tous les formats.
+            Les formats avec ⚠️ fonctionnent mais peuvent avoir des limitations.
+          </p>
+          <button class="btn-secondary" onclick="resetAllSystemCompatibility()" style="white-space: nowrap; margin-left: 15px;" title="Réinitialiser tous les systèmes aux valeurs par défaut">
+            ↺ Tout réinitialiser
+          </button>
+        </div>
 
         <div id="systemCompatibilityList">
           <!-- Rempli dynamiquement -->

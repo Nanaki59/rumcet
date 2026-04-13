@@ -33,6 +33,7 @@ let activeFilters: Set<string> = new Set();
 let activeMatchFilters: Set<string> = new Set();
 let activeSelectionFilters: Set<string> = new Set();
 let allGames: GameInfo[] = [];
+let matchingComplete = false;
 let categoryCounts: Map<string, number> = new Map();
 let matchStatusCounts: Map<string, number> = new Map();
 
@@ -343,7 +344,7 @@ function updateBreadcrumb(path: string) {
   }
   
   // Construire le fil d'Ariane
-  const rootName = currentRootFolder.split(/[\\\/]/).pop() || currentRootFolder;
+  const rootName = currentRootFolder;
   const pathParts = relativePath ? relativePath.split(/[\\\/]/).filter(p => p) : [];
   
   breadcrumbDiv.style.display = 'block';
@@ -418,7 +419,8 @@ function updateWorkflowButtons() {
     romAddFolder: document.getElementById('rom-add-folder') as HTMLButtonElement,
     romAddFolderSidebar: document.getElementById('rom-add-folder-sidebar') as HTMLButtonElement,
     datQuickLoad: document.getElementById('dat-quick-load') as HTMLButtonElement,
-    matchRoms: document.getElementById('match-roms') as HTMLButtonElement
+    matchRoms: document.getElementById('match-roms') as HTMLButtonElement,
+    consolidateRoms: document.getElementById('consolidate-roms') as HTMLButtonElement
   };
 
   // Logique de mise à jour basée sur l'état de l'application
@@ -457,6 +459,11 @@ function updateWorkflowButtons() {
     elements.matchRoms.disabled = !(canAddRoms && loadedFolders.length > 0);
   }
 
+  // Bouton "Consolider les ROMs" : disponible si le matching a été effectué
+  if (elements.consolidateRoms) {
+    elements.consolidateRoms.disabled = !matchingComplete;
+  }
+
   // Mettre à jour l'état des entrées du menu principal
   const canLoadDat = !currentDatInfo; // On peut charger un DAT si pas déjà chargé (workflow rapide toujours disponible)
   const canCloseDatabase = currentDbPath !== null; // On peut fermer la DB si une DB est ouverte
@@ -478,6 +485,7 @@ function resetInterface() {
   currentFolderPath = null;
   currentRootFolder = null; // Réinitialiser le dossier racine
   breadcrumbPath = [];
+  matchingComplete = false;
 
   // Masquer le bandeau d'info DB
   updateDbInfoBanner();
@@ -489,7 +497,8 @@ function resetInterface() {
     romAddFolder: document.getElementById('rom-add-folder') as HTMLButtonElement,
     romAddFolderSidebar: document.getElementById('rom-add-folder-sidebar') as HTMLButtonElement,
     datQuickLoad: document.getElementById('dat-quick-load') as HTMLButtonElement,
-    matchRoms: document.getElementById('match-roms') as HTMLButtonElement
+    matchRoms: document.getElementById('match-roms') as HTMLButtonElement,
+    consolidateRoms: document.getElementById('consolidate-roms') as HTMLButtonElement
   };
 
   if (elements.datSelect) elements.datSelect.disabled = false;
@@ -499,6 +508,7 @@ function resetInterface() {
   if (elements.romAddFolderSidebar) elements.romAddFolderSidebar.disabled = true;
   if (elements.datQuickLoad) elements.datQuickLoad.disabled = false;
   if (elements.matchRoms) elements.matchRoms.disabled = true;
+  if (elements.consolidateRoms) elements.consolidateRoms.disabled = true;
 
   updateLeftSidebar();
 
@@ -514,6 +524,7 @@ function resetInterface() {
           <li>Chargez les données</li>
           <li>Ajoutez vos dossiers de ROMs</li>
           <li>Matchez les ROMs pour identifier les manquantes</li>
+          <li>Consolidez les ROMs validées en archives</li>
         </ol>
       </div>
     `;
@@ -888,7 +899,15 @@ async function updateFolderContent(path: string) {
     
     // Afficher les fichiers
     if (content.files.length > 0) {
-      displayFiles(content.files);
+      // Récupérer les infos de matching pour tous les fichiers du dossier
+      const fileIds = content.files.map((f: any) => f.id).filter(Boolean);
+      let matchInfoMap: Record<number, any> = {};
+      if (fileIds.length > 0 && matchingComplete) {
+        try {
+          matchInfoMap = await window.api.getFilesMatchInfo(fileIds);
+        } catch { /* ignore */ }
+      }
+      displayFiles(content.files, matchInfoMap);
     } else if (viewMode === 'flat') {
       // En vue à plat, si pas de fichiers, afficher un message
       gameList.innerHTML = '<div style="padding: 20px; text-align: center; color: #7f8c8d;">Aucun fichier trouvé dans ce dossier et ses sous-dossiers</div>';
@@ -1340,9 +1359,10 @@ function displayGroupedGames(games: GameInfo[]) {
     const groupCheckbox = headerDiv.querySelector('.group-checkbox') as HTMLInputElement;
     if (groupSomeSelected) groupCheckbox.indeterminate = true;
 
-    groupCheckbox.addEventListener('click', async (e) => {
-      e.stopPropagation();
-      const isSelected = groupCheckbox.checked;
+    // Fonction commune pour toggler la sélection du groupe
+    async function toggleGroupSelection(forceState?: boolean) {
+      const isSelected = forceState !== undefined ? forceState : !groupCheckbox.checked;
+      groupCheckbox.checked = isSelected;
       groupCheckbox.indeterminate = false;
 
       const gameIds = groupGames.map(g => g.id);
@@ -1363,13 +1383,22 @@ function displayGroupedGames(games: GameInfo[]) {
       // Mettre à jour le compteur du groupe
       const countSpan = headerDiv.querySelector('.group-count');
       if (countSpan) {
-        const newCount = isSelected ? groupGames.length : 0;
-        //countSpan.textContent = `Sélectionné${newCount > 1 ? 's' : ''} : ${newCount} ✔️ / ${groupGames.length}`;
-        countSpan.textContent = `✔️ ${newCount} / ${groupGames.length}`;
+        countSpan.textContent = `✔️ ${isSelected ? groupGames.length : 0} / ${groupGames.length}`;
       }
 
       updateSelectAllCheckbox();
       updateSelectionCounter();
+    }
+
+    groupCheckbox.addEventListener('click', async (e) => {
+      e.stopPropagation();
+      await toggleGroupSelection(groupCheckbox.checked);
+    });
+
+    // Clic sur le titre du groupe → toggle la sélection
+    headerDiv.addEventListener('click', async (e) => {
+      if ((e.target as HTMLElement).tagName === 'INPUT') return; // déjà géré par le checkbox
+      await toggleGroupSelection();
     });
 
     groupDiv.appendChild(headerDiv);
@@ -1508,22 +1537,22 @@ function updateGroupCheckboxes() {
 }
 
 // Affichage des fichiers
-function displayFiles(files: any[]) {
+function displayFiles(files: any[], matchInfoMap: Record<number, any> = {}) {
   const gameList = document.getElementById('game-list');
   if (!gameList) return;
-  
+
   if (files.length === 0 && gameList.children.length === 0) {
     gameList.innerHTML = '<div style="padding: 20px; text-align: center; color: #7f8c8d;">Aucun fichier trouvé</div>';
     return;
   }
-  
+
   files.forEach(file => {
     const item = document.createElement('div');
     item.className = 'list-item';
-    
+
     const icon = file.isArchive ? '📦' : '💾';
     const size = formatFileSize(file.size);
-    
+
     // En vue à plat, afficher le chemin relatif avec style
     let displayNameHTML = `${icon} ${file.fileName}`;
     if (viewMode === 'flat' && currentRootFolder && file.filePath) {
@@ -1534,10 +1563,10 @@ function displayFiles(files: any[]) {
         if (relativePath.startsWith('/') || relativePath.startsWith('\\')) {
           relativePath = relativePath.substring(1);
         }
-        
+
         // Normaliser les séparateurs en backslash pour Windows
         relativePath = relativePath.replace(/\//g, '\\');
-        
+
         // Si le fichier est dans un sous-dossier, afficher le chemin avec style
         const lastSeparator = relativePath.lastIndexOf('\\');
         if (lastSeparator !== -1) {
@@ -1550,15 +1579,53 @@ function displayFiles(files: any[]) {
         }
       }
     }
-    
+
+    // Badges de matching pour la vue dossier
+    let matchBadge = '';
+    let multiBadge = '';
+    const matchInfo = file.id ? matchInfoMap[file.id] : null;
+    if (matchInfo && matchingComplete) {
+      if (file.isArchive) {
+        const matchedContents: Record<string, any[]> = matchInfo.matchedContents || {};
+        const matchedContentCount = Object.keys(matchedContents).length;
+        const totalContentCount = file.contents?.length || 0;
+        if (matchedContentCount > 0 && matchedContentCount >= totalContentCount && totalContentCount > 0) {
+          matchBadge = `<span class="match-status-badge status-complete">✅ Matché</span>`;
+        } else if (matchedContentCount > 0) {
+          matchBadge = `<span class="match-status-badge status-partial">⚠️ Partiel</span>`;
+        } else {
+          matchBadge = `<span class="match-status-badge status-missing">❌ Non matché</span>`;
+        }
+        // Multi-jeux : au moins un fichier de l'archive sert à plusieurs jeux
+        const hasMultiGame = Object.values(matchedContents).some((games: any[]) => games.length > 1);
+        if (hasMultiGame) {
+          multiBadge = `<span class="match-status-badge" style="background-color: rgba(52,152,219,0.1); color: #2980b9;">🔀 Multi-jeux</span>`;
+        }
+      } else if (matchInfo.looseMatches.length > 0) {
+        matchBadge = `<span class="match-status-badge status-complete">✅ Matché</span>`;
+        // Multi-jeux : le fichier loose sert à plusieurs jeux
+        const distinctGames = new Set(matchInfo.looseMatches.map((m: any) => m.gameId));
+        if (distinctGames.size > 1) {
+          multiBadge = `<span class="match-status-badge" style="background-color: rgba(52,152,219,0.1); color: #2980b9;">🔀 Multi-jeux</span>`;
+        }
+      } else {
+        matchBadge = `<span class="match-status-badge status-missing">❌ Non matché</span>`;
+      }
+    }
+
     item.innerHTML = `
-      <div>
-        <div class="list-item-name">${displayNameHTML}</div>
-        <div class="list-item-info">${size}</div>
+      <div style="display: flex; justify-content: space-between; align-items: center; width: 100%;">
+        <div style="min-width: 0; flex: 1;">
+          <div class="list-item-name">${displayNameHTML}</div>
+          <div class="list-item-info">${size}</div>
+        </div>
+        <div style="display: flex; gap: 4px; flex-shrink: 0;">
+          ${multiBadge}${matchBadge}
+        </div>
       </div>
     `;
-    
-    item.addEventListener('click', () => selectFile(item, file));
+
+    item.addEventListener('click', () => selectFile(item, file, matchInfo));
     gameList.appendChild(item);
   });
 }
@@ -1593,19 +1660,19 @@ async function selectGame(element: HTMLElement, game: GameInfo) {
 }
 
 // Sélection d'un fichier
-function selectFile(element: HTMLElement, file: any) {
+function selectFile(element: HTMLElement, file: any, matchInfo?: any) {
   document.querySelectorAll('.list-item').forEach(item => {
     item.classList.remove('selected');
   });
   element.classList.add('selected');
-  
+
   const detailView = document.getElementById('detail-view');
   if (!detailView) return;
-  
+
   if (file.isArchive && file.contents) {
-    displayArchiveContents(file);
+    displayArchiveContents(file, matchInfo);
   } else {
-    displayFileDetails(file);
+    displayFileDetails(file, matchInfo);
   }
 }
 
@@ -1614,14 +1681,11 @@ function displayRomDetails(game: GameInfo, roms: RomInfo[], matches: any[] = [])
   const detailView = document.getElementById('detail-view');
   if (!detailView) return;
 
-  // Créer un map datRomId → match pour lookup rapide
-  const matchMap = new Map<number, any>();
+  // Créer un map datRomId → liste de tous les matches pour cette ROM
+  const allMatchesMap = new Map<number, any[]>();
   for (const m of matches) {
-    // Garder le meilleur match par ROM (perfect > none)
-    const existing = matchMap.get(m.datRomId);
-    if (!existing || (m.matchType === 'perfect' && existing.matchType !== 'perfect')) {
-      matchMap.set(m.datRomId, m);
-    }
+    if (!allMatchesMap.has(m.datRomId)) allMatchesMap.set(m.datRomId, []);
+    allMatchesMap.get(m.datRomId)!.push(m);
   }
 
   let icon = getIconGameCategory(game.category);
@@ -1636,7 +1700,7 @@ function displayRomDetails(game: GameInfo, roms: RomInfo[], matches: any[] = [])
         <strong>Catégorie :</strong> ${icon} ${game.category || 'Non catégorisé'}
       </div>
       <div style="margin-bottom: 10px;">
-        <strong>Statut :</strong> ${statusBadge}
+        <strong>Matching :</strong> ${statusBadge}
       </div>
       <div style="margin-top: 15px;">
         <strong>Fichier(s) de ROM :</strong> (${roms.length})
@@ -1649,8 +1713,8 @@ function displayRomDetails(game: GameInfo, roms: RomInfo[], matches: any[] = [])
     const matchingDone = game.match_status !== undefined;
 
     roms.forEach(rom => {
-      const match = matchMap.get(rom.id);
-      const isFound = match && match.matchType === 'perfect';
+      const romMatches = allMatchesMap.get(rom.id) || [];
+      const isFound = romMatches.length > 0;
 
       let statusIcon: string, statusClass: string, statusLabel: string;
       if (!matchingDone) {
@@ -1667,12 +1731,18 @@ function displayRomDetails(game: GameInfo, roms: RomInfo[], matches: any[] = [])
         statusLabel = 'Manquant';
       }
 
-      let locationInfo = '';
-      if (isFound) {
-        if (match.archiveFileName) {
-          locationInfo = `<div class="file-hash"><strong>Source :</strong> ${match.scannedFileName} → ${match.archiveFileName}</div>`;
-        } else if (match.scannedFileName) {
-          locationInfo = `<div class="file-hash"><strong>Source :</strong> ${match.scannedFileName}</div>`;
+      // Compter les fichiers loose et les archives distinctes
+      let matchSummary = '';
+      if (isFound && matchingDone) {
+        const looseCount = romMatches.filter((m: any) => !m.archiveContentId).length;
+        const archiveIds = new Set(romMatches.filter((m: any) => m.archiveContentId).map((m: any) => m.scannedFileId));
+        const archiveCount = archiveIds.size;
+
+        const parts: string[] = [];
+        if (looseCount > 0) parts.push(`${looseCount} fichier${looseCount > 1 ? 's' : ''} loose`);
+        if (archiveCount > 0) parts.push(`${archiveCount} archive${archiveCount > 1 ? 's' : ''}`);
+        if (parts.length > 0) {
+          matchSummary = `<div class="file-hash"><strong>Sources :</strong> ${parts.join(', ')}</div>`;
         }
       }
 
@@ -1686,7 +1756,7 @@ function displayRomDetails(game: GameInfo, roms: RomInfo[], matches: any[] = [])
           ${rom.crc32 ? `<div class="file-hash"><strong>CRC32 :</strong> ${rom.crc32.toUpperCase()}</div>` : ''}
           ${rom.md5 ? `<div class="file-hash"><strong>MD5 :</strong> ${rom.md5.toUpperCase()}</div>` : ''}
           ${rom.sha1 ? `<div class="file-hash"><strong>SHA1 :</strong> ${rom.sha1.toUpperCase()}</div>` : ''}
-          ${locationInfo}
+          ${matchSummary}
         </div>
       `;
     });
@@ -1696,10 +1766,27 @@ function displayRomDetails(game: GameInfo, roms: RomInfo[], matches: any[] = [])
 }
 
 // Affichage du contenu d'une archive
-function displayArchiveContents(file: any) {
+function displayArchiveContents(file: any, matchInfo?: any) {
   const detailView = document.getElementById('detail-view');
   if (!detailView) return;
-  
+
+  const hasMatchData = matchInfo && matchingComplete;
+  const matchedContents: Record<string, Array<{ gameId: number; gameName: string }>> = matchInfo?.matchedContents || {};
+  const matchedContentCount = Object.keys(matchedContents).length;
+  const totalContentCount = file.contents?.length || 0;
+
+  // Badge global de l'archive
+  let archiveBadge = '';
+  if (hasMatchData) {
+    if (matchedContentCount > 0 && matchedContentCount >= totalContentCount && totalContentCount > 0) {
+      archiveBadge = `<span class="match-status-badge status-complete">✅ Matché</span>`;
+    } else if (matchedContentCount > 0) {
+      archiveBadge = `<span class="match-status-badge status-partial">⚠️ Partiel</span>`;
+    } else {
+      archiveBadge = `<span class="match-status-badge status-missing">❌ Non matché</span>`;
+    }
+  }
+
   let html = `<div class="detail-header">📦 ${file.fileName}</div>`;
   html += `
     <div style="padding: 10px; font-size: 12px;">
@@ -1708,43 +1795,82 @@ function displayArchiveContents(file: any) {
       </div>
       <div style="margin-bottom: 10px;">
         <strong>Chemin :</strong><br>
-        <span">${file.filePath}</span>
+        <span>${file.filePath}</span>
       </div>
       <div style="margin-bottom: 10px;">
         <strong>Type :</strong> ${file.archiveType?.toUpperCase()}
       </div>
+      ${archiveBadge ? `<div style="margin-bottom: 10px;"><strong>Matching :</strong> ${archiveBadge}</div>` : ''}
       <div style="margin-top: 15px;">
-        <strong>Contenu de l'archive :</strong>
+        <strong>Contenu de l'archive :</strong> (${totalContentCount} fichier${totalContentCount > 1 ? 's' : ''})
       </div>
     </div>`;
-  
+
   if (file.contents && file.contents.length > 0) {
     file.contents.forEach((content: any) => {
+      const contentGames = matchedContents[content.fileName] || [];
+      const isMatched = contentGames.length > 0;
+
+      let statusClass = '';
+      let statusBadge = '';
+      let multiGameBadge = '';
+      let gameInfo = '';
+      if (hasMatchData) {
+        statusClass = isMatched ? 'rom-found' : 'rom-missing';
+        const statusIcon = isMatched ? '✅' : '❌';
+        const statusLabel = isMatched ? 'Matché' : 'Non matché';
+        statusBadge = `<span class="rom-status-badge ${statusClass}">${statusIcon} ${statusLabel}</span>`;
+
+        if (isMatched) {
+          const gameNames = contentGames.map((g: any) => g.gameName);
+          gameInfo = `<div class="file-hash"><strong>Jeu${gameNames.length > 1 ? 'x' : ''} :</strong> ${gameNames.join(', ')}</div>`;
+          if (gameNames.length > 1) {
+            multiGameBadge = `<span class="rom-status-badge" style="background-color: rgba(52,152,219,0.1); color: #2980b9;">🔀 Multi-jeux</span>`;
+          }
+        }
+      }
+
       html += `
-        <div class="file-item">
-          <div>${content.fileName}</div>
+        <div class="file-item ${statusClass}">
+          <div style="display: flex; justify-content: space-between; align-items: center;">
+            <div>${content.fileName}</div>
+            <div style="display: flex; gap: 4px;">${multiGameBadge}${statusBadge}</div>
+          </div>
           ${content.size ? `<div style="font-size: 12px; color: #7f8c8d;"><strong>Taille :</strong> ${formatFileSize(content.size)}</div>` : ''}
           ${content.hashes?.crc32 ? `<div class="file-hash"><strong>CRC32 :</strong> ${content.hashes.crc32}</div>` : ''}
           ${content.hashes?.md5 ? `<div class="file-hash"><strong>MD5 :</strong> ${content.hashes.md5}</div>` : ''}
           ${content.hashes?.sha1 ? `<div class="file-hash"><strong>SHA1 :</strong> ${content.hashes.sha1}</div>` : ''}
+          ${gameInfo}
         </div>
       `;
     });
   } else {
     html += '<div style="padding: 10px;">Archive vide ou non lisible</div>';
   }
-  
+
   detailView.innerHTML = html;
 }
 
 // Affichage des détails d'un fichier
-function displayFileDetails(file: any) {
+function displayFileDetails(file: any, matchInfo?: any) {
   const parts = file.fileName.split('.');
   const fileExtension = parts.length > 1 ? parts[parts.length - 1] : '';
 
   const detailView = document.getElementById('detail-view');
   if (!detailView) return;
-  
+
+  const hasMatchData = matchInfo && matchingComplete;
+  const looseMatches: Array<{ gameId: number; gameName: string; datRomName: string }> = matchInfo?.looseMatches || [];
+  const isMatched = looseMatches.length > 0;
+
+  // Badge de matching
+  let matchBadge = '';
+  if (hasMatchData) {
+    matchBadge = isMatched
+      ? `<span class="match-status-badge status-complete">✅ Matché</span>`
+      : `<span class="match-status-badge status-missing">❌ Non matché</span>`;
+  }
+
   let html = `<div class="detail-header">💾 ${file.fileName}</div>`;
   html += `
     <div style="padding: 10px; font-size: 12px;">
@@ -1753,27 +1879,49 @@ function displayFileDetails(file: any) {
       </div>
       <div style="margin-bottom: 10px;">
         <strong>Chemin :</strong><br>
-        <!--span style="font-size: 12px;">${file.filePath}</span-->
-        <span">${file.filePath}</span>
+        <span>${file.filePath}</span>
       </div>
       <div style="margin-bottom: 10px;">
         <strong>Type :</strong> ${fileExtension.toUpperCase()}
       </div>
+      ${matchBadge ? `<div style="margin-bottom: 10px;"><strong>Matching :</strong> ${matchBadge}</div>` : ''}
       <div style="margin-top: 15px;">
         <strong>Empreintes :</strong>
       </div>
-    </div>
-      ${file.hashes ? `
-        <div class="file-item">
+    </div>`;
+
+  if (file.hashes) {
+    const statusClass = hasMatchData ? (isMatched ? 'rom-found' : 'rom-missing') : '';
+    const statusBadge = hasMatchData
+      ? `<span class="rom-status-badge ${statusClass}">${isMatched ? '✅ Matché' : '❌ Non matché'}</span>`
+      : '';
+
+    // Noms des jeux pour lesquels ce fichier sert
+    let gameInfo = '';
+    let multiGameBadge = '';
+    if (hasMatchData && isMatched) {
+      const gameNames = [...new Set(looseMatches.map(m => m.gameName))];
+      gameInfo = `<div class="file-hash"><strong>Jeu${gameNames.length > 1 ? 'x' : ''} :</strong> ${gameNames.join(', ')}</div>`;
+      if (gameNames.length > 1) {
+        multiGameBadge = `<span class="rom-status-badge" style="background-color: rgba(52,152,219,0.1); color: #2980b9;">🔀 Multi-jeux</span>`;
+      }
+    }
+
+    html += `
+      <div class="file-item ${statusClass}">
+        <div style="display: flex; justify-content: space-between; align-items: center;">
           <div>${file.fileName}</div>
-          <div style="font-size: 12px; color: #7f8c8d;"><strong>Taille :</strong> ${formatFileSize(file.size)}</div>
-          <div class="file-hash"><strong>CRC32 :</strong> ${file.hashes.crc32}</div>
-          <div class="file-hash"><strong>MD5 :</strong> ${file.hashes.md5}</div>
-          <div class="file-hash"><strong>SHA1 :</strong> ${file.hashes.sha1}</div>
+          <div style="display: flex; gap: 4px;">${multiGameBadge}${statusBadge}</div>
         </div>
-      ` : ''}
-  `;
-  
+        <div style="font-size: 12px; color: #7f8c8d;"><strong>Taille :</strong> ${formatFileSize(file.size)}</div>
+        <div class="file-hash"><strong>CRC32 :</strong> ${file.hashes.crc32}</div>
+        <div class="file-hash"><strong>MD5 :</strong> ${file.hashes.md5}</div>
+        <div class="file-hash"><strong>SHA1 :</strong> ${file.hashes.sha1}</div>
+        ${gameInfo}
+      </div>
+    `;
+  }
+
   detailView.innerHTML = html;
 }
 
@@ -1938,6 +2086,8 @@ async function runMatching() {
           `Jeux manquants : ${result.stats.missingGames}/${result.stats.totalGames} ❌\n\n` +
           `ROMs matchées : ${result.stats.matchedRoms}/${result.stats.totalDatRoms}`);
     
+    matchingComplete = true;
+    updateWorkflowButtons();
     log(`Matching terminé avec succès !`, { context: 'match', state: 'success' });
   } catch (error) {
     log(`Erreur lors du matching : ${error}`, { severity: 'error', context: 'match' });
@@ -1946,6 +2096,112 @@ async function runMatching() {
     // Réactiver le bouton
     btn.disabled = false;
     btn.textContent = '🎯 5. Matcher les ROMs';
+  }
+}
+
+async function runConsolidation() {
+  const btn = document.getElementById('consolidate-roms') as HTMLButtonElement;
+  if (!btn) return;
+
+  // Récupérer les paramètres pour le récapitulatif
+  const settings = await window.api.getSettings();
+
+  // Construire le récapitulatif des options
+  const compressionLabels: Record<string, string> = {
+    'fastest': 'Rapide',
+    'normal': 'Normal',
+    'maximum': 'Maximum'
+  };
+  const cleanupScopeLabels: Record<string, string> = {
+    'used-only': 'Fichiers utilisés uniquement',
+    'all-matched': 'Tous les fichiers matchés'
+  };
+
+  const lines: string[] = [];
+
+  // --- Archives ---
+  lines.push('📦 ARCHIVES');
+  if (settings.useBestCompression) {
+    lines.push(`  • Mode : Tester tous les formats compatibles et conserver le plus léger`);
+  } else {
+    const formats = settings.archiveFormatPriority?.join(' > ') || '7z > zip';
+    lines.push(`  • Priorité des formats : ${formats}`);
+  }
+  lines.push(`  • Compression : ${compressionLabels[settings.compressionLevel] || settings.compressionLevel}`);
+  if (settings.recreateArchivesIfNeeded) {
+    lines.push(`  • Recréer les archives si nécessaire : Oui`);
+  } else {
+    lines.push(`  • Copie directe des archives sources quand possible`);
+  }
+  if (settings.solidArchive) lines.push(`  • Archive solide : Oui`);
+  if (settings.multithreading) lines.push(`  • Multithreading : Oui`);
+
+  // --- Dossiers ---
+  lines.push('');
+  lines.push('📁 DOSSIERS');
+  lines.push(`  • Dossier cible : ${settings.validatedRomsFolder || '(non configuré)'}`);
+  if (settings.cleanSourceAfterConsolidation && settings.unmatchedRomsFolder) {
+    lines.push(`  • Fichiers non matchés : ${settings.unmatchedRomsFolder}`);
+  }
+
+  // --- Nettoyage ---
+  lines.push('');
+  lines.push('🧹 NETTOYAGE');
+  if (settings.cleanSourceAfterConsolidation) {
+    lines.push(`  • Nettoyage activé`);
+    lines.push(`  • Portée : ${cleanupScopeLabels[settings.cleanupScope] || settings.cleanupScope}`);
+    if (settings.protectFilesForUnselectedGames) {
+      lines.push(`  • Protection des fichiers utilisés par des jeux non sélectionnés`);
+    } else {
+      lines.push(`  • Pas de protection pour les jeux non sélectionnés`);
+    }
+  } else {
+    lines.push(`  • Nettoyage désactivé (les sources restent intactes)`);
+  }
+
+  // Boîte de dialogue de confirmation
+  const confirmResult = await window.api.showMessageBox({
+    type: 'question',
+    title: 'Consolider les ROMs',
+    message: 'Voulez-vous lancer la consolidation avec ces paramètres ?',
+    detail: lines.join('\n'),
+    buttons: ['Consolider', 'Annuler'],
+    defaultId: 0,
+    cancelId: 1
+  });
+
+  if (confirmResult.response !== 0) return;
+
+  try {
+    btn.disabled = true;
+    btn.textContent = '⏳ Consolidation...';
+
+    log('Lancement de la consolidation des ROMs...', { context: 'match', state: 'loading' });
+
+    const removeListener = window.api.onConsolidationProgress((progress) => {
+      if (progress.phase === 'complete') {
+        log(progress.message, { context: 'match', state: 'success' });
+      } else {
+        log(progress.message, { context: 'match', state: 'loading' });
+      }
+    });
+
+    const result = await window.api.runConsolidation();
+
+    alert(`🧹 Consolidation terminée !\n\n` +
+          `Jeux consolidés : ${result.stats.gamesConsolidated}\n` +
+          `Archives créées : ${result.stats.archivesCreated}\n` +
+          `Fichiers non matchés déplacés : ${result.stats.unmatchedFilesMoved}\n` +
+          `Erreurs : ${result.stats.gamesErrored}`);
+
+    log('Consolidation terminée !', { context: 'match', state: 'success' });
+    removeListener();
+  } catch (error) {
+    log(`Erreur lors de la consolidation : ${error}`, { severity: 'error', context: 'match' });
+    alert('❌ Erreur lors de la consolidation. Consultez les logs.');
+  } finally {
+    btn.disabled = false;
+    btn.textContent = '🧹 6. Consolider';
   }
 }
 
@@ -2057,6 +2313,8 @@ async function openExistingDatabase() {
 
       // Vérifier si un matching a déjà été effectué et afficher le rapport approprié
       if (result.hasMatching) {
+        matchingComplete = true;
+        updateWorkflowButtons();
         // Afficher le rapport complet depuis la base
         await displayMatchingReport();
         log('✅ Rapport de matching chargé depuis la base de données', { context: 'match', state: 'success' });
@@ -2390,6 +2648,7 @@ const romAddFolderButton = document.getElementById('rom-add-folder') as HTMLButt
 const romAddFolderButtonSidebar = document.getElementById('rom-add-folder-sidebar') as HTMLButtonElement;
 const datQuickLoadButton = document.getElementById('dat-quick-load') as HTMLButtonElement;
 const matchRomsButton = document.getElementById('match-roms') as HTMLButtonElement;
+const consolidateRomsButton = document.getElementById('consolidate-roms') as HTMLButtonElement;
 
 // Étape 1 : Sélection du fichier DAT/XML
 datSelectButton?.addEventListener('click', async () => {
@@ -2539,6 +2798,9 @@ romAddFolderButtonSidebar?.addEventListener('click', addRomsFolders);
 // Étape 5 : Handler pour le matching
 matchRomsButton?.addEventListener('click', runMatching);
 
+// Étape 6 : Handler pour la consolidation
+consolidateRomsButton?.addEventListener('click', runConsolidation);
+
 // Chargement rapide
 datQuickLoadButton?.addEventListener('click', async () => {
   try {
@@ -2632,6 +2894,9 @@ window.api.onMenuAction(async (action: string) => {
       break;
     case 'match-roms':
       runMatching();
+      break;
+    case 'consolidate-roms':
+      runConsolidation();
       break;
     case 'show-missing':
       showMissingRoms();

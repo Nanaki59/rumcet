@@ -14,6 +14,7 @@ import {
   ArchiveExtractOptions 
 } from './types.js';
 import { calculateFileHashes } from '../hashCalculator.js';
+import { settingsManager } from '../settingsManager.js';
 
 // ============================================
 // INTERFACES ET TYPES
@@ -132,7 +133,8 @@ export class ChdHandler extends EventEmitter implements IArchiveHandler {
     }
     
     const chdInfo = await this.info(filePath);
-    const tempDir = path.join(os.tmpdir(), 'chd_list_' + Date.now());
+    const baseDir = settingsManager.get('tempExtractionFolder') || os.tmpdir();
+    const tempDir = path.join(baseDir, 'chd_list_' + Date.now());
     await fs.mkdir(tempDir, { recursive: true });
     
     try {
@@ -270,9 +272,11 @@ export class ChdHandler extends EventEmitter implements IArchiveHandler {
     
     const stats = await fs.stat(inputFile);
     const mediaType = detectMediaType(inputFile, stats.size);
-    
+
+    console.log(`[CHD] création de l'archive (type ${mediaType}) à partir de "${path.basename(inputFile)}"`);
+
     let result;
-    
+
     if (mediaType === 'dvd') {
       result = await this.createDVD(chdOptions);
     } else if (mediaType === 'hd') {
@@ -280,10 +284,12 @@ export class ChdHandler extends EventEmitter implements IArchiveHandler {
     } else {
       result = await this.createCD(chdOptions);
     }
-    
+
     if (!result.success) {
       throw new Error(`CHD creation failed: ${result.message}`);
     }
+
+    console.log(`[CHD] ✓ archive créée : ${options.outputPath}`);
   }
   
   getSupportedExtensions(): string[] {
@@ -650,14 +656,14 @@ export class ChdHandler extends EventEmitter implements IArchiveHandler {
         // Si on n'a qu'un seul BIN attendu, spécifier le nom du fichier bin
         if (!needsMultipleBins) {
           args.push('-ob', binPath);
-          console.log(`📀 single bin CHD detected (${expectedBinCount} expected files), usage of -ob ${binPath}`);
+          console.log(`[CHD] extraction mono-BIN de "${path.basename(chdPath)}" → ${path.basename(binPath)}`);
         }
       }
 
       // Extract multiple bins if necessary
       if (needsMultipleBins) {
         args.push('-sb');
-        console.log(`📀 multi-bin CHD detected (${expectedBinCount} expected files), usage of --splitbin`);
+        console.log(`[CHD] extraction multi-BIN de "${path.basename(chdPath)}" (${expectedBinCount} fichiers attendus)`);
       }
 
       // Force overwrite

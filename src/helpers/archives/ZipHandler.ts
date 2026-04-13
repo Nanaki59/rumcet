@@ -1,16 +1,20 @@
 // src/helpers/archives/ZipHandler.ts
 
 import AdmZip from 'adm-zip';
+import Seven from 'node-7z';
+import sevenBin from '7zip-bin';
 import path from 'path';
 import fs from 'fs/promises';
-import { 
-  IArchiveHandler, 
-  ArchiveContent, 
-  ArchiveCreateOptions, 
+import {
+  IArchiveHandler,
+  ArchiveContent,
+  ArchiveCreateOptions,
   ArchiveExtractOptions,
   ArchiveAddOptions,
   ArchiveDeleteOptions
 } from './types.js';
+
+const pathTo7zip = sevenBin.path7za;
 
 /**
  * Handler pour les archives ZIP utilisant AdmZip (pure Node.js)
@@ -152,39 +156,40 @@ export class ZipHandler implements IArchiveHandler {
   }
   
   /**
-   * Crée une archive ZIP
-   * Note: AdmZip utilise un niveau de compression fixe (DEFLATE niveau 6)
-   * Pour un contrôle plus fin, il faudrait utiliser 'yazl' ou 'archiver'
+   * Crée une archive ZIP via 7-Zip pour contrôler le niveau de compression
    */
   async create(options: ArchiveCreateOptions): Promise<void> {
-    try {
-      const zip = new AdmZip();
-      
-      for (const filePath of options.files) {
-        const stats = await fs.stat(filePath);
-        
-        if (stats.isFile()) {
-          // Ajouter le fichier avec son chemin relatif
-          const baseName = path.basename(filePath);
-          zip.addLocalFile(filePath, '', baseName);
-        } else if (stats.isDirectory()) {
-          // Ajouter un dossier récursivement
-          zip.addLocalFolder(filePath, path.basename(filePath));
-        }
-      }
-      
-      // Créer le dossier parent si nécessaire
-      const outputDir = path.dirname(options.outputPath);
-      await fs.mkdir(outputDir, { recursive: true });
-      
-      // Écrire l'archive
-      zip.writeZip(options.outputPath);
-      
-      console.log(`✅ Archive ZIP créée: ${options.outputPath}`);
-    } catch (error) {
-      console.error(`Error creating ZIP file ${options.outputPath}:`, error);
-      throw error;
-    }
+    // Créer le dossier parent si nécessaire
+    const outputDir = path.dirname(options.outputPath);
+    await fs.mkdir(outputDir, { recursive: true });
+
+    // Niveau de compression : 1 (fastest) à 9 (maximum), défaut 5
+    const mx = options.compressionLevel?.toString() || '5';
+
+    console.log(`[ZIP] compression mx=${mx}, mt=${options.multithreading}`);
+
+    return new Promise((resolve, reject) => {
+      const addOptions: any = {
+        $bin: pathTo7zip,
+        method: ['0=Deflate'],
+        $raw: [
+          `-mx=${mx}`,
+          `-mmt=${options.multithreading ? 'on' : 'off'}`
+        ]
+      };
+
+      const myStream = Seven.add(options.outputPath, options.files, addOptions);
+
+      myStream.on('end', () => {
+        console.log(`[ZIP] ✓ archive créée : ${options.outputPath}`);
+        resolve();
+      });
+
+      myStream.on('error', (err: any) => {
+        console.error(`Error creating ZIP file ${options.outputPath}:`, err);
+        reject(err);
+      });
+    });
   }
   
   canHandleComments(): boolean {

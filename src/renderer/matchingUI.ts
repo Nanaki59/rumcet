@@ -24,9 +24,7 @@ interface RomMatch {
   archiveContentId?: number;
   archiveFileName?: string;
   archiveType?: string;
-  matchType: 'perfect' | 'none';
-  matchedBy: string[];
-  priorityScore: number;
+  archiveIsPerfect: boolean;
 }
 
 interface MatchingStats {
@@ -462,10 +460,10 @@ export async function showGameDetails(gameId: number): Promise<void> {
 
     roms.forEach((rom: RomInfo) => {
       const match = matchMap.get(rom.id);
-      const icon = match?.matchType === 'perfect' ? '✅' : '❌';
+      const icon = match ? '✅' : '❌';
       const location = match?.scannedFileName || match?.archiveFileName || 'Non trouvé';
       const archiveType = match?.archiveType || (match?.scannedFileName ? 'Non compressé' : '-');
-      const statusClass = match?.matchType === 'perfect' ? 'rom-found' : 'rom-missing';
+      const statusClass = match ? 'rom-found' : 'rom-missing';
 
       html += `
         <tr class="${statusClass}">

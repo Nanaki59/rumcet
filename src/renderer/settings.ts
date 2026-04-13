@@ -2,13 +2,20 @@
 
 // Utiliser les types depuis global.d.ts
 type ArchiveFormat = '7z' | 'zip' | 'chd';
+type CleanupScope = 'used-only' | 'all-matched';
 type RarTool = '7zip' | 'winrar' | 'unrar';
+
+type SystemCategory = 'Nintendo' | 'Sega' | 'Sony' | 'Arcade' | 'Ordinateurs' | 'Autres';
+type SystemSubcategory = 'Consoles de salon' | 'Consoles portables';
 
 interface SystemCompatibility {
   systemId: string;
   systemName: string;
+  category: SystemCategory;
+  subcategory?: SystemSubcategory;
   supportedFormats: ArchiveFormat[];
   warningFormats?: ArchiveFormat[];
+  unsupportedFormats?: ArchiveFormat[];
 }
 
 interface AppSettings {
@@ -16,6 +23,11 @@ interface AppSettings {
   defaultDatabaseFolder: string;
   defaultRomsFolder: string;
   unmatchedRomsFolder: string;
+  validatedRomsFolder: string;
+  tempExtractionFolder: string;
+  cleanSourceAfterConsolidation: boolean;
+  cleanupScope: CleanupScope;
+  protectFilesForUnselectedGames: boolean;
   theme: 'light' | 'dark';
   language: 'fr' | 'en';
   autoScanOnStartup: boolean;
@@ -34,116 +46,43 @@ interface AppSettings {
   systemCompatibility?: SystemCompatibility[];
 }
 
-// Systèmes par défaut
+// Systèmes par défaut (miroir de DEFAULT_SYSTEM_COMPATIBILITY dans settingsManager.ts)
 const defaultSystemCompatibility: SystemCompatibility[] = [
-  {
-    systemId: 'psx',
-    systemName: 'PlayStation (PSX)',
-    supportedFormats: ['chd', '7z', 'zip'],
-    warningFormats: []
-  },
-  {
-    systemId: 'ps2',
-    systemName: 'PlayStation 2 (PS2)',
-    supportedFormats: ['chd', '7z'],
-    warningFormats: ['zip']
-  },
-  {
-    systemId: 'psp',
-    systemName: 'PlayStation Portable (PSP)',
-    supportedFormats: ['chd', '7z', 'zip'],
-    warningFormats: []
-  },
-  {
-    systemId: 'dreamcast',
-    systemName: 'Sega Dreamcast',
-    supportedFormats: ['chd', '7z'],
-    warningFormats: ['zip']
-  },
-  {
-    systemId: 'saturn',
-    systemName: 'Sega Saturn',
-    supportedFormats: ['chd', '7z'],
-    warningFormats: []
-  },
-  {
-    systemId: 'segacd',
-    systemName: 'Sega CD / Mega CD',
-    supportedFormats: ['chd', '7z'],
-    warningFormats: []
-  },
-  {
-    systemId: 'n64',
-    systemName: 'Nintendo 64',
-    supportedFormats: ['7z', 'zip'],
-    warningFormats: []
-  },
-  {
-    systemId: 'gcn',
-    systemName: 'Nintendo GameCube',
-    supportedFormats: ['7z'],
-    warningFormats: ['zip']
-  },
-  {
-    systemId: 'nds',
-    systemName: 'Nintendo DS',
-    supportedFormats: ['7z', 'zip'],
-    warningFormats: []
-  },
-  {
-    systemId: 'snes',
-    systemName: 'Super Nintendo (SNES)',
-    supportedFormats: ['7z', 'zip'],
-    warningFormats: []
-  },
-  {
-    systemId: 'nes',
-    systemName: 'Nintendo Entertainment System (NES)',
-    supportedFormats: ['7z', 'zip'],
-    warningFormats: []
-  },
-  {
-    systemId: 'genesis',
-    systemName: 'Sega Genesis / Mega Drive',
-    supportedFormats: ['7z', 'zip'],
-    warningFormats: []
-  },
-  {
-    systemId: 'mastersystem',
-    systemName: 'Sega Master System',
-    supportedFormats: ['7z', 'zip'],
-    warningFormats: []
-  },
-  {
-    systemId: 'gamegear',
-    systemName: 'Sega Game Gear',
-    supportedFormats: ['7z', 'zip'],
-    warningFormats: []
-  },
-  {
-    systemId: 'gba',
-    systemName: 'Game Boy Advance',
-    supportedFormats: ['7z', 'zip'],
-    warningFormats: []
-  },
-  {
-    systemId: 'gbc',
-    systemName: 'Game Boy Color',
-    supportedFormats: ['7z', 'zip'],
-    warningFormats: []
-  },
-  {
-    systemId: 'gb',
-    systemName: 'Game Boy',
-    supportedFormats: ['7z', 'zip'],
-    warningFormats: []
-  },
-  {
-    systemId: 'arcade',
-    systemName: 'Arcade (MAME)',
-    supportedFormats: ['zip', '7z'],
-    warningFormats: []
-  }
+  // ── Nintendo — Consoles de salon ──
+  { systemId: 'nes', systemName: 'Nintendo Entertainment System (NES)', category: 'Nintendo', subcategory: 'Consoles de salon', supportedFormats: ['zip', '7z'], unsupportedFormats: ['chd'] },
+  { systemId: 'snes', systemName: 'Super Nintendo (SNES)', category: 'Nintendo', subcategory: 'Consoles de salon', supportedFormats: ['zip', '7z'], unsupportedFormats: ['chd'] },
+  { systemId: 'n64', systemName: 'Nintendo 64', category: 'Nintendo', subcategory: 'Consoles de salon', supportedFormats: ['7z', 'zip'], unsupportedFormats: ['chd'] },
+  { systemId: 'gamecube', systemName: 'Nintendo GameCube', category: 'Nintendo', subcategory: 'Consoles de salon', supportedFormats: ['7z'], warningFormats: ['zip'], unsupportedFormats: ['chd'] },
+  { systemId: 'wii', systemName: 'Nintendo Wii', category: 'Nintendo', subcategory: 'Consoles de salon', supportedFormats: ['7z'], warningFormats: ['zip'], unsupportedFormats: ['chd'] },
+  // ── Nintendo — Consoles portables ──
+  { systemId: 'gb', systemName: 'Game Boy', category: 'Nintendo', subcategory: 'Consoles portables', supportedFormats: ['zip', '7z'], unsupportedFormats: ['chd'] },
+  { systemId: 'gbc', systemName: 'Game Boy Color', category: 'Nintendo', subcategory: 'Consoles portables', supportedFormats: ['zip', '7z'], unsupportedFormats: ['chd'] },
+  { systemId: 'gba', systemName: 'Game Boy Advance', category: 'Nintendo', subcategory: 'Consoles portables', supportedFormats: ['zip', '7z'], unsupportedFormats: ['chd'] },
+  { systemId: 'nds', systemName: 'Nintendo DS', category: 'Nintendo', subcategory: 'Consoles portables', supportedFormats: ['7z', 'zip'], unsupportedFormats: ['chd'] },
+  { systemId: '3ds', systemName: 'Nintendo 3DS', category: 'Nintendo', subcategory: 'Consoles portables', supportedFormats: ['7z'], warningFormats: ['zip'], unsupportedFormats: ['chd'] },
+  // ── Sega — Consoles de salon ──
+  { systemId: 'mastersystem', systemName: 'Sega Master System', category: 'Sega', subcategory: 'Consoles de salon', supportedFormats: ['zip', '7z'], unsupportedFormats: ['chd'] },
+  { systemId: 'genesis', systemName: 'Sega Genesis / Mega Drive', category: 'Sega', subcategory: 'Consoles de salon', supportedFormats: ['zip', '7z'], unsupportedFormats: ['chd'] },
+  { systemId: 'sega32x', systemName: 'Sega 32X', category: 'Sega', subcategory: 'Consoles de salon', supportedFormats: ['zip', '7z'], unsupportedFormats: ['chd'] },
+  { systemId: 'segacd', systemName: 'Sega CD / Mega CD', category: 'Sega', subcategory: 'Consoles de salon', supportedFormats: ['chd'], warningFormats: ['7z', 'zip'], unsupportedFormats: [] },
+  { systemId: 'saturn', systemName: 'Sega Saturn', category: 'Sega', subcategory: 'Consoles de salon', supportedFormats: ['chd'], warningFormats: ['7z'], unsupportedFormats: ['zip'] },
+  { systemId: 'dreamcast', systemName: 'Sega Dreamcast', category: 'Sega', subcategory: 'Consoles de salon', supportedFormats: ['chd'], warningFormats: ['7z'], unsupportedFormats: ['zip'] },
+  // ── Sega — Consoles portables ──
+  { systemId: 'gamegear', systemName: 'Sega Game Gear', category: 'Sega', subcategory: 'Consoles portables', supportedFormats: ['zip', '7z'], unsupportedFormats: ['chd'] },
+  // ── Sony — Consoles de salon ──
+  { systemId: 'psx', systemName: 'PlayStation (PSX)', category: 'Sony', subcategory: 'Consoles de salon', supportedFormats: ['chd'], warningFormats: ['7z', 'zip'], unsupportedFormats: [] },
+  { systemId: 'ps2', systemName: 'PlayStation 2 (PS2)', category: 'Sony', subcategory: 'Consoles de salon', supportedFormats: ['chd', '7z'], unsupportedFormats: ['zip'] },
+  // ── Sony — Consoles portables ──
+  { systemId: 'psp', systemName: 'PlayStation Portable (PSP)', category: 'Sony', subcategory: 'Consoles portables', supportedFormats: ['chd', '7z'], warningFormats: ['zip'], unsupportedFormats: [] },
+  // ── Arcade ──
+  { systemId: 'mame', systemName: 'Arcade (MAME)', category: 'Arcade', supportedFormats: ['zip'], warningFormats: ['7z'], unsupportedFormats: ['chd'] },
+  { systemId: 'fba', systemName: 'Arcade (FinalBurn Neo)', category: 'Arcade', supportedFormats: ['zip'], warningFormats: ['7z'], unsupportedFormats: ['chd'] },
+  { systemId: 'neogeo', systemName: 'Neo Geo', category: 'Arcade', supportedFormats: ['zip'], warningFormats: ['7z'], unsupportedFormats: ['chd'] },
+  // ── Ordinateurs ──
+  { systemId: 'pc', systemName: 'PC (DOS / Windows)', category: 'Ordinateurs', supportedFormats: ['7z', 'zip'], warningFormats: ['chd'], unsupportedFormats: [] },
+  // ── Autres ──
+  { systemId: 'pcengine', systemName: 'PC Engine / TurboGrafx-16', category: 'Autres', supportedFormats: ['chd', '7z', 'zip'], unsupportedFormats: [] },
+  { systemId: 'atari2600', systemName: 'Atari 2600', category: 'Autres', supportedFormats: ['zip', '7z'], unsupportedFormats: ['chd'] },
 ];
 
 let currentFormatPriority: ArchiveFormat[] = ['chd', '7z', 'zip'];
@@ -204,7 +143,13 @@ async function loadSettings(): Promise<void> {
     (document.getElementById('defaultDatabaseFolder') as HTMLInputElement).value = currentSettings.defaultDatabaseFolder || '';
     (document.getElementById('defaultRomsFolder') as HTMLInputElement).value = currentSettings.defaultRomsFolder || '';
     (document.getElementById('unmatchedRomsFolder') as HTMLInputElement).value = currentSettings.unmatchedRomsFolder || '';
-    
+    (document.getElementById('validatedRomsFolder') as HTMLInputElement).value = currentSettings.validatedRomsFolder || '';
+    (document.getElementById('tempExtractionFolder') as HTMLInputElement).value = currentSettings.tempExtractionFolder || '';
+    (document.getElementById('cleanSourceAfterConsolidation') as HTMLInputElement).checked = currentSettings.cleanSourceAfterConsolidation !== undefined ? currentSettings.cleanSourceAfterConsolidation : true;
+    (document.getElementById('cleanupScope') as HTMLSelectElement).value = currentSettings.cleanupScope || 'used-only';
+    (document.getElementById('protectFilesForUnselectedGames') as HTMLInputElement).checked = currentSettings.protectFilesForUnselectedGames !== undefined ? currentSettings.protectFilesForUnselectedGames : true;
+    toggleCleanupOptions();
+
     // Onglet Archives
     (document.getElementById('compressionLevel') as HTMLSelectElement).value = currentSettings.compressionLevel || 'normal';
     (document.getElementById('recreateArchivesIfNeeded') as HTMLInputElement).checked = currentSettings.recreateArchivesIfNeeded || false;
@@ -260,6 +205,12 @@ async function browseFolder(fieldId: string): Promise<void> {
       break;
     case 'unmatchedRomsFolder':
       folderType = 'unmatched';
+      break;
+    case 'validatedRomsFolder':
+      folderType = 'validated';
+      break;
+    case 'tempExtractionFolder':
+      folderType = 'temp';
       break;
   }
 
@@ -578,49 +529,158 @@ function handleRarToolDrop(this: HTMLElement, e: DragEvent): void {
 function renderSystemCompatibility(): void {
   const container = document.getElementById('systemCompatibilityList');
   if (!container) return;
-  
+
   container.innerHTML = '';
-  
+
   const systemCompat = currentSettings.systemCompatibility || defaultSystemCompatibility;
-  
-  systemCompat.forEach(system => {
-    const systemDiv = document.createElement('div');
-    systemDiv.className = 'system-compatibility-item';
-    
-    const title = document.createElement('h5');
-    title.textContent = system.systemName;
-    systemDiv.appendChild(title);
-    
-    const checkboxesDiv = document.createElement('div');
-    checkboxesDiv.className = 'format-checkboxes';
-    
-    (['7z', 'zip', 'chd'] as ArchiveFormat[]).forEach(format => {
-      const label = document.createElement('label');
-      
-      const checkbox = document.createElement('input');
-      checkbox.type = 'checkbox';
-      checkbox.dataset.system = system.systemId;
-      checkbox.dataset.format = format;
-      checkbox.checked = system.supportedFormats.includes(format);
-      
-      const formatText = document.createElement('span');
-      formatText.textContent = format.toUpperCase();
-      
-      if (system.warningFormats?.includes(format)) {
-        const warning = document.createElement('span');
-        warning.textContent = ' ⚠️';
-        warning.title = 'Fonctionne mais peut avoir des limitations';
-        formatText.appendChild(warning);
+
+  // Grouper par catégorie
+  const categories: SystemCategory[] = ['Nintendo', 'Sega', 'Sony', 'Arcade', 'Ordinateurs', 'Autres'];
+  const grouped = new Map<SystemCategory, typeof systemCompat>();
+  for (const cat of categories) {
+    const systems = systemCompat.filter(s => (s.category || 'Autres') === cat);
+    if (systems.length > 0) {
+      grouped.set(cat, systems);
+    }
+  }
+
+  for (const [category, systems] of grouped) {
+    const section = document.createElement('div');
+    section.className = 'system-category-section';
+
+    const catTitle = document.createElement('h4');
+    catTitle.textContent = category;
+    section.appendChild(catTitle);
+
+    // Grouper par sous-catégorie au sein de la catégorie
+    const subcategories = new Map<string, typeof systems>();
+    for (const system of systems) {
+      const subcat = system.subcategory || '';
+      if (!subcategories.has(subcat)) {
+        subcategories.set(subcat, []);
       }
-      
-      label.appendChild(checkbox);
-      label.appendChild(formatText);
-      checkboxesDiv.appendChild(label);
-    });
-    
-    systemDiv.appendChild(checkboxesDiv);
-    container.appendChild(systemDiv);
+      subcategories.get(subcat)!.push(system);
+    }
+
+    for (const [subcategory, subcatSystems] of subcategories) {
+      if (subcategory) {
+        const subcatTitle = document.createElement('h6');
+        subcatTitle.className = 'system-subcategory-title';
+        subcatTitle.textContent = subcategory;
+        section.appendChild(subcatTitle);
+      }
+
+    for (const system of subcatSystems) {
+      // Récupérer les infos par défaut pour les icônes warning/unsupported
+      const defaultEntry = defaultSystemCompatibility.find(s => s.systemId === system.systemId);
+
+      const systemDiv = document.createElement('div');
+      systemDiv.className = 'system-compatibility-item';
+      systemDiv.dataset.systemId = system.systemId;
+
+      // Header : nom du système + bouton reset individuel
+      const headerDiv = document.createElement('div');
+      headerDiv.className = 'system-compatibility-header';
+
+      const title = document.createElement('h5');
+      title.textContent = system.systemName;
+      headerDiv.appendChild(title);
+
+      const resetBtn = document.createElement('button');
+      resetBtn.className = 'btn-reset-system';
+      resetBtn.title = `Réinitialiser ${system.systemName} aux valeurs par défaut`;
+      resetBtn.textContent = '↺';
+      resetBtn.addEventListener('click', () => resetSystemCompatibility(system.systemId));
+      headerDiv.appendChild(resetBtn);
+
+      systemDiv.appendChild(headerDiv);
+
+      const checkboxesDiv = document.createElement('div');
+      checkboxesDiv.className = 'format-checkboxes';
+
+      (['7z', 'zip', 'chd'] as ArchiveFormat[]).forEach(format => {
+        const label = document.createElement('label');
+
+        const checkbox = document.createElement('input');
+        checkbox.type = 'checkbox';
+        checkbox.dataset.system = system.systemId;
+        checkbox.dataset.format = format;
+        checkbox.checked = system.supportedFormats.includes(format);
+
+        const formatText = document.createElement('span');
+        formatText.textContent = format.toUpperCase();
+
+        // Icône warning (triangle orange) — format partiellement supporté
+        if (defaultEntry?.warningFormats?.includes(format)) {
+          const warning = document.createElement('span');
+          warning.className = 'format-icon-warning';
+          warning.textContent = ' ⚠️';
+          warning.title = 'Compatibilité partielle : certains émulateurs ne supportent pas ce format';
+          formatText.appendChild(warning);
+        }
+
+        // Icône croix rouge — format non supporté
+        if (defaultEntry?.unsupportedFormats?.includes(format)) {
+          const unsupported = document.createElement('span');
+          unsupported.className = 'format-icon-unsupported';
+          unsupported.textContent = ' ❌';
+          unsupported.title = 'Non supporté par les émulateurs de ce système';
+          formatText.appendChild(unsupported);
+        }
+
+        label.appendChild(checkbox);
+        label.appendChild(formatText);
+        checkboxesDiv.appendChild(label);
+      });
+
+      systemDiv.appendChild(checkboxesDiv);
+      section.appendChild(systemDiv);
+    }
+    } // fin subcategories loop
+
+    container.appendChild(section);
+  }
+}
+
+/**
+ * Réinitialise un seul système aux valeurs par défaut
+ */
+function resetSystemCompatibility(systemId: string): void {
+  const defaultConfig = defaultSystemCompatibility.find(s => s.systemId === systemId);
+  if (!defaultConfig) return;
+
+  const systemDiv = document.querySelector(`.system-compatibility-item[data-system-id="${systemId}"]`);
+  if (!systemDiv) return;
+
+  const checkboxes = systemDiv.querySelectorAll<HTMLInputElement>('input[type="checkbox"]');
+  checkboxes.forEach(checkbox => {
+    const format = checkbox.dataset.format as ArchiveFormat;
+    checkbox.checked = defaultConfig.supportedFormats.includes(format);
   });
+}
+
+/**
+ * Réinitialise tous les systèmes aux valeurs par défaut
+ */
+function resetAllSystemCompatibility(): void {
+  // Mettre à jour les settings en mémoire
+  currentSettings.systemCompatibility = JSON.parse(JSON.stringify(defaultSystemCompatibility));
+  // Re-rendre
+  renderSystemCompatibility();
+}
+
+// Exposer pour l'appel inline dans le HTML
+(window as any).resetAllSystemCompatibility = resetAllSystemCompatibility;
+
+// ============================================
+// TOGGLE OPTIONS DE NETTOYAGE
+// ============================================
+
+function toggleCleanupOptions(): void {
+  const enabled = (document.getElementById('cleanSourceAfterConsolidation') as HTMLInputElement).checked;
+  (document.getElementById('cleanupScope') as HTMLSelectElement).disabled = !enabled;
+  (document.getElementById('protectFilesForUnselectedGames') as HTMLInputElement).disabled = !enabled;
+  (document.getElementById('moveUnmatchedFiles') as HTMLInputElement).disabled = !enabled;
 }
 
 // ============================================
@@ -645,24 +705,28 @@ async function saveSettings(): Promise<void> {
     // Collecter la compatibilité système
     const systemCompatibility: SystemCompatibility[] = [];
     const systemItems = document.querySelectorAll('.system-compatibility-item');
-    
-    systemItems.forEach((item, index) => {
-      const systemId = defaultSystemCompatibility[index].systemId;
-      const systemName = defaultSystemCompatibility[index].systemName;
+
+    systemItems.forEach(item => {
+      const systemId = (item as HTMLElement).dataset.systemId!;
+      const defaultEntry = defaultSystemCompatibility.find(s => s.systemId === systemId);
+      const systemName = defaultEntry?.systemName || systemId;
       const supportedFormats: ArchiveFormat[] = [];
-      
+
       const checkboxes = item.querySelectorAll('input[type="checkbox"]');
       checkboxes.forEach(checkbox => {
         if ((checkbox as HTMLInputElement).checked) {
           supportedFormats.push((checkbox as HTMLInputElement).dataset.format as ArchiveFormat);
         }
       });
-      
+
       systemCompatibility.push({
         systemId,
         systemName,
+        category: defaultEntry?.category || 'Autres',
+        subcategory: defaultEntry?.subcategory,
         supportedFormats,
-        warningFormats: defaultSystemCompatibility[index].warningFormats
+        warningFormats: defaultEntry?.warningFormats,
+        unsupportedFormats: defaultEntry?.unsupportedFormats
       });
     });
     
@@ -677,7 +741,12 @@ async function saveSettings(): Promise<void> {
       defaultDatabaseFolder: (document.getElementById('defaultDatabaseFolder') as HTMLInputElement).value,
       defaultRomsFolder: (document.getElementById('defaultRomsFolder') as HTMLInputElement).value,
       unmatchedRomsFolder: (document.getElementById('unmatchedRomsFolder') as HTMLInputElement).value,
-      
+      validatedRomsFolder: (document.getElementById('validatedRomsFolder') as HTMLInputElement).value,
+      tempExtractionFolder: (document.getElementById('tempExtractionFolder') as HTMLInputElement).value,
+      cleanSourceAfterConsolidation: (document.getElementById('cleanSourceAfterConsolidation') as HTMLInputElement).checked,
+      cleanupScope: (document.getElementById('cleanupScope') as HTMLSelectElement).value as CleanupScope,
+      protectFilesForUnselectedGames: (document.getElementById('protectFilesForUnselectedGames') as HTMLInputElement).checked,
+
       // Compression
       compressionLevel: (document.getElementById('compressionLevel') as HTMLSelectElement).value as any,
       recreateArchivesIfNeeded: (document.getElementById('recreateArchivesIfNeeded') as HTMLInputElement).checked,
@@ -753,3 +822,4 @@ async function resetToDefaults(): Promise<void> {
 (window as any).cancel = cancel;
 (window as any).resetToDefaults = resetToDefaults;
 (window as any).toggleBestCompressionWarning = toggleBestCompressionWarning;
+(window as any).toggleCleanupOptions = toggleCleanupOptions;
