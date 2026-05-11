@@ -54,7 +54,7 @@
       padding: 8px 12px;
       border-radius: 4px;
       display: grid;
-      grid-template-columns: auto 1fr;
+      grid-template-columns: auto auto auto 1fr;
       gap: 5px 15px;
       border-left: 4px solid #3498db;
       box-shadow: 0 1px 3px rgba(0, 0, 0, 0.08);
@@ -626,6 +626,23 @@
       background-color: rgba(231, 76, 60, 0.05);
     }
 
+    /* Badge dossier cible */
+    .target-folder-badge {
+      display: inline-block;
+      background-color: #27ae60;
+      color: white;
+      font-size: 10px;
+      font-weight: 600;
+      padding: 1px 6px;
+      border-radius: 3px;
+      margin-left: 6px;
+      vertical-align: middle;
+    }
+
+    .sidebar-item.target-folder .folder-remove-btn {
+      display: none;
+    }
+
     /* Menu contextuel */
     .context-menu {
       position: fixed;
@@ -650,6 +667,15 @@
 
     .context-menu-item.danger {
       color: #e74c3c;
+    }
+
+    .context-menu-item.disabled {
+      color: #bbb;
+      cursor: not-allowed;
+    }
+
+    .context-menu-item.disabled:hover {
+      background-color: transparent;
     }
 
     /* Volet central */
@@ -762,6 +788,87 @@
 
     .global-counters strong {
       color: #3498db;
+    }
+
+    /* Récapitulatif des filtres actifs */
+    .active-filters-bar {
+      display: none;
+      align-items: center;
+      gap: 8px;
+      padding: 5px 15px;
+      background-color: #eef2f7;
+      border-bottom: 1px solid #dee2e6;
+      flex-wrap: wrap;
+      font-size: 12px;
+    }
+
+    .active-filters-bar.visible {
+      display: flex;
+    }
+
+    .active-filters-group {
+      display: flex;
+      align-items: center;
+      gap: 4px;
+    }
+
+    .active-filters-group-tag {
+      display: inline-flex;
+      align-items: center;
+      gap: 4px;
+      padding: 2px 6px 2px 8px;
+      background-color: #d6e4f0;
+      border-radius: 12px;
+    }
+
+    .active-filters-group-label {
+      font-weight: 600;
+      color: #5a6a7a;
+      white-space: nowrap;
+    }
+
+    .active-filter-values {
+      color: #2c3e50;
+    }
+
+    .active-filters-group-tag .remove-filter {
+      cursor: pointer;
+      font-size: 13px;
+      font-weight: 700;
+      color: #7f8c8d;
+      line-height: 1;
+      border-radius: 50%;
+      width: 16px;
+      height: 16px;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+    }
+
+    .active-filters-group-tag .remove-filter:hover {
+      background-color: rgba(0, 0, 0, 0.1);
+      color: #c0392b;
+    }
+
+    .active-filters-separator {
+      width: 1px;
+      height: 18px;
+      background-color: #bdc3c7;
+      margin: 0 4px;
+    }
+
+    .clear-all-filters {
+      cursor: pointer;
+      color: #e74c3c;
+      font-weight: 600;
+      padding: 2px 8px;
+      border-radius: 12px;
+      white-space: nowrap;
+      margin-left: auto;
+    }
+
+    .clear-all-filters:hover {
+      background-color: rgba(231, 76, 60, 0.1);
     }
 
     .group-control {
@@ -921,14 +1028,14 @@
       flex-shrink: 0;
     }
 
-    .select-all-bar label {
+    .select-all-bar .select-all-label {
       display: flex;
       align-items: center;
       gap: 8px;
       font-size: 13px;
       font-weight: 600;
       color: #2c3e50;
-      cursor: pointer;
+      cursor: default;
       user-select: none;
       flex: 1;
     }
@@ -1036,6 +1143,34 @@
       color: #7f8c8d;
       font-size: 12px;
       font-weight: 600;
+    }
+
+    .game-group-header .group-chevron {
+      font-size: 12px;
+      transition: transform 0.15s ease;
+      flex-shrink: 0;
+      width: 28px;
+      height: 28px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      text-align: center;
+      color: #7f8c8d;
+      border-radius: 4px;
+      cursor: pointer;
+    }
+
+    .game-group-header:hover:not(:has(.group-checkbox:hover)) .group-chevron {
+      background-color: rgba(0, 0, 0, 0.08);
+      color: #2c3e50;
+    }
+
+    .game-group.collapsed .group-chevron {
+      transform: rotate(-90deg);
+    }
+
+    .game-group.collapsed .game-group-content {
+      display: none;
     }
 
     .game-group-content {
@@ -1232,6 +1367,7 @@
       color: #7f8c8d;
       font-family: monospace;
       margin-top: 4px;
+      word-break: break-all;
     }
 
     .stats-panel {
@@ -1258,6 +1394,55 @@
     }
 
     /* Zone de log en bas */
+    .log-panel {
+      display: flex;
+      flex-direction: column;
+      border-top: 1px solid #444;
+      flex-shrink: 0;
+    }
+
+    .log-header {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      background-color: #2a2a2a;
+      color: #d4d4d4;
+      padding: 4px 10px;
+      font-family: 'Consolas', 'Monaco', monospace;
+      font-size: 12px;
+      cursor: pointer;
+      user-select: none;
+      flex-shrink: 0;
+    }
+
+    .log-header:hover {
+      background-color: #333;
+    }
+
+    .log-header .log-chevron {
+      font-size: 10px;
+      transition: transform 0.15s ease;
+      color: #7f8c8d;
+    }
+
+    .log-panel.collapsed .log-chevron {
+      transform: rotate(-90deg);
+    }
+
+    .log-header .log-title {
+      font-weight: 600;
+      font-size: 11px;
+      color: #999;
+    }
+
+    .log-header .log-last-message {
+      flex: 1;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+      min-width: 0;
+    }
+
     .log-container {
       height: 150px;
       background-color: #1e1e1e;
@@ -1266,7 +1451,10 @@
       overflow-y: auto;
       font-family: 'Consolas', 'Monaco', monospace;
       font-size: 12px;
-      border-top: 1px solid #444;
+    }
+
+    .log-panel.collapsed .log-container {
+      display: none;
     }
 
     .log-info { color: #3498db; }
@@ -1436,6 +1624,131 @@
       background-color: #2980b9;
     }
 
+    /* Rapport de mise à jour DAT */
+    .dat-update-stats {
+      display: grid;
+      grid-template-columns: repeat(2, 1fr);
+      gap: 12px;
+      margin-bottom: 20px;
+    }
+
+    .dat-update-stat {
+      padding: 12px;
+      border-radius: 6px;
+      text-align: center;
+    }
+
+    .dat-update-stat .stat-value {
+      font-size: 24px;
+      font-weight: 700;
+      display: block;
+    }
+
+    .dat-update-stat .stat-label {
+      font-size: 12px;
+      font-weight: 600;
+      margin-top: 4px;
+      display: block;
+    }
+
+    .dat-update-stat.stat-new { background-color: #e8f8f0; color: #27ae60; }
+    .dat-update-stat.stat-modified { background-color: #fef5e7; color: #f39c12; }
+    .dat-update-stat.stat-unchanged { background-color: #eaf2f8; color: #3498db; }
+    .dat-update-stat.stat-disappeared { background-color: #fdedec; color: #e74c3c; }
+
+    .dat-update-section {
+      margin-top: 16px;
+    }
+
+    .dat-update-section h4 {
+      font-size: 14px;
+      color: #2c3e50;
+      margin-bottom: 8px;
+      padding-bottom: 6px;
+      border-bottom: 1px solid #ecf0f1;
+    }
+
+    .dat-update-game-list {
+      max-height: 200px;
+      overflow-y: auto;
+      font-size: 13px;
+    }
+
+    .dat-update-game-list .game-entry {
+      padding: 4px 8px;
+      border-radius: 3px;
+      cursor: pointer;
+    }
+
+    .dat-update-game-list .game-entry:hover {
+      background-color: #f0f4f8;
+    }
+
+    .dat-update-game-list .game-entry .game-category {
+      color: #7f8c8d;
+      font-size: 11px;
+      margin-left: 8px;
+    }
+
+    /* Badge évolution DAT dans la liste de jeux */
+    .change-status-badge {
+      display: inline-block;
+      font-size: 10px;
+      font-weight: 600;
+      padding: 1px 5px;
+      border-radius: 3px;
+      margin-left: 6px;
+      vertical-align: middle;
+    }
+
+    .change-status-badge.status-new { background-color: #e8f8f0; color: #27ae60; }
+    .change-status-badge.status-modified { background-color: #fef5e7; color: #f39c12; }
+    .change-status-badge.status-disappeared { background-color: #fdedee; color: #e74c3c; }
+
+    .list-item.disappeared {
+      opacity: 0.45;
+      background-color: #fdf2f2;
+      cursor: default;
+    }
+
+    .list-item.disappeared .was-selected-badge {
+      font-size: 10px;
+      font-weight: 600;
+      padding: 1px 5px;
+      border-radius: 3px;
+      margin-left: 6px;
+      vertical-align: middle;
+      background-color: #eaf2f8;
+      color: #2980b9;
+    }
+
+    /* Diff ROM détail */
+    .rom-diff-table {
+      width: 100%;
+      border-collapse: collapse;
+      font-size: 12px;
+      margin-top: 8px;
+    }
+
+    .rom-diff-table th {
+      background-color: #f8f9fa;
+      padding: 6px 8px;
+      text-align: left;
+      font-weight: 600;
+      border-bottom: 2px solid #dee2e6;
+    }
+
+    .rom-diff-table td {
+      padding: 4px 8px;
+      border-bottom: 1px solid #ecf0f1;
+      font-family: monospace;
+      font-size: 11px;
+    }
+
+    .rom-diff-table tr.diff-added { background-color: #e8f8f0; }
+    .rom-diff-table tr.diff-removed { background-color: #fdedec; }
+    .rom-diff-table tr.diff-changed { background-color: #fef5e7; }
+
     /* Groupe de jeux manquants */
     .missing-game-group {
       margin-bottom: 20px;
@@ -1511,7 +1824,7 @@
       <div class="header-workflows">
         <!-- Action rapide -->
         <div class="workflow-group">
-          <button id="dat-quick-load" class="quick-action" title="Faire les étapes 1, 2 et 3 automatiquement">
+          <button id="dat-quick-load" class="quick-action" title="Faire les étapes 1 et 2 automatiquement">
             ⚡ Chargement rapide
           </button>
         </div>
@@ -1522,24 +1835,20 @@
             📖 1. Sélectionner DAT/XML
           </button>
           <span class="workflow-arrow">→</span>
-          <button id="db-create" disabled title="🗄️ Étape 2 : Créer une base de données">
+          <button id="db-create" disabled title="🗄️ Étape 2 : Créer la base de données et charger les données du DAT">
             🗄️ 2. Créer base de données
           </button>
           <span class="workflow-arrow">→</span>
-          <button id="dat-load" disabled title="⏳ Étape 3 : Charger les données dans la base">
-            ⏳ 3. Charger les données
+          <button id="rom-add-folder" disabled title="📂 Étape 3 : Ajouter un dossier contenant des ROMs">
+            📂 3. Ajouter dossier ROMs
           </button>
           <span class="workflow-arrow">→</span>
-          <button id="rom-add-folder" disabled title="📂 Étape 4 : Ajouter un dossier contenant des ROMs">
-            📂 4. Ajouter dossier ROMs
+          <button id="match-roms" disabled class="match-action" title="🎯 Étape 4 : Analyser et matcher les ROMs">
+            🎯 4. Matcher les ROMs
           </button>
           <span class="workflow-arrow">→</span>
-          <button id="match-roms" disabled class="match-action" title="🎯 Étape 5 : Analyser et matcher les ROMs">
-            🎯 5. Matcher les ROMs
-          </button>
-          <span class="workflow-arrow">→</span>
-          <button id="consolidate-roms" disabled class="match-action" title="🧹 Étape 6 : Consolider les ROMs validées">
-            🧹 6. Consolider
+          <button id="consolidate-roms" disabled class="match-action" title="🧹 Étape 5 : Consolider les ROMs validées">
+            🧹 5. Consolider
           </button>
         </div>
       </div>
@@ -1548,9 +1857,9 @@
     <!-- Zone du bandeau DB -->
     <div class="header-db-zone">
       <div id="db-info-banner" class="db-info-banner">
+        <span class="db-info-label">🎮 Système :</span>
+        <span id="db-info-system" class="db-info-value"></span>
         <span class="db-info-label">🗄️ Base de données :</span>
-        <span id="db-info-name" class="db-info-value"></span>
-        <span class="db-info-label">📂 Chemin :</span>
         <span id="db-info-path" class="db-info-value db-info-path"></span>
       </div>
     </div>
@@ -1563,6 +1872,7 @@
       <div class="sidebar-section">
         <div class="section-header">
           <h3>📖 Fichier DAT/XML</h3>
+          <button id="dat-download-btn" class="add-btn" title="Télécharger un fichier DAT">⬇</button>
           <button class="collapse-btn" data-target="dat-list" title="Replier/Déplier">
             <span class="chevron">▲</span>
           </button>
@@ -1621,14 +1931,17 @@
                 <select id="group-by">
                   <option value="none">Aucun</option>
                   <option value="letter">Première lettre</option>
+                  <option value="category">Catégorie</option>
                   <option value="match-status">Statut de matching</option>
                   <option value="selection">Sélection</option>
+                  <option value="change-status">Évolution DAT</option>
                 </select>
               </div>
               <span class="filter-label">Filtres :</span>
               <div id="category-filters-container"></div>
               <div id="match-status-filters-container"></div>
               <div id="selection-filters-container"></div>
+              <div id="change-status-filters-container"></div>
             </div>
             </div>
           <div class="group-filter-actions">
@@ -1637,12 +1950,15 @@
         </div>
       </div>
 
+      <!-- Récapitulatif des filtres actifs -->
+      <div class="active-filters-bar" id="active-filters-bar"></div>
+
       <!-- Barre de sélection globale -->
       <div class="select-all-bar" id="select-all-bar">
-        <label>
+        <div class="select-all-label">
           <input type="checkbox" id="select-all-checkbox" checked>
-          Tout sélectionner
-        </label>
+          <span>Tout sélectionner</span>
+        </div>
         <span class="selection-counter" id="selection-counter"></span>
       </div>
 
@@ -1690,7 +2006,14 @@
   </div>
 
   <!-- Zone de log -->
-  <div class="log-container" id="log"></div>
+  <div class="log-panel collapsed" id="log-panel">
+    <div class="log-header" id="log-header">
+      <span class="log-chevron">▼</span>
+      <span class="log-title">Logs</span>
+      <span class="log-last-message" id="log-last-message"></span>
+    </div>
+    <div class="log-container" id="log"></div>
+  </div>
 
   <!-- Menu contextuel -->
   <div id="context-menu" class="context-menu">
@@ -1705,6 +2028,24 @@
       <span class="modal-close" id="modal-close">&times;</span>
       <div class="modal-header" id="modal-header">Titre</div>
       <div id="modal-body"></div>
+    </div>
+  </div>
+
+  <!-- Modale de sélection système (non fermable) -->
+  <div id="system-selection-modal" style="display:none; position:fixed; inset:0; background:rgba(0,0,0,0.65); z-index:9999; align-items:center; justify-content:center;">
+    <div style="background:#fff; border-radius:8px; padding:24px; max-width:540px; width:90%; max-height:80vh; display:flex; flex-direction:column; box-shadow:0 8px 32px rgba(0,0,0,0.25);">
+      <h2 style="margin:0 0 8px; color:#2c3e50;">🎮 Sélection du système</h2>
+      <p style="margin:0 0 16px; color:#7f8c8d; font-size:14px;">
+        Le système n'a pas pu être détecté automatiquement à partir du nom du DAT.
+        Sélectionnez-le manuellement pour continuer.
+      </p>
+      <select id="system-selection-dropdown" size="14" style="flex:1; min-height:300px; font-size:14px; padding:8px; border:1px solid #bdc3c7; border-radius:4px; margin-bottom:16px;">
+      </select>
+      <div style="display:flex; justify-content:flex-end;">
+        <button id="system-selection-validate" disabled style="padding:8px 24px; background:#3498db; color:#fff; border:none; border-radius:4px; font-size:14px; cursor:pointer; font-weight:600;">
+          Valider
+        </button>
+      </div>
     </div>
   </div>
 

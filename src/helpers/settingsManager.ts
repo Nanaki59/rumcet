@@ -3,15 +3,19 @@
 import { app } from 'electron';
 import path from 'path';
 import fs from 'fs/promises';
+import { SYSTEMS } from '../config/systems.js';
 
 export type ArchiveFormat = '7z' | 'zip' | 'chd';
 export type CompressionLevel = 'fastest' | 'normal' | 'maximum';
 export type CleanupScope = 'used-only' | 'all-matched';
 export type RarTool = '7zip' | 'winrar' | 'unrar';
 
-export type SystemCategory = 'Nintendo' | 'Sega' | 'Sony' | 'Arcade' | 'Ordinateurs' | 'Autres';
+// Manufacturer (ex: 'Sony', 'Nintendo', 'Sega', 'Atari', 'Commodore'...).
+// Élargi à string pour suivre Recalbox qui couvre une centaine de constructeurs.
+export type SystemCategory = string;
 
-export type SystemSubcategory = 'Consoles de salon' | 'Consoles portables';
+// Type de plateforme tel que défini par Recalbox (console, handheld, arcade, computer).
+export type SystemSubcategory = string;
 
 export interface SystemCompatibility {
   systemId: string;
@@ -32,10 +36,21 @@ export interface AppSettings {
   validatedRomsFolder: string;
   tempExtractionFolder: string;
 
+  /**
+   * Si activé, le dossier cible des ROMs validées sera un sous-dossier nommé
+   * d'après le systemId (ex: "psx", "nes") créé sous validatedRomsFolder.
+   * Le settings persisté pointe toujours sur le dossier parent ; le dossier
+   * effectif est résolu via getEffectiveValidatedRomsFolder().
+   */
+  validatedRomsMultiSystem?: boolean;
+
   // Consolidation — Nettoyage
   cleanSourceAfterConsolidation: boolean;
   cleanupScope: CleanupScope;
   protectFilesForUnselectedGames: boolean;
+
+  // Mise à jour DAT
+  autoSelectNewGames: boolean;
 
   // Autres paramètres
   theme: 'light' | 'dark';
@@ -61,6 +76,31 @@ export interface AppSettings {
   // Compatibilité archives par système
   systemCompatibility?: SystemCompatibility[];
 
+  // Paramètres par défaut No-Intro (téléchargement DAT)
+  noIntroDefaults?: {
+    includeBios: boolean;
+    includeProto: boolean;
+    includeBeta: boolean;
+    includeDemo: boolean;
+    includeSample: boolean;
+  };
+
+  // Téléchargement de ROMs
+  downloadSources?: Array<{
+    id: string;
+    name: string;
+    baseUrl: string;
+    enabled: boolean;
+    extensions?: string[];
+    systemExtensions?: Record<string, string[]>;
+  }>;
+  downloadExtensions?: string[];
+  downloadSystemExtensions?: Array<{
+    systemId: string;
+    extensions: string[];
+  }>;
+  incompleteRomsFolder?: string;
+
   settingsVersion?: number;
 }
 
@@ -78,48 +118,22 @@ export const compressionLevelToZip = {
   maximum: 9     // DEFLATE level 9 (best)
 };
 
-const CURRENT_SETTINGS_VERSION = 5;
+const CURRENT_SETTINGS_VERSION = 9;
 
 /**
- * Valeurs par défaut de compatibilité archives par système
+ * Valeurs par défaut de compatibilité archives par système.
+ * Dérivées dynamiquement du registre central src/config/systems.ts.
+ * Pour modifier la liste des systèmes ou leurs formats : `npm run sync-systems`.
  */
-export const DEFAULT_SYSTEM_COMPATIBILITY: SystemCompatibility[] = [
-  // ── Nintendo — Consoles de salon ──
-  { systemId: 'nes', systemName: 'Nintendo Entertainment System (NES)', category: 'Nintendo', subcategory: 'Consoles de salon', supportedFormats: ['zip', '7z'], unsupportedFormats: ['chd'] },
-  { systemId: 'snes', systemName: 'Super Nintendo (SNES)', category: 'Nintendo', subcategory: 'Consoles de salon', supportedFormats: ['zip', '7z'], unsupportedFormats: ['chd'] },
-  { systemId: 'n64', systemName: 'Nintendo 64', category: 'Nintendo', subcategory: 'Consoles de salon', supportedFormats: ['7z', 'zip'], unsupportedFormats: ['chd'] },
-  { systemId: 'gamecube', systemName: 'Nintendo GameCube', category: 'Nintendo', subcategory: 'Consoles de salon', supportedFormats: ['7z'], warningFormats: ['zip'], unsupportedFormats: ['chd'] },
-  { systemId: 'wii', systemName: 'Nintendo Wii', category: 'Nintendo', subcategory: 'Consoles de salon', supportedFormats: ['7z'], warningFormats: ['zip'], unsupportedFormats: ['chd'] },
-  // ── Nintendo — Portables ──
-  { systemId: 'gb', systemName: 'Game Boy', category: 'Nintendo', subcategory: 'Consoles portables', supportedFormats: ['zip', '7z'], unsupportedFormats: ['chd'] },
-  { systemId: 'gbc', systemName: 'Game Boy Color', category: 'Nintendo', subcategory: 'Consoles portables', supportedFormats: ['zip', '7z'], unsupportedFormats: ['chd'] },
-  { systemId: 'gba', systemName: 'Game Boy Advance', category: 'Nintendo', subcategory: 'Consoles portables', supportedFormats: ['zip', '7z'], unsupportedFormats: ['chd'] },
-  { systemId: 'nds', systemName: 'Nintendo DS', category: 'Nintendo', subcategory: 'Consoles portables', supportedFormats: ['7z', 'zip'], unsupportedFormats: ['chd'] },
-  { systemId: '3ds', systemName: 'Nintendo 3DS', category: 'Nintendo', subcategory: 'Consoles portables', supportedFormats: ['7z'], warningFormats: ['zip'], unsupportedFormats: ['chd'] },
-  // ── Sega — Consoles de salon ──
-  { systemId: 'mastersystem', systemName: 'Sega Master System', category: 'Sega', subcategory: 'Consoles de salon', supportedFormats: ['zip', '7z'], unsupportedFormats: ['chd'] },
-  { systemId: 'genesis', systemName: 'Sega Genesis / Mega Drive', category: 'Sega', subcategory: 'Consoles de salon', supportedFormats: ['zip', '7z'], unsupportedFormats: ['chd'] },
-  { systemId: 'sega32x', systemName: 'Sega 32X', category: 'Sega', subcategory: 'Consoles de salon', supportedFormats: ['zip', '7z'], unsupportedFormats: ['chd'] },
-  { systemId: 'segacd', systemName: 'Sega CD / Mega CD', category: 'Sega', subcategory: 'Consoles de salon', supportedFormats: ['chd'], warningFormats: ['7z', 'zip'], unsupportedFormats: [] },
-  { systemId: 'saturn', systemName: 'Sega Saturn', category: 'Sega', subcategory: 'Consoles de salon', supportedFormats: ['chd'], warningFormats: ['7z'], unsupportedFormats: ['zip'] },
-  { systemId: 'dreamcast', systemName: 'Sega Dreamcast', category: 'Sega', subcategory: 'Consoles de salon', supportedFormats: ['chd'], warningFormats: ['7z'], unsupportedFormats: ['zip'] },
-  // ── Sega — Portables ──
-  { systemId: 'gamegear', systemName: 'Sega Game Gear', category: 'Sega', subcategory: 'Consoles portables', supportedFormats: ['zip', '7z'], unsupportedFormats: ['chd'] },
-  // ── Sony — Consoles de salon ──
-  { systemId: 'psx', systemName: 'PlayStation (PSX)', category: 'Sony', subcategory: 'Consoles de salon', supportedFormats: ['chd'], warningFormats: ['7z', 'zip'], unsupportedFormats: [] },
-  { systemId: 'ps2', systemName: 'PlayStation 2 (PS2)', category: 'Sony', subcategory: 'Consoles de salon', supportedFormats: ['chd', '7z'], warningFormats: [], unsupportedFormats: ['zip'] },
-  // ── Sony — Portables ──
-  { systemId: 'psp', systemName: 'PlayStation Portable (PSP)', category: 'Sony', subcategory: 'Consoles portables', supportedFormats: ['chd', '7z'], warningFormats: ['zip'], unsupportedFormats: [] },
-  // ── Arcade ──
-  { systemId: 'mame', systemName: 'Arcade (MAME)', category: 'Arcade', supportedFormats: ['zip'], warningFormats: ['7z'], unsupportedFormats: ['chd'] },
-  { systemId: 'fba', systemName: 'Arcade (FinalBurn Neo)', category: 'Arcade', supportedFormats: ['zip'], warningFormats: ['7z'], unsupportedFormats: ['chd'] },
-  { systemId: 'neogeo', systemName: 'Neo Geo', category: 'Arcade', supportedFormats: ['zip'], warningFormats: ['7z'], unsupportedFormats: ['chd'] },
-  // ── Ordinateurs ──
-  { systemId: 'pc', systemName: 'PC (DOS / Windows)', category: 'Ordinateurs', supportedFormats: ['7z', 'zip'], warningFormats: ['chd'], unsupportedFormats: [] },
-  // ── Autres ──
-  { systemId: 'pcengine', systemName: 'PC Engine / TurboGrafx-16', category: 'Autres', supportedFormats: ['chd', '7z', 'zip'], unsupportedFormats: [] },
-  { systemId: 'atari2600', systemName: 'Atari 2600', category: 'Autres', supportedFormats: ['zip', '7z'], unsupportedFormats: ['chd'] },
-];
+export const DEFAULT_SYSTEM_COMPATIBILITY: SystemCompatibility[] = SYSTEMS.map(s => ({
+  systemId: s.systemId,
+  systemName: s.fullname,
+  category: s.manufacturer ?? 'Autres',
+  subcategory: s.type ?? undefined,
+  supportedFormats: s.supportedFormats,
+  warningFormats: s.warningFormats,
+  unsupportedFormats: s.unsupportedFormats
+}));
 
 class SettingsManager {
   private settingsPath: string;
@@ -139,10 +153,13 @@ class SettingsManager {
       unmatchedRomsFolder: path.join(documentsPath, 'ROMs', 'Unmatched'),
       validatedRomsFolder: path.join(documentsPath, 'ROMs', 'Validated'),
       tempExtractionFolder: path.join(app.getPath('temp'), 'RUMCET'),
+      validatedRomsMultiSystem: false,
 
       cleanSourceAfterConsolidation: true,
       cleanupScope: 'used-only',
       protectFilesForUnselectedGames: true,
+
+      autoSelectNewGames: true,
 
       theme: 'light',
       language: 'fr',
@@ -166,6 +183,21 @@ class SettingsManager {
 
       // Compatibilité archives par système
       systemCompatibility: DEFAULT_SYSTEM_COMPATIBILITY,
+
+      // Paramètres par défaut No-Intro
+      noIntroDefaults: {
+        includeBios: true,
+        includeProto: true,
+        includeBeta: true,
+        includeDemo: true,
+        includeSample: true,
+      },
+
+      // Téléchargement de ROMs
+      downloadSources: [],
+      downloadExtensions: ['7z', 'zip', 'chd', 'rar', 'iso', 'cso', 'pbp'],
+      downloadSystemExtensions: [],
+      incompleteRomsFolder: path.join(documentsPath, 'ROMs', 'Incomplete'),
 
       settingsVersion: CURRENT_SETTINGS_VERSION
     };
@@ -248,6 +280,49 @@ class SettingsManager {
         cleanupScope: this.defaultSettings.cleanupScope,
         protectFilesForUnselectedGames: this.defaultSettings.protectFilesForUnselectedGames,
         settingsVersion: 5
+      };
+    }
+
+    // Migration v5 -> v6 : Ajout du paramètre de sélection des nouveaux jeux
+    if (version < 6) {
+      console.log('Migration v5 -> v6 : Ajout du paramètre autoSelectNewGames');
+      migratedSettings = {
+        ...migratedSettings,
+        autoSelectNewGames: this.defaultSettings.autoSelectNewGames,
+        settingsVersion: 6
+      };
+    }
+
+    // Migration v6 -> v7 : Ajout des paramètres par défaut No-Intro
+    if (version < 7) {
+      console.log('Migration v6 -> v7 : Ajout des paramètres noIntroDefaults');
+      migratedSettings = {
+        ...migratedSettings,
+        noIntroDefaults: this.defaultSettings.noIntroDefaults,
+        settingsVersion: 7
+      };
+    }
+
+    // Migration v7 -> v8 : Ajout des paramètres de téléchargement de ROMs
+    if (version < 8) {
+      console.log('Migration v7 -> v8 : Ajout des paramètres de téléchargement de ROMs');
+      migratedSettings = {
+        ...migratedSettings,
+        downloadSources: this.defaultSettings.downloadSources,
+        downloadExtensions: this.defaultSettings.downloadExtensions,
+        downloadSystemExtensions: this.defaultSettings.downloadSystemExtensions,
+        incompleteRomsFolder: this.defaultSettings.incompleteRomsFolder,
+        settingsVersion: 8
+      };
+    }
+
+    // Migration v8 -> v9 : Ajout du mode multi-système pour le dossier cible
+    if (version < 9) {
+      console.log('Migration v8 -> v9 : Ajout de validatedRomsMultiSystem');
+      migratedSettings = {
+        ...migratedSettings,
+        validatedRomsMultiSystem: this.defaultSettings.validatedRomsMultiSystem,
+        settingsVersion: 9
       };
     }
 
@@ -391,7 +466,98 @@ class SettingsManager {
     }
     return null;
   }
+
+  // ─── Contexte actif (system_id de la base ouverte) ───
+  // Utilisé par les opérations (scan, consolidation, download) pour exposer le
+  // system_id courant aux composants bas niveau (ex: ChdHandler) qui ont besoin
+  // du dossier effectif sans dépendre de la base de données directement.
+  private activeSystemId: string | null = null;
+
+  setActiveSystemId(id: string | null): void {
+    this.activeSystemId = id;
+  }
+
+  getActiveSystemId(): string | null {
+    return this.activeSystemId;
+  }
+
+  /**
+   * Variante synchrone : applique le sous-dossier système si l'option
+   * "Dossier multi-système" est active ET qu'un system_id est défini.
+   * Ne crée pas le dossier ; l'appelant doit appeler fs.mkdir si besoin.
+   */
+  getEffectiveFolderSync(key: 'validatedRomsFolder' | 'unmatchedRomsFolder' | 'incompleteRomsFolder' | 'tempExtractionFolder'): string {
+    const base = (this.settings[key] as string) || '';
+    if (!base || !this.settings.validatedRomsMultiSystem || !this.activeSystemId) return base;
+    return path.join(base, this.activeSystemId);
+  }
 }
 
 // Instance singleton
 export const settingsManager = new SettingsManager();
+
+/**
+ * Retourne un dossier cible effectif (avec sous-dossier système si l'option
+ * "Dossier multi-système" est activée et qu'un system_id est défini en metadata).
+ *
+ * - Si validatedRomsMultiSystem est activé ET que system_id est défini :
+ *   retourne path.join(baseFolder, system_id) et crée le sous-dossier au besoin.
+ * - Sinon : retourne baseFolder tel quel.
+ *
+ * Le dossier paramétré (baseFolder) reste toujours le parent — seul le dossier
+ * effectif change selon le mode multi-système.
+ */
+export async function getEffectiveTargetFolder(
+  db: { get<T = any>(sql: string, params?: any[]): Promise<T | undefined> },
+  baseFolder: string
+): Promise<string> {
+  const settings = settingsManager.getAll();
+  if (!baseFolder || !settings.validatedRomsMultiSystem) {
+    return baseFolder;
+  }
+
+  let systemId = '';
+  try {
+    const row = await db.get<{ value: string }>(
+      'SELECT value FROM metadata WHERE key = ?',
+      ['system_id']
+    );
+    systemId = row?.value || '';
+  } catch {
+    return baseFolder;
+  }
+
+  if (!systemId) return baseFolder;
+
+  const subFolder = path.join(baseFolder, systemId);
+  await fs.mkdir(subFolder, { recursive: true });
+  return subFolder;
+}
+
+/** Raccourci pour le dossier cible des ROMs validées (rétrocompatible). */
+export async function getEffectiveValidatedRomsFolder(
+  db: { get<T = any>(sql: string, params?: any[]): Promise<T | undefined> }
+): Promise<string> {
+  return getEffectiveTargetFolder(db, settingsManager.getAll().validatedRomsFolder);
+}
+
+/** Raccourci pour le dossier cible des ROMs incomplètes. */
+export async function getEffectiveIncompleteRomsFolder(
+  db: { get<T = any>(sql: string, params?: any[]): Promise<T | undefined> }
+): Promise<string> {
+  return getEffectiveTargetFolder(db, settingsManager.getAll().incompleteRomsFolder ?? '');
+}
+
+/** Raccourci pour le dossier cible des ROMs non référencées. */
+export async function getEffectiveUnmatchedRomsFolder(
+  db: { get<T = any>(sql: string, params?: any[]): Promise<T | undefined> }
+): Promise<string> {
+  return getEffectiveTargetFolder(db, settingsManager.getAll().unmatchedRomsFolder);
+}
+
+/** Raccourci pour le dossier temporaire d'extraction. */
+export async function getEffectiveTempExtractionFolder(
+  db: { get<T = any>(sql: string, params?: any[]): Promise<T | undefined> }
+): Promise<string> {
+  return getEffectiveTargetFolder(db, settingsManager.getAll().tempExtractionFolder);
+}

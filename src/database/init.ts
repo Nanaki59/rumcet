@@ -3,7 +3,7 @@ import sqlite3 from 'sqlite3';
 import fs from 'fs/promises';
 import path from 'path';
 
-const currentSchemaVersion = '1.4';
+const currentSchemaVersion = '1.5';
 
 export class Database {
   private db: sqlite3.Database;
@@ -115,6 +115,7 @@ async function initSchema(db: Database): Promise<void> {
       description TEXT,
       category TEXT,
       is_selected INTEGER DEFAULT 1,
+      change_status TEXT,
       system_id INTEGER,
       created_at DATETIME DEFAULT CURRENT_TIMESTAMP
     );
@@ -241,6 +242,27 @@ async function initSchema(db: Database): Promise<void> {
       status TEXT DEFAULT 'pending',
       created_at DATETIME DEFAULT CURRENT_TIMESTAMP
     );
+
+    -- Snapshot de la version précédente du DAT (pour comparaison après mise à jour)
+    CREATE TABLE IF NOT EXISTS games_previous (
+      id INTEGER PRIMARY KEY,
+      name TEXT NOT NULL,
+      description TEXT,
+      category TEXT,
+      is_selected INTEGER DEFAULT 1
+    );
+
+    CREATE TABLE IF NOT EXISTS dat_roms_previous (
+      id INTEGER PRIMARY KEY,
+      game_id INTEGER NOT NULL,
+      name TEXT NOT NULL,
+      size INTEGER,
+      crc32 TEXT,
+      md5 TEXT,
+      sha1 TEXT
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_dat_roms_previous_game ON dat_roms_previous(game_id);
   `);
   
   // Initialiser la version du schéma si elle n'existe pas
@@ -305,6 +327,9 @@ async function migrateSchemaIfNeeded(db: Database, currentVersion: string): Prom
   }
   if (currentVersion < '1.4') {
     await migrateToV1_4(db);
+  }
+  if (currentVersion < '1.5') {
+    await migrateToV1_5(db);
   }
 }
 
@@ -428,4 +453,44 @@ async function migrateToV1_4(db: Database): Promise<void> {
   );
 
   console.log('✅ Migration vers schéma v1.4 terminée (rom_matches recréée avec CASCADE — relancer le matching)');
+}
+
+async function migrateToV1_5(db: Database): Promise<void> {
+  console.log('Migration vers schéma v1.5...');
+
+  // Ajouter change_status à games
+  const columns = await db.all<{ name: string }>('PRAGMA table_info(games)');
+  if (!columns.some(col => col.name === 'change_status')) {
+    await db.run('ALTER TABLE games ADD COLUMN change_status TEXT');
+  }
+
+  // Créer les tables de snapshot pour comparaison DAT
+  await db.exec(`
+    CREATE TABLE IF NOT EXISTS games_previous (
+      id INTEGER PRIMARY KEY,
+      name TEXT NOT NULL,
+      description TEXT,
+      category TEXT,
+      is_selected INTEGER DEFAULT 1
+    );
+
+    CREATE TABLE IF NOT EXISTS dat_roms_previous (
+      id INTEGER PRIMARY KEY,
+      game_id INTEGER NOT NULL,
+      name TEXT NOT NULL,
+      size INTEGER,
+      crc32 TEXT,
+      md5 TEXT,
+      sha1 TEXT
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_dat_roms_previous_game ON dat_roms_previous(game_id);
+  `);
+
+  await db.run(
+    'UPDATE metadata SET value = ?, updated_at = CURRENT_TIMESTAMP WHERE key = ?',
+    [currentSchemaVersion, 'schema_version']
+  );
+
+  console.log('✅ Migration vers schéma v1.5 terminée');
 }

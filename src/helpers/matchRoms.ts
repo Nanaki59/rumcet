@@ -242,7 +242,7 @@ function computeArchiveIsPerfect(
  * Compare les hashes entre une ROM du DAT et un fichier
  * Retourne true si AU MOINS UN hash correspond
  */
-function compareHashes(
+export function compareHashes(
   datRom: { crc32: string | null; md5: string | null; sha1: string | null },
   file: { crc32: string | null; md5: string | null; sha1: string | null }
 ): { matched: boolean } {

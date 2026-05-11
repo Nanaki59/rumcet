@@ -1,12 +1,15 @@
 // src/renderer/settings.ts
 
+import { SYSTEMS } from '../config/systems.js';
+
 // Utiliser les types depuis global.d.ts
 type ArchiveFormat = '7z' | 'zip' | 'chd';
 type CleanupScope = 'used-only' | 'all-matched';
 type RarTool = '7zip' | 'winrar' | 'unrar';
 
-type SystemCategory = 'Nintendo' | 'Sega' | 'Sony' | 'Arcade' | 'Ordinateurs' | 'Autres';
-type SystemSubcategory = 'Consoles de salon' | 'Consoles portables';
+// Types élargis (alignés avec settingsManager.ts) pour suivre Recalbox
+type SystemCategory = string;
+type SystemSubcategory = string;
 
 interface SystemCompatibility {
   systemId: string;
@@ -24,10 +27,12 @@ interface AppSettings {
   defaultRomsFolder: string;
   unmatchedRomsFolder: string;
   validatedRomsFolder: string;
+  validatedRomsMultiSystem?: boolean;
   tempExtractionFolder: string;
   cleanSourceAfterConsolidation: boolean;
   cleanupScope: CleanupScope;
   protectFilesForUnselectedGames: boolean;
+  autoSelectNewGames: boolean;
   theme: 'light' | 'dark';
   language: 'fr' | 'en';
   autoScanOnStartup: boolean;
@@ -44,46 +49,40 @@ interface AppSettings {
   useEmbeddedChdman?: boolean;
   rarToolPriority?: RarTool[];
   systemCompatibility?: SystemCompatibility[];
+  noIntroDefaults?: {
+    includeBios: boolean;
+    includeProto: boolean;
+    includeBeta: boolean;
+    includeDemo: boolean;
+    includeSample: boolean;
+  };
+  downloadSources?: Array<{
+    id: string;
+    name: string;
+    baseUrl: string;
+    enabled: boolean;
+    extensions?: string[];
+    systemExtensions?: Record<string, string[]>;
+  }>;
+  downloadExtensions?: string[];
+  downloadSystemExtensions?: Array<{
+    systemId: string;
+    extensions: string[];
+  }>;
+  incompleteRomsFolder?: string;
 }
 
-// Systèmes par défaut (miroir de DEFAULT_SYSTEM_COMPATIBILITY dans settingsManager.ts)
-const defaultSystemCompatibility: SystemCompatibility[] = [
-  // ── Nintendo — Consoles de salon ──
-  { systemId: 'nes', systemName: 'Nintendo Entertainment System (NES)', category: 'Nintendo', subcategory: 'Consoles de salon', supportedFormats: ['zip', '7z'], unsupportedFormats: ['chd'] },
-  { systemId: 'snes', systemName: 'Super Nintendo (SNES)', category: 'Nintendo', subcategory: 'Consoles de salon', supportedFormats: ['zip', '7z'], unsupportedFormats: ['chd'] },
-  { systemId: 'n64', systemName: 'Nintendo 64', category: 'Nintendo', subcategory: 'Consoles de salon', supportedFormats: ['7z', 'zip'], unsupportedFormats: ['chd'] },
-  { systemId: 'gamecube', systemName: 'Nintendo GameCube', category: 'Nintendo', subcategory: 'Consoles de salon', supportedFormats: ['7z'], warningFormats: ['zip'], unsupportedFormats: ['chd'] },
-  { systemId: 'wii', systemName: 'Nintendo Wii', category: 'Nintendo', subcategory: 'Consoles de salon', supportedFormats: ['7z'], warningFormats: ['zip'], unsupportedFormats: ['chd'] },
-  // ── Nintendo — Consoles portables ──
-  { systemId: 'gb', systemName: 'Game Boy', category: 'Nintendo', subcategory: 'Consoles portables', supportedFormats: ['zip', '7z'], unsupportedFormats: ['chd'] },
-  { systemId: 'gbc', systemName: 'Game Boy Color', category: 'Nintendo', subcategory: 'Consoles portables', supportedFormats: ['zip', '7z'], unsupportedFormats: ['chd'] },
-  { systemId: 'gba', systemName: 'Game Boy Advance', category: 'Nintendo', subcategory: 'Consoles portables', supportedFormats: ['zip', '7z'], unsupportedFormats: ['chd'] },
-  { systemId: 'nds', systemName: 'Nintendo DS', category: 'Nintendo', subcategory: 'Consoles portables', supportedFormats: ['7z', 'zip'], unsupportedFormats: ['chd'] },
-  { systemId: '3ds', systemName: 'Nintendo 3DS', category: 'Nintendo', subcategory: 'Consoles portables', supportedFormats: ['7z'], warningFormats: ['zip'], unsupportedFormats: ['chd'] },
-  // ── Sega — Consoles de salon ──
-  { systemId: 'mastersystem', systemName: 'Sega Master System', category: 'Sega', subcategory: 'Consoles de salon', supportedFormats: ['zip', '7z'], unsupportedFormats: ['chd'] },
-  { systemId: 'genesis', systemName: 'Sega Genesis / Mega Drive', category: 'Sega', subcategory: 'Consoles de salon', supportedFormats: ['zip', '7z'], unsupportedFormats: ['chd'] },
-  { systemId: 'sega32x', systemName: 'Sega 32X', category: 'Sega', subcategory: 'Consoles de salon', supportedFormats: ['zip', '7z'], unsupportedFormats: ['chd'] },
-  { systemId: 'segacd', systemName: 'Sega CD / Mega CD', category: 'Sega', subcategory: 'Consoles de salon', supportedFormats: ['chd'], warningFormats: ['7z', 'zip'], unsupportedFormats: [] },
-  { systemId: 'saturn', systemName: 'Sega Saturn', category: 'Sega', subcategory: 'Consoles de salon', supportedFormats: ['chd'], warningFormats: ['7z'], unsupportedFormats: ['zip'] },
-  { systemId: 'dreamcast', systemName: 'Sega Dreamcast', category: 'Sega', subcategory: 'Consoles de salon', supportedFormats: ['chd'], warningFormats: ['7z'], unsupportedFormats: ['zip'] },
-  // ── Sega — Consoles portables ──
-  { systemId: 'gamegear', systemName: 'Sega Game Gear', category: 'Sega', subcategory: 'Consoles portables', supportedFormats: ['zip', '7z'], unsupportedFormats: ['chd'] },
-  // ── Sony — Consoles de salon ──
-  { systemId: 'psx', systemName: 'PlayStation (PSX)', category: 'Sony', subcategory: 'Consoles de salon', supportedFormats: ['chd'], warningFormats: ['7z', 'zip'], unsupportedFormats: [] },
-  { systemId: 'ps2', systemName: 'PlayStation 2 (PS2)', category: 'Sony', subcategory: 'Consoles de salon', supportedFormats: ['chd', '7z'], unsupportedFormats: ['zip'] },
-  // ── Sony — Consoles portables ──
-  { systemId: 'psp', systemName: 'PlayStation Portable (PSP)', category: 'Sony', subcategory: 'Consoles portables', supportedFormats: ['chd', '7z'], warningFormats: ['zip'], unsupportedFormats: [] },
-  // ── Arcade ──
-  { systemId: 'mame', systemName: 'Arcade (MAME)', category: 'Arcade', supportedFormats: ['zip'], warningFormats: ['7z'], unsupportedFormats: ['chd'] },
-  { systemId: 'fba', systemName: 'Arcade (FinalBurn Neo)', category: 'Arcade', supportedFormats: ['zip'], warningFormats: ['7z'], unsupportedFormats: ['chd'] },
-  { systemId: 'neogeo', systemName: 'Neo Geo', category: 'Arcade', supportedFormats: ['zip'], warningFormats: ['7z'], unsupportedFormats: ['chd'] },
-  // ── Ordinateurs ──
-  { systemId: 'pc', systemName: 'PC (DOS / Windows)', category: 'Ordinateurs', supportedFormats: ['7z', 'zip'], warningFormats: ['chd'], unsupportedFormats: [] },
-  // ── Autres ──
-  { systemId: 'pcengine', systemName: 'PC Engine / TurboGrafx-16', category: 'Autres', supportedFormats: ['chd', '7z', 'zip'], unsupportedFormats: [] },
-  { systemId: 'atari2600', systemName: 'Atari 2600', category: 'Autres', supportedFormats: ['zip', '7z'], unsupportedFormats: ['chd'] },
-];
+// Systèmes par défaut, dérivés du registre central src/config/systems.ts
+// Régénération via `npm run sync-systems`.
+const defaultSystemCompatibility: SystemCompatibility[] = SYSTEMS.map(s => ({
+  systemId: s.systemId,
+  systemName: s.fullname,
+  category: s.manufacturer ?? 'Autres',
+  subcategory: s.type ?? undefined,
+  supportedFormats: s.supportedFormats,
+  warningFormats: s.warningFormats,
+  unsupportedFormats: s.unsupportedFormats
+}));
 
 let currentFormatPriority: ArchiveFormat[] = ['chd', '7z', 'zip'];
 let currentRarToolPriority: RarTool[] = ['7zip', 'winrar', 'unrar'];
@@ -97,7 +96,28 @@ window.addEventListener('DOMContentLoaded', async () => {
   console.log('Chargement des paramètres...');
   await loadSettings();
   setupTabs();
+
+  // Bouton "Ajouter une source"
+  document.getElementById('addDownloadSource')?.addEventListener('click', addDownloadSource);
+
+  // Tri & recherche dans la compatibilité par système
+  document.getElementById('systemCompatSortMode')?.addEventListener('change', renderSystemCompatibility);
+  document.getElementById('systemCompatSearch')?.addEventListener('input', renderSystemCompatibility);
+
+  // Réagir au changement de la checkbox "Déplacer les fichiers non matchés" pour griser/dégriser
+  document.getElementById('moveUnmatchedFiles')?.addEventListener('change', updateUnmatchedFolderEnabled);
+
+  // Lien "aller aux paramètres de nettoyage" dans le message d'avertissement
+  document.getElementById('unmatchedGoToCleanup')?.addEventListener('click', (e) => {
+    e.preventDefault();
+    const cleanupTabBtn = document.querySelector('.tab-button[data-tab="cleanup"]') as HTMLElement | null;
+    cleanupTabBtn?.click();
+  });
 });
+
+// État persistant (entre re-renders) des groupes pliés dans la compatibilité.
+// Clé : nom du groupe primaire (type ou constructeur selon le mode de tri).
+const collapsedCompatGroups = new Set<string>();
 
 // ============================================
 // GESTION DES ONGLETS
@@ -137,13 +157,26 @@ async function loadSettings(): Promise<void> {
     (document.getElementById('theme') as HTMLSelectElement).value = currentSettings.theme || 'light';
     (document.getElementById('language') as HTMLSelectElement).value = currentSettings.language || 'fr';
     (document.getElementById('autoScanOnStartup') as HTMLInputElement).checked = currentSettings.autoScanOnStartup || false;
-    
+    (document.getElementById('autoSelectNewGames') as HTMLInputElement).checked = currentSettings.autoSelectNewGames !== undefined ? currentSettings.autoSelectNewGames : true;
+
+    // Paramètres No-Intro par défaut
+    if (currentSettings.noIntroDefaults) {
+      (document.getElementById('noIntroBios') as HTMLInputElement).checked = currentSettings.noIntroDefaults.includeBios;
+      (document.getElementById('noIntroProto') as HTMLInputElement).checked = currentSettings.noIntroDefaults.includeProto;
+      (document.getElementById('noIntroBeta') as HTMLInputElement).checked = currentSettings.noIntroDefaults.includeBeta;
+      (document.getElementById('noIntroDemo') as HTMLInputElement).checked = currentSettings.noIntroDefaults.includeDemo;
+      (document.getElementById('noIntroSample') as HTMLInputElement).checked = currentSettings.noIntroDefaults.includeSample;
+    }
+
     // Onglet Dossiers
     (document.getElementById('defaultDatFolder') as HTMLInputElement).value = currentSettings.defaultDatFolder || '';
     (document.getElementById('defaultDatabaseFolder') as HTMLInputElement).value = currentSettings.defaultDatabaseFolder || '';
     (document.getElementById('defaultRomsFolder') as HTMLInputElement).value = currentSettings.defaultRomsFolder || '';
     (document.getElementById('unmatchedRomsFolder') as HTMLInputElement).value = currentSettings.unmatchedRomsFolder || '';
+    const unmatchedCleanupInput = document.getElementById('unmatchedRomsFolderCleanup') as HTMLInputElement | null;
+    if (unmatchedCleanupInput) unmatchedCleanupInput.value = currentSettings.unmatchedRomsFolder || '';
     (document.getElementById('validatedRomsFolder') as HTMLInputElement).value = currentSettings.validatedRomsFolder || '';
+    (document.getElementById('validatedRomsMultiSystem') as HTMLInputElement).checked = !!currentSettings.validatedRomsMultiSystem;
     (document.getElementById('tempExtractionFolder') as HTMLInputElement).value = currentSettings.tempExtractionFolder || '';
     (document.getElementById('cleanSourceAfterConsolidation') as HTMLInputElement).checked = currentSettings.cleanSourceAfterConsolidation !== undefined ? currentSettings.cleanSourceAfterConsolidation : true;
     (document.getElementById('cleanupScope') as HTMLSelectElement).value = currentSettings.cleanupScope || 'used-only';
@@ -179,6 +212,14 @@ async function loadSettings(): Promise<void> {
     // Onglet Compatibilité
     renderSystemCompatibility();
 
+    // Onglet Téléchargement
+    renderDownloadSources();
+    (document.getElementById('downloadExtensions') as HTMLInputElement).value =
+      (currentSettings.downloadExtensions || ['7z', 'zip', 'chd', 'rar', 'iso', 'cso', 'pbp']).join(', ');
+    renderDownloadSystemExtensions();
+    (document.getElementById('incompleteRomsFolder') as HTMLInputElement).value =
+      currentSettings.incompleteRomsFolder || '';
+
     console.log('Paramètres chargés dans l\'interface');
   } catch (error) {
     console.error('Erreur lors du chargement des paramètres:', error);
@@ -204,7 +245,11 @@ async function browseFolder(fieldId: string): Promise<void> {
       folderType = 'roms';
       break;
     case 'unmatchedRomsFolder':
+    case 'unmatchedRomsFolderCleanup':
       folderType = 'unmatched';
+      break;
+    case 'incompleteRomsFolder':
+      folderType = 'incomplete';
       break;
     case 'validatedRomsFolder':
       folderType = 'validated';
@@ -219,6 +264,14 @@ async function browseFolder(fieldId: string): Promise<void> {
     if (folderPath) {
       (document.getElementById(fieldId) as HTMLInputElement).value = folderPath;
       (currentSettings as any)[fieldId] = folderPath;
+      // Synchronisation : les deux champs "ROMs non référencées" reflètent la même valeur
+      if (fieldId === 'unmatchedRomsFolder' || fieldId === 'unmatchedRomsFolderCleanup') {
+        const main = document.getElementById('unmatchedRomsFolder') as HTMLInputElement | null;
+        const cleanup = document.getElementById('unmatchedRomsFolderCleanup') as HTMLInputElement | null;
+        if (main) main.value = folderPath;
+        if (cleanup) cleanup.value = folderPath;
+        (currentSettings as any).unmatchedRomsFolder = folderPath;
+      }
     }
   } catch (error) {
     console.error('Erreur lors de la sélection du dossier:', error);
@@ -532,45 +585,121 @@ function renderSystemCompatibility(): void {
 
   container.innerHTML = '';
 
-  const systemCompat = currentSettings.systemCompatibility || defaultSystemCompatibility;
-
-  // Grouper par catégorie
-  const categories: SystemCategory[] = ['Nintendo', 'Sega', 'Sony', 'Arcade', 'Ordinateurs', 'Autres'];
-  const grouped = new Map<SystemCategory, typeof systemCompat>();
-  for (const cat of categories) {
-    const systems = systemCompat.filter(s => (s.category || 'Autres') === cat);
-    if (systems.length > 0) {
-      grouped.set(cat, systems);
+  // Liste de base : TOUJOURS depuis le registre central (defaultSystemCompatibility = SYSTEMS).
+  // Les surcharges utilisateur (currentSettings.systemCompatibility) ne servent qu'à
+  // remplacer les supportedFormats pour les systemId connus du registre.
+  const userOverrides = new Map<string, SystemCompatibility>();
+  for (const ov of currentSettings.systemCompatibility ?? []) {
+    userOverrides.set(ov.systemId.toLowerCase(), ov);
+  }
+  const systemCompat: SystemCompatibility[] = defaultSystemCompatibility.map(base => {
+    const override = userOverrides.get(base.systemId.toLowerCase());
+    if (override && override.supportedFormats) {
+      return { ...base, supportedFormats: override.supportedFormats };
     }
+    return base;
+  });
+
+  // Filtre par recherche
+  const searchInput = document.getElementById('systemCompatSearch') as HTMLInputElement | null;
+  const search = (searchInput?.value || '').trim().toLowerCase();
+  const filtered = search
+    ? systemCompat.filter(s =>
+        s.systemId.toLowerCase().includes(search) ||
+        s.systemName.toLowerCase().includes(search) ||
+        (s.category || '').toLowerCase().includes(search) ||
+        (s.subcategory || '').toLowerCase().includes(search)
+      )
+    : systemCompat;
+
+  // Mode de tri
+  const sortSelect = document.getElementById('systemCompatSortMode') as HTMLSelectElement | null;
+  const sortMode = sortSelect?.value || 'type-then-manufacturer';
+
+  let grouped: Map<string, Map<string, SystemCompatibility[]>>;
+  if (sortMode === 'alphabetical') {
+    grouped = new Map();
+    grouped.set('', new Map([['', [...filtered].sort((a, b) => a.systemName.localeCompare(b.systemName))]]));
+  } else {
+    // Détermination des deux niveaux selon le mode choisi
+    const primaryKey = (s: SystemCompatibility) =>
+      sortMode === 'type-then-manufacturer'
+        ? (s.subcategory || 'autres')
+        : (s.category || 'Autres');
+    const secondaryKey = (s: SystemCompatibility) =>
+      sortMode === 'type-then-manufacturer'
+        ? (s.category || 'Autres')
+        : (s.subcategory || 'autres');
+
+    grouped = new Map();
+    for (const sys of filtered) {
+      const p = primaryKey(sys);
+      const s = secondaryKey(sys);
+      if (!grouped.has(p)) grouped.set(p, new Map());
+      const sec = grouped.get(p)!;
+      if (!sec.has(s)) sec.set(s, []);
+      sec.get(s)!.push(sys);
+    }
+
+    // Tri des clés primaires alphabétiquement (avec "Autres"/"autres" en dernier)
+    const sortedPrimary = [...grouped.keys()].sort((a, b) => {
+      const aOther = a.toLowerCase() === 'autres';
+      const bOther = b.toLowerCase() === 'autres';
+      if (aOther && !bOther) return 1;
+      if (!aOther && bOther) return -1;
+      return a.localeCompare(b);
+    });
+    grouped = new Map(sortedPrimary.map(k => [k, grouped.get(k)!]));
   }
 
-  for (const [category, systems] of grouped) {
+  // Capitalise la première lettre (les types Recalbox sont en minuscules : console, handheld, ...)
+  const capitalize = (s: string) => s ? s.charAt(0).toUpperCase() + s.slice(1) : s;
+
+  for (const [primary, secondaryMap] of grouped) {
     const section = document.createElement('div');
     section.className = 'system-category-section';
 
-    const catTitle = document.createElement('h4');
-    catTitle.textContent = category;
-    section.appendChild(catTitle);
+    // Conteneur du contenu pliable (sous-titres + items)
+    const content = document.createElement('div');
+    content.className = 'system-category-content';
 
-    // Grouper par sous-catégorie au sein de la catégorie
-    const subcategories = new Map<string, typeof systems>();
-    for (const system of systems) {
-      const subcat = system.subcategory || '';
-      if (!subcategories.has(subcat)) {
-        subcategories.set(subcat, []);
-      }
-      subcategories.get(subcat)!.push(system);
+    if (primary) {
+      const catTitle = document.createElement('h4');
+      catTitle.className = 'system-category-title';
+      const isCollapsed = collapsedCompatGroups.has(primary);
+      catTitle.dataset.collapsed = isCollapsed ? '1' : '0';
+      const chevron = document.createElement('span');
+      chevron.className = 'system-category-chevron';
+      chevron.textContent = isCollapsed ? '▶' : '▼';
+      const label = document.createElement('span');
+      label.textContent = capitalize(primary);
+      catTitle.appendChild(chevron);
+      catTitle.appendChild(label);
+      catTitle.style.cursor = 'pointer';
+      catTitle.style.userSelect = 'none';
+      content.style.display = isCollapsed ? 'none' : '';
+      catTitle.addEventListener('click', () => {
+        const nowCollapsed = catTitle.dataset.collapsed !== '1';
+        catTitle.dataset.collapsed = nowCollapsed ? '1' : '0';
+        chevron.textContent = nowCollapsed ? '▶' : '▼';
+        content.style.display = nowCollapsed ? 'none' : '';
+        if (nowCollapsed) collapsedCompatGroups.add(primary);
+        else collapsedCompatGroups.delete(primary);
+      });
+      section.appendChild(catTitle);
     }
 
-    for (const [subcategory, subcatSystems] of subcategories) {
-      if (subcategory) {
+    const sortedSecondary = [...secondaryMap.keys()].sort((a, b) => a.localeCompare(b));
+    for (const secondary of sortedSecondary) {
+      const subcatSystems = secondaryMap.get(secondary)!;
+      if (secondary) {
         const subcatTitle = document.createElement('h6');
         subcatTitle.className = 'system-subcategory-title';
-        subcatTitle.textContent = subcategory;
-        section.appendChild(subcatTitle);
+        subcatTitle.textContent = capitalize(secondary);
+        content.appendChild(subcatTitle);
       }
 
-    for (const system of subcatSystems) {
+    for (const system of [...subcatSystems].sort((a, b) => a.systemName.localeCompare(b.systemName))) {
       // Récupérer les infos par défaut pour les icônes warning/unsupported
       const defaultEntry = defaultSystemCompatibility.find(s => s.systemId === system.systemId);
 
@@ -634,10 +763,53 @@ function renderSystemCompatibility(): void {
       });
 
       systemDiv.appendChild(checkboxesDiv);
-      section.appendChild(systemDiv);
+
+      // Affichage informatif des formats bruts (non éditables)
+      const sysDef = SYSTEMS.find(s => s.systemId === system.systemId);
+      if (sysDef && (sysDef.datRawFormats.length > 0 || sysDef.extraRawFormats.length > 0)) {
+        const rawInfo = document.createElement('div');
+        rawInfo.className = 'raw-formats-info';
+
+        if (sysDef.datRawFormats.length > 0) {
+          const datLine = document.createElement('div');
+          datLine.className = 'raw-formats-line';
+          const datLabel = document.createElement('span');
+          datLabel.className = 'raw-formats-label';
+          datLabel.textContent = 'Formats sans compression :';
+          datLine.appendChild(datLabel);
+          for (const ext of sysDef.datRawFormats) {
+            const tag = document.createElement('span');
+            tag.className = 'raw-format-tag raw-format-dat';
+            tag.textContent = '.' + ext;
+            datLine.appendChild(tag);
+          }
+          rawInfo.appendChild(datLine);
+        }
+
+        if (sysDef.extraRawFormats.length > 0) {
+          const extraLine = document.createElement('div');
+          extraLine.className = 'raw-formats-line';
+          const extraLabel = document.createElement('span');
+          extraLabel.className = 'raw-formats-label';
+          extraLabel.textContent = 'Autres formats lus par les émulateurs :';
+          extraLine.appendChild(extraLabel);
+          for (const ext of sysDef.extraRawFormats) {
+            const tag = document.createElement('span');
+            tag.className = 'raw-format-tag raw-format-extra';
+            tag.textContent = '.' + ext;
+            extraLine.appendChild(tag);
+          }
+          rawInfo.appendChild(extraLine);
+        }
+
+        systemDiv.appendChild(rawInfo);
+      }
+
+      content.appendChild(systemDiv);
     }
     } // fin subcategories loop
 
+    section.appendChild(content);
     container.appendChild(section);
   }
 }
@@ -677,10 +849,38 @@ function resetAllSystemCompatibility(): void {
 // ============================================
 
 function toggleCleanupOptions(): void {
-  const enabled = (document.getElementById('cleanSourceAfterConsolidation') as HTMLInputElement).checked;
-  (document.getElementById('cleanupScope') as HTMLSelectElement).disabled = !enabled;
-  (document.getElementById('protectFilesForUnselectedGames') as HTMLInputElement).disabled = !enabled;
-  (document.getElementById('moveUnmatchedFiles') as HTMLInputElement).disabled = !enabled;
+  const cleanEnabled = (document.getElementById('cleanSourceAfterConsolidation') as HTMLInputElement).checked;
+  (document.getElementById('cleanupScope') as HTMLSelectElement).disabled = !cleanEnabled;
+  (document.getElementById('protectFilesForUnselectedGames') as HTMLInputElement).disabled = !cleanEnabled;
+  (document.getElementById('moveUnmatchedFiles') as HTMLInputElement).disabled = !cleanEnabled;
+
+  // Le dossier "ROMs non référencées" ne sert que si le nettoyage ET le déplacement sont activés
+  updateUnmatchedFolderEnabled();
+}
+
+/**
+ * Active ou désactive (grise) les champs "ROMs non référencées" selon l'état des deux
+ * checkboxes du nettoyage. Les deux champs (onglet Dossiers + onglet Nettoyage) sont synchronisés.
+ */
+function updateUnmatchedFolderEnabled(): void {
+  const cleanCb = document.getElementById('cleanSourceAfterConsolidation') as HTMLInputElement | null;
+  const moveCb = document.getElementById('moveUnmatchedFiles') as HTMLInputElement | null;
+  const enabled = !!cleanCb?.checked && !!moveCb?.checked;
+
+  for (const id of ['unmatchedRomsFolder', 'unmatchedRomsFolderCleanup']) {
+    const input = document.getElementById(id) as HTMLInputElement | null;
+    if (input) {
+      input.disabled = !enabled;
+      input.style.opacity = enabled ? '' : '0.55';
+    }
+  }
+  for (const id of ['unmatchedRomsFolderBrowse']) {
+    const btn = document.getElementById(id) as HTMLButtonElement | null;
+    if (btn) btn.disabled = !enabled;
+  }
+
+  const msg = document.getElementById('unmatchedRomsFolderDisabledMsg');
+  if (msg) msg.style.display = enabled ? 'none' : 'block';
 }
 
 // ============================================
@@ -692,6 +892,221 @@ function toggleBestCompressionWarning(show: boolean): void {
   if (warning) {
     warning.style.display = show ? 'block' : 'none';
   }
+}
+
+// ============================================
+// TÉLÉCHARGEMENT — SOURCES
+// ============================================
+
+function renderDownloadSources(): void {
+  const container = document.getElementById('downloadSourcesList')!;
+  container.innerHTML = '';
+  const sources = currentSettings?.downloadSources || [];
+
+  sources.forEach((source, index) => {
+    const item = document.createElement('div');
+    item.className = 'download-source-item';
+    item.dataset.index = String(index);
+    item.style.cssText = 'border: 1px solid #dee2e6; border-radius: 6px; padding: 12px; margin-bottom: 8px; background: #f8f9fa;';
+
+    item.innerHTML = `
+      <div style="display: flex; gap: 8px; align-items: center; margin-bottom: 8px;">
+        <input type="text" class="source-name" value="${escapeHtml(source.name)}" placeholder="Nom" style="flex: 1; padding: 6px 10px; border: 1px solid #ced4da; border-radius: 4px; font-size: 13px;">
+        <label style="display: flex; align-items: center; gap: 4px; font-size: 13px; white-space: nowrap;">
+          <input type="checkbox" class="source-enabled" ${source.enabled ? 'checked' : ''}> Actif
+        </label>
+      </div>
+      <div style="display: flex; gap: 8px; align-items: center; margin-bottom: 8px;">
+        <input type="text" class="source-url" value="${escapeHtml(source.baseUrl)}" placeholder="URL de base (ex: https://example.com/roms/)" style="flex: 1; padding: 6px 10px; border: 1px solid #ced4da; border-radius: 4px; font-size: 13px;">
+      </div>
+      <div style="display: flex; gap: 8px; align-items: center; margin-bottom: 8px;">
+        <input type="text" class="source-extensions" value="${(source.extensions || []).join(', ')}" placeholder="Extensions (vide = utiliser les globales)" style="flex: 1; padding: 6px 10px; border: 1px solid #ced4da; border-radius: 4px; font-size: 13px;">
+      </div>
+      <div class="source-system-overrides" style="margin-bottom: 8px;">
+        ${renderSourceSystemOverrides(source.systemExtensions || {}, index)}
+      </div>
+      <div style="display: flex; gap: 6px; justify-content: flex-end;">
+        <button class="btn-secondary source-add-system" data-index="${index}" style="font-size: 12px; padding: 4px 8px;">+ Système</button>
+        <button class="btn-secondary source-move-up" data-index="${index}" style="font-size: 12px; padding: 4px 8px;" ${index === 0 ? 'disabled' : ''}>&#8593;</button>
+        <button class="btn-secondary source-move-down" data-index="${index}" style="font-size: 12px; padding: 4px 8px;" ${index === sources.length - 1 ? 'disabled' : ''}>&#8595;</button>
+        <button class="btn-danger source-delete" data-index="${index}" style="font-size: 12px; padding: 4px 8px;">&#10005;</button>
+      </div>
+    `;
+
+    container.appendChild(item);
+  });
+
+  // Bind events
+  container.querySelectorAll('.source-move-up').forEach(btn => {
+    btn.addEventListener('click', () => moveDownloadSource(Number((btn as HTMLElement).dataset.index), -1));
+  });
+  container.querySelectorAll('.source-move-down').forEach(btn => {
+    btn.addEventListener('click', () => moveDownloadSource(Number((btn as HTMLElement).dataset.index), 1));
+  });
+  container.querySelectorAll('.source-delete').forEach(btn => {
+    btn.addEventListener('click', () => deleteDownloadSource(Number((btn as HTMLElement).dataset.index)));
+  });
+  container.querySelectorAll('.source-add-system').forEach(btn => {
+    btn.addEventListener('click', () => addSystemOverrideToSource(Number((btn as HTMLElement).dataset.index)));
+  });
+  container.querySelectorAll('.source-system-remove').forEach(btn => {
+    btn.addEventListener('click', () => {
+      const sourceIdx = Number((btn as HTMLElement).dataset.sourceIndex);
+      const systemId = (btn as HTMLElement).dataset.systemId!;
+      removeSystemOverrideFromSource(sourceIdx, systemId);
+    });
+  });
+}
+
+function renderSourceSystemOverrides(systemExtensions: Record<string, string[]>, sourceIndex: number): string {
+  const entries = Object.entries(systemExtensions);
+  if (entries.length === 0) return '';
+
+  return entries.map(([systemId, exts]) => {
+    const systemName = defaultSystemCompatibility.find(s => s.systemId === systemId)?.systemName || systemId;
+    return `<div style="display: flex; gap: 6px; align-items: center; margin-top: 4px; padding-left: 12px;">
+      <span style="font-size: 12px; color: #7f8c8d; min-width: 140px;">${escapeHtml(systemName)} :</span>
+      <input type="text" class="source-system-ext" data-source-index="${sourceIndex}" data-system-id="${systemId}"
+        value="${exts.join(', ')}" placeholder="Extensions pour ce système"
+        style="flex: 1; padding: 4px 8px; border: 1px solid #ced4da; border-radius: 4px; font-size: 12px;">
+      <button class="btn-secondary source-system-remove" data-source-index="${sourceIndex}" data-system-id="${systemId}"
+        style="font-size: 11px; padding: 2px 6px;">&#10005;</button>
+    </div>`;
+  }).join('');
+}
+
+function escapeHtml(str: string): string {
+  return str.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+}
+
+function addDownloadSource(): void {
+  if (!currentSettings) return;
+  if (!currentSettings.downloadSources) currentSettings.downloadSources = [];
+  currentSettings.downloadSources.push({
+    id: crypto.randomUUID(),
+    name: '',
+    baseUrl: '',
+    enabled: true,
+  });
+  // Sync from DOM before re-render to preserve unsaved edits
+  syncDownloadSourcesFromDom();
+  renderDownloadSources();
+}
+
+function moveDownloadSource(index: number, direction: number): void {
+  if (!currentSettings?.downloadSources) return;
+  syncDownloadSourcesFromDom();
+  const sources = currentSettings.downloadSources;
+  const newIndex = index + direction;
+  if (newIndex < 0 || newIndex >= sources.length) return;
+  [sources[index], sources[newIndex]] = [sources[newIndex], sources[index]];
+  renderDownloadSources();
+}
+
+function deleteDownloadSource(index: number): void {
+  if (!currentSettings?.downloadSources) return;
+  syncDownloadSourcesFromDom();
+  currentSettings.downloadSources.splice(index, 1);
+  renderDownloadSources();
+}
+
+function addSystemOverrideToSource(sourceIndex: number): void {
+  if (!currentSettings?.downloadSources) return;
+  syncDownloadSourcesFromDom();
+  const source = currentSettings.downloadSources[sourceIndex];
+  if (!source) return;
+  if (!source.systemExtensions) source.systemExtensions = {};
+
+  // Find systems not already overridden
+  const existingIds = Object.keys(source.systemExtensions);
+  const available = defaultSystemCompatibility.filter(s => !existingIds.includes(s.systemId));
+  if (available.length === 0) return;
+
+  // Add the first available system with its default extensions
+  const sys = available[0];
+  const defaultExts = [...(sys.supportedFormats || []), ...(sys.warningFormats || [])];
+  source.systemExtensions[sys.systemId] = defaultExts;
+  renderDownloadSources();
+}
+
+function removeSystemOverrideFromSource(sourceIndex: number, systemId: string): void {
+  if (!currentSettings?.downloadSources) return;
+  syncDownloadSourcesFromDom();
+  const source = currentSettings.downloadSources[sourceIndex];
+  if (!source?.systemExtensions) return;
+  delete source.systemExtensions[systemId];
+  renderDownloadSources();
+}
+
+function syncDownloadSourcesFromDom(): void {
+  if (!currentSettings?.downloadSources) return;
+  const items = document.querySelectorAll('.download-source-item');
+  items.forEach((item, i) => {
+    if (i >= currentSettings!.downloadSources!.length) return;
+    const source = currentSettings!.downloadSources![i];
+    source.name = (item.querySelector('.source-name') as HTMLInputElement)?.value || '';
+    source.baseUrl = (item.querySelector('.source-url') as HTMLInputElement)?.value || '';
+    source.enabled = (item.querySelector('.source-enabled') as HTMLInputElement)?.checked ?? true;
+    const extVal = (item.querySelector('.source-extensions') as HTMLInputElement)?.value || '';
+    source.extensions = extVal ? extVal.split(',').map(s => s.trim()).filter(s => s.length > 0) : undefined;
+
+    // System overrides
+    const sysExtInputs = item.querySelectorAll('.source-system-ext');
+    if (sysExtInputs.length > 0) {
+      if (!source.systemExtensions) source.systemExtensions = {};
+      sysExtInputs.forEach(input => {
+        const sysId = (input as HTMLElement).dataset.systemId!;
+        const val = (input as HTMLInputElement).value;
+        source.systemExtensions![sysId] = val.split(',').map(s => s.trim()).filter(s => s.length > 0);
+      });
+    }
+  });
+}
+
+function collectDownloadSources(): AppSettings['downloadSources'] {
+  syncDownloadSourcesFromDom();
+  return currentSettings?.downloadSources || [];
+}
+
+// ============================================
+// TÉLÉCHARGEMENT — EXTENSIONS PAR SYSTÈME
+// ============================================
+
+function renderDownloadSystemExtensions(): void {
+  const container = document.getElementById('downloadSystemExtensionsList')!;
+  container.innerHTML = '';
+  const systemExts = currentSettings?.downloadSystemExtensions || [];
+
+  defaultSystemCompatibility.forEach(sys => {
+    const override = systemExts.find(s => s.systemId === sys.systemId);
+    const defaultExts = [...(sys.supportedFormats || []), ...(sys.warningFormats || [])];
+    const displayExts = override ? override.extensions.join(', ') : '';
+
+    const row = document.createElement('div');
+    row.style.cssText = 'display: flex; gap: 8px; align-items: center; margin-bottom: 4px;';
+    row.innerHTML = `
+      <span style="font-size: 13px; min-width: 220px; color: #2c3e50;">${escapeHtml(sys.systemName)}</span>
+      <input type="text" class="system-dl-ext" data-system-id="${sys.systemId}"
+        value="${escapeHtml(displayExts)}" placeholder="${defaultExts.join(', ')}"
+        style="flex: 1; padding: 5px 8px; border: 1px solid #ced4da; border-radius: 4px; font-size: 12px;">
+    `;
+    container.appendChild(row);
+  });
+}
+
+function collectDownloadSystemExtensions(): AppSettings['downloadSystemExtensions'] {
+  const result: Array<{ systemId: string; extensions: string[] }> = [];
+  document.querySelectorAll('.system-dl-ext').forEach(input => {
+    const systemId = (input as HTMLElement).dataset.systemId!;
+    const val = (input as HTMLInputElement).value.trim();
+    if (val) {
+      result.push({
+        systemId,
+        extensions: val.split(',').map(s => s.trim()).filter(s => s.length > 0)
+      });
+    }
+  });
+  return result;
 }
 
 // ============================================
@@ -735,13 +1150,15 @@ async function saveSettings(): Promise<void> {
       theme: (document.getElementById('theme') as HTMLSelectElement).value as 'light' | 'dark',
       language: (document.getElementById('language') as HTMLSelectElement).value as 'fr' | 'en',
       autoScanOnStartup: (document.getElementById('autoScanOnStartup') as HTMLInputElement).checked,
-      
+      autoSelectNewGames: (document.getElementById('autoSelectNewGames') as HTMLInputElement).checked,
+
       // Dossiers
       defaultDatFolder: (document.getElementById('defaultDatFolder') as HTMLInputElement).value,
       defaultDatabaseFolder: (document.getElementById('defaultDatabaseFolder') as HTMLInputElement).value,
       defaultRomsFolder: (document.getElementById('defaultRomsFolder') as HTMLInputElement).value,
       unmatchedRomsFolder: (document.getElementById('unmatchedRomsFolder') as HTMLInputElement).value,
       validatedRomsFolder: (document.getElementById('validatedRomsFolder') as HTMLInputElement).value,
+      validatedRomsMultiSystem: (document.getElementById('validatedRomsMultiSystem') as HTMLInputElement).checked,
       tempExtractionFolder: (document.getElementById('tempExtractionFolder') as HTMLInputElement).value,
       cleanSourceAfterConsolidation: (document.getElementById('cleanSourceAfterConsolidation') as HTMLInputElement).checked,
       cleanupScope: (document.getElementById('cleanupScope') as HTMLSelectElement).value as CleanupScope,
@@ -764,7 +1181,23 @@ async function saveSettings(): Promise<void> {
       rarToolPriority: currentRarToolPriority,
       
       // Compatibilité système
-      systemCompatibility
+      systemCompatibility,
+
+      // Paramètres No-Intro par défaut
+      noIntroDefaults: {
+        includeBios: (document.getElementById('noIntroBios') as HTMLInputElement).checked,
+        includeProto: (document.getElementById('noIntroProto') as HTMLInputElement).checked,
+        includeBeta: (document.getElementById('noIntroBeta') as HTMLInputElement).checked,
+        includeDemo: (document.getElementById('noIntroDemo') as HTMLInputElement).checked,
+        includeSample: (document.getElementById('noIntroSample') as HTMLInputElement).checked,
+      },
+
+      // Téléchargement
+      downloadSources: collectDownloadSources(),
+      downloadExtensions: (document.getElementById('downloadExtensions') as HTMLInputElement).value
+        .split(',').map(s => s.trim()).filter(s => s.length > 0),
+      downloadSystemExtensions: collectDownloadSystemExtensions(),
+      incompleteRomsFolder: (document.getElementById('incompleteRomsFolder') as HTMLInputElement).value,
     };
 
     console.log('Nouveaux paramètres à sauvegarder:', newSettings);

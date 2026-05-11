@@ -28,12 +28,14 @@ let currentSearchScope: 'all' | 'games' | 'files' | 'archives' = 'all';
 let originalContent: HTMLElement[] = [];
 
 // Variables pour le groupement et le filtrage
-let currentGroupBy: 'none' | 'category' | 'letter' | 'match-status' | 'selection' = 'none';
+let currentGroupBy: 'none' | 'category' | 'letter' | 'match-status' | 'selection' | 'change-status' = 'none';
 let activeFilters: Set<string> = new Set();
 let activeMatchFilters: Set<string> = new Set();
 let activeSelectionFilters: Set<string> = new Set();
+let activeChangeFilters: Set<string> = new Set();
 let allGames: GameInfo[] = [];
 let matchingComplete = false;
+let targetFolderPath: string | null = null; // Dossier cible pour cette session (peut différer des paramètres globaux)
 let categoryCounts: Map<string, number> = new Map();
 let matchStatusCounts: Map<string, number> = new Map();
 
@@ -45,6 +47,8 @@ interface GameInfo {
   category?: string;
   is_selected?: number;
   match_status?: 'complete' | 'partial' | 'missing';
+  change_status?: 'new' | 'modified' | 'unchanged' | 'disappeared' | null;
+  is_disappeared?: boolean;
   system_id?: number;
 }
 
@@ -70,8 +74,8 @@ interface FolderContent {
 
 // Types de log
 type LogSeverity = 'error' | 'info' | 'warning';
-type LogContext = 'application' | 'archive' | 'audio' | 'chd' | 'dat' | 'database' | 'demo' | 'educational' | 'extra' | 'folder' | 'game' | 'match' | 'multimedia' | 'network' | 'otherfile' | 'preproduction' | 'romfile' | 'search' | 'settings' | 'video' | 'welcome';
-type LogState = 'cancel' | 'cleanable' | 'complete' | 'count' | 'deleted' | 'found' | 'loading' | 'missing' | 'question' | 'select' | 'success' | 'sync' | 'waiting';
+type LogContext = 'application' | 'archive' | 'audio' | 'chd' | 'dat' | 'database' | 'demo' | 'download' | 'educational' | 'extra' | 'folder' | 'game' | 'match' | 'multimedia' | 'network' | 'otherfile' | 'preproduction' | 'romfile' | 'search' | 'settings' | 'video' | 'welcome';
+type LogState = 'cancel' | 'cleanable' | 'complete' | 'count' | 'deleted' | 'found' | 'loading' | 'missing' | 'question' | 'select' | 'success' | 'sync' | 'waiting' | 'warning';
 
 interface LogOptions {
   severity?: LogSeverity;
@@ -99,6 +103,7 @@ const icons: IconSystem = {
     dat: '📖',
     database: '🗄️',
     demo: '🧪',
+    download: '⬇️',
     educational: '🎓',
     extra: '➕',
     folder: '📂',
@@ -127,7 +132,8 @@ const icons: IconSystem = {
     select: '🖱️',
     success: '✅',
     sync: '🔄',
-    waiting: '⏸️'
+    waiting: '⏸️',
+    warning: '⚠️'
   }
 };
 
@@ -156,7 +162,14 @@ function log(message: string, options: LogOptions = {}, isFromMain: boolean = fa
     div.textContent = finalMessage;
     logDiv.appendChild(div);
     logDiv.scrollTop = logDiv.scrollHeight;
-    
+
+    // Mettre à jour le dernier message dans le header (visible quand replié)
+    const lastMsg = document.getElementById('log-last-message');
+    if (lastMsg) {
+      lastMsg.textContent = finalMessage;
+      lastMsg.className = `log-last-message log-${severity}`;
+    }
+
     // IMPORTANT: Ne PAS appeler writeLog si le message vient du main process
     // pour éviter les boucles infinies
     if (!isFromMain) {
@@ -172,17 +185,14 @@ function setupContextMenu() {
   const contextMenu = document.getElementById('context-menu');
   if (!contextMenu) return;
 
-  contextMenu.innerHTML = `
-    <div id="ctx-refresh-folder" class="context-menu-item">🔄 Re-scanner le dossier</div>
-    <div id="ctx-delete-folder-database" class="context-menu-item">❌ Retirer le dossier de la base</div>
-    <div id="ctx-delete-folder-physical" class="context-menu-item danger">🗑️ Supprimer le dossier</div>
-  `;
-
   // Cacher le menu au clic ailleurs
   document.addEventListener('click', () => {
     contextMenu.style.display = 'none';
   });
+}
 
+// Attacher les handlers du menu contextuel (appelé à chaque ouverture car le contenu est dynamique)
+function attachContextMenuHandlers(contextMenu: HTMLElement) {
   // Handler pour supprimer physiquement (corbeille)
   document.getElementById('ctx-delete-folder-physical')?.addEventListener('click', async () => {
     const target = (contextMenu as any).targetElement;
@@ -191,7 +201,7 @@ function setupContextMenu() {
     }
   });
 
-  // Handler pour supprimer un dossier
+  // Handler pour supprimer un dossier de la base
   document.getElementById('ctx-delete-folder-database')?.addEventListener('click', async () => {
     const target = (contextMenu as any).targetElement;
     if (target && target.dataset.path) {
@@ -200,7 +210,7 @@ function setupContextMenu() {
         try {
           await window.api.removeFolder(target.dataset.path);
           log(`Dossier supprimé : ${target.dataset.path}`, { context: 'folder', state: 'deleted' });
-          
+
           // Retirer de la liste
           loadedFolders = loadedFolders.filter(f => f.path !== target.dataset.path);
           updateLeftSidebar();
@@ -218,9 +228,392 @@ function setupContextMenu() {
       await rescanFolder(target.dataset.path);
     }
   });
+
+  // Handler pour définir comme dossier cible
+  document.getElementById('ctx-set-target')?.addEventListener('click', async () => {
+    const target = (contextMenu as any).targetElement;
+    if (target && target.dataset.path) {
+      targetFolderPath = target.dataset.path;
+      // Persister dans la base de données
+      await window.api.setDbMetadata('target_folder', target.dataset.path);
+      log(`Dossier cible défini : ${target.dataset.path}`, { context: 'folder', state: 'success' });
+      updateLeftSidebar();
+    }
+  });
 }
 
-// Rescan d'un dossier
+// Ferme tous les menus contextuels (statique + dynamiques) pour éviter la superposition
+function closeDynamicContextMenus() {
+  document.querySelectorAll('.dynamic-context-menu').forEach(m => m.remove());
+  const staticMenu = document.getElementById('context-menu');
+  if (staticMenu) staticMenu.style.display = 'none';
+}
+
+// Menu contextuel pour le DAT
+async function showDatContextMenu(event: MouseEvent) {
+  // Retirer tout menu contextuel dynamique déjà ouvert pour éviter la superposition
+  closeDynamicContextMenus();
+
+  // Vérifier s'il existe un rapport de mise à jour consultable
+  let hasUpdateReport = false;
+  try {
+    const previousVersion = await window.api.getDbMetadata('dat_previous_version');
+    hasUpdateReport = !!previousVersion;
+  } catch {
+    hasUpdateReport = false;
+  }
+
+  const menu = document.createElement('div');
+  menu.className = 'context-menu dynamic-context-menu';
+  menu.style.position = 'fixed';
+  menu.style.display = 'block';
+  menu.style.left = event.pageX + 'px';
+  menu.style.top = event.pageY + 'px';
+  menu.style.zIndex = '1000';
+
+  const reportClass = hasUpdateReport ? 'context-menu-item' : 'context-menu-item disabled';
+  const reportTitle = hasUpdateReport
+    ? 'Voir le rapport de la dernière mise à jour'
+    : 'Aucune mise à jour du DAT effectuée';
+
+  menu.innerHTML = `
+    <div class="context-menu-item" id="ctx-update-dat">🔄 Mettre à jour le DAT</div>
+    <div class="${reportClass}" id="ctx-show-dat-report" title="${reportTitle}">📋 Voir le dernier rapport de mise à jour</div>
+  `;
+
+  document.body.appendChild(menu);
+
+  menu.querySelector('#ctx-update-dat')?.addEventListener('click', async () => {
+    menu.remove();
+    await handleDatUpdate();
+  });
+
+  if (hasUpdateReport) {
+    menu.querySelector('#ctx-show-dat-report')?.addEventListener('click', async () => {
+      menu.remove();
+      await showLastDatUpdateReport();
+    });
+  }
+
+  const closeMenu = () => {
+    menu.remove();
+    document.removeEventListener('click', closeMenu);
+  };
+  setTimeout(() => document.addEventListener('click', closeMenu), 0);
+}
+
+// ============================================
+// MENU CONTEXTUEL JEU — TÉLÉCHARGEMENT
+// ============================================
+
+function showGameContextMenu(event: MouseEvent, game: GameInfo) {
+  // Retirer tout menu contextuel dynamique déjà ouvert pour éviter la superposition
+  closeDynamicContextMenus();
+
+  const menu = document.createElement('div');
+  menu.className = 'context-menu dynamic-context-menu';
+  menu.style.position = 'fixed';
+  menu.style.display = 'block';
+  menu.style.left = event.pageX + 'px';
+  menu.style.top = event.pageY + 'px';
+  menu.style.zIndex = '1000';
+
+  const matchStatus = game.match_status || 'missing';
+  const isMissingOrPartial = matchStatus === 'missing' || matchStatus === 'partial';
+
+  let menuHtml = '';
+  if (isMissingOrPartial) {
+    menuHtml += `<div class="context-menu-item" id="ctx-download-rom">&#11015; Télécharger la ROM</div>`;
+  }
+  menuHtml += `<div class="context-menu-item" id="ctx-download-all-missing">&#11015; Télécharger toutes les ROMs manquantes</div>`;
+
+  menu.innerHTML = menuHtml;
+  document.body.appendChild(menu);
+
+  menu.querySelector('#ctx-download-rom')?.addEventListener('click', () => {
+    menu.remove();
+    startRomDownload([game.id]);
+  });
+
+  menu.querySelector('#ctx-download-all-missing')?.addEventListener('click', () => {
+    menu.remove();
+    startAllMissingRomDownload();
+  });
+
+  const closeMenu = () => {
+    menu.remove();
+    document.removeEventListener('click', closeMenu);
+  };
+  setTimeout(() => document.addEventListener('click', closeMenu), 0);
+}
+
+async function startRomDownload(gameIds: number[]) {
+  const removeListener = window.api.onRomDownloadProgress((progress) => {
+    if (progress.phase === 'complete') {
+      log(progress.message, { context: 'download', state: 'success' });
+    } else if (progress.phase === 'incomplete') {
+      log(progress.message, { context: 'download', state: 'warning' });
+    } else {
+      log(progress.message, { context: 'download', state: 'loading' });
+    }
+  });
+  try {
+    const result = await window.api.downloadRom(gameIds);
+    const hasFailures = result.stats.failed > 0;
+    log(`Téléchargement terminé : ${result.stats.consolidated} consolidé(s), ${result.stats.failed} échec(s)`,
+      { context: 'download', state: hasFailures ? 'warning' : 'success' });
+
+    if (result.stats.consolidated > 0) {
+      await refreshTargetAndMatching();
+    }
+  } catch (error: any) {
+    log(`Erreur téléchargement : ${error.message}`, { severity: 'error', context: 'download' });
+  } finally {
+    removeListener();
+  }
+}
+
+async function startAllMissingRomDownload() {
+  const removeListener = window.api.onRomDownloadProgress((progress) => {
+    if (progress.phase === 'complete') {
+      log(progress.message, { context: 'download', state: 'success' });
+    } else if (progress.phase === 'incomplete') {
+      log(progress.message, { context: 'download', state: 'warning' });
+    } else {
+      log(progress.message, { context: 'download', state: 'loading' });
+    }
+  });
+  try {
+    const result = await window.api.downloadAllMissingRoms();
+    const hasFailures = result.stats.failed > 0;
+    log(`Téléchargement terminé : ${result.stats.consolidated} consolidé(s), ${result.stats.failed} échec(s)`,
+      { context: 'download', state: hasFailures ? 'warning' : 'success' });
+
+    if (result.stats.consolidated > 0) {
+      await refreshTargetAndMatching();
+    }
+  } catch (error: any) {
+    log(`Erreur téléchargement : ${error.message}`, { severity: 'error', context: 'download' });
+  } finally {
+    removeListener();
+  }
+}
+
+// Recharge et affiche le dernier rapport de mise à jour DAT depuis la base
+async function showLastDatUpdateReport() {
+  try {
+    const report = await window.api.getDatUpdateReport();
+    if (!report) {
+      log('Aucun rapport de mise à jour disponible.', { context: 'dat', state: 'waiting' });
+      return;
+    }
+    showDatUpdateReport(report);
+  } catch (error) {
+    log(`Erreur lors du chargement du rapport : ${error instanceof Error ? error.message : String(error)}`, { severity: 'error', context: 'dat' });
+  }
+}
+
+// Gestion de la mise à jour du DAT
+async function handleDatUpdate() {
+  try {
+    log('Mise à jour du DAT...', { context: 'dat', state: 'loading' });
+
+    const result = await window.api.updateDat();
+    if (!result) {
+      log('Mise à jour annulée.', { context: 'dat', state: 'cancel' });
+      return;
+    }
+
+    // Mettre à jour l'état local
+    currentDatInfo = result.datInfo || null;
+    matchingComplete = false; // Le matching est invalidé
+
+    updateLeftSidebar();
+    updateWorkflowButtons();
+
+    const comp = result.comparison;
+
+    // Afficher le rapport de mise à jour dans une modale
+    showDatUpdateReport(result);
+
+    log(`DAT mis à jour : ${result.datInfo.name} v${result.datInfo.version}`, { context: 'dat', state: 'success' });
+    log(`${comp.newGames} nouveau(x), ${comp.modifiedGames} modifié(s), ${comp.unchangedGames} inchangé(s), ${comp.disappearedGames} disparu(s)`, { context: 'dat', state: 'count' });
+
+    // Rafraîchir le volet central
+    if (selectedElement) {
+      await updateCenterContent(selectedElement.type, selectedElement.value);
+    }
+  } catch (error) {
+    log(`Erreur lors de la mise à jour du DAT : ${error instanceof Error ? error.message : String(error)}`, { severity: 'error', context: 'dat' });
+  }
+}
+
+// Afficher le rapport de mise à jour DAT dans une modale
+function showDatUpdateReport(result: any) {
+  const comp = result.comparison;
+  const overlay = document.createElement('div');
+  overlay.className = 'modal-overlay';
+
+  overlay.innerHTML = `
+    <div class="modal-content large">
+      <div class="modal-header">
+        <h2>Mise à jour du DAT</h2>
+        <button class="close-modal">&times;</button>
+      </div>
+      <div class="modal-body">
+        <div style="font-size: 13px; color: #7f8c8d; margin-bottom: 16px;">
+          ${result.previousName} v${result.previousVersion} &rarr; ${result.datInfo.name} v${result.datInfo.version}
+        </div>
+
+        <div class="dat-update-stats">
+          <div class="dat-update-stat stat-new">
+            <span class="stat-value">${comp.newGames}</span>
+            <span class="stat-label">Nouveaux</span>
+          </div>
+          <div class="dat-update-stat stat-modified">
+            <span class="stat-value">${comp.modifiedGames}</span>
+            <span class="stat-label">Modifiés</span>
+          </div>
+          <div class="dat-update-stat stat-unchanged">
+            <span class="stat-value">${comp.unchangedGames}</span>
+            <span class="stat-label">Inchangés</span>
+          </div>
+          <div class="dat-update-stat stat-disappeared">
+            <span class="stat-value">${comp.disappearedGames}</span>
+            <span class="stat-label">Disparus</span>
+          </div>
+        </div>
+
+        ${comp.disappearedGames > 0 ? `
+          <div class="dat-update-section">
+            <h4>Jeux disparus (${comp.disappearedGames})</h4>
+            <div class="dat-update-game-list">
+              ${comp.disappeared.map((g: any) => `
+                <div class="game-entry">
+                  ${g.name}
+                  ${g.category ? `<span class="game-category">${g.category}</span>` : ''}
+                </div>
+              `).join('')}
+            </div>
+          </div>
+        ` : ''}
+
+        <div style="margin-top: 16px; font-size: 13px; color: #7f8c8d;">
+          Le matching a été invalidé. Relancez le matching pour prendre en compte les changements.
+          <br>Utilisez le filtre « Évolution DAT » dans la vue des jeux pour explorer les différences.
+        </div>
+      </div>
+      <div class="modal-footer">
+        <button class="btn-close-modal">Fermer</button>
+      </div>
+    </div>
+  `;
+
+  document.body.appendChild(overlay);
+
+  const closeModal = () => overlay.remove();
+  overlay.querySelector('.close-modal')?.addEventListener('click', closeModal);
+  overlay.querySelector('.btn-close-modal')?.addEventListener('click', closeModal);
+  overlay.addEventListener('click', (e) => {
+    if (e.target === overlay) closeModal();
+  });
+}
+
+// Afficher le détail des différences de ROMs pour un jeu
+async function showGameDiffDetail(gameName: string) {
+  try {
+    const diff = await window.api.getGameDiff(gameName);
+
+    if (diff.added.length === 0 && diff.removed.length === 0 && diff.changed.length === 0) {
+      return; // Pas de diff
+    }
+
+    const overlay = document.createElement('div');
+    overlay.className = 'modal-overlay';
+
+    let tableRows = '';
+
+    for (const rom of diff.added) {
+      tableRows += `<tr class="diff-added">
+        <td>+ Ajouté</td><td>${rom.name}</td><td>${rom.size || ''}</td><td>${rom.crc32 || ''}</td>
+      </tr>`;
+    }
+    for (const rom of diff.removed) {
+      tableRows += `<tr class="diff-removed">
+        <td>- Supprimé</td><td>${rom.name}</td><td>${rom.size || ''}</td><td>${rom.crc32 || ''}</td>
+      </tr>`;
+    }
+    for (const c of diff.changed) {
+      tableRows += `<tr class="diff-changed">
+        <td>~ Modifié</td><td>${c.name}</td>
+        <td>${c.old.size || ''} &rarr; ${c.new.size || ''}</td>
+        <td>${c.old.crc32 || ''} &rarr; ${c.new.crc32 || ''}</td>
+      </tr>`;
+    }
+
+    overlay.innerHTML = `
+      <div class="modal-content large">
+        <div class="modal-header">
+          <h2>Évolution : ${gameName}</h2>
+          <button class="close-modal">&times;</button>
+        </div>
+        <div class="modal-body">
+          <div style="font-size: 13px; color: #7f8c8d; margin-bottom: 12px;">
+            ${diff.added.length} ajouté(s), ${diff.removed.length} supprimé(s), ${diff.changed.length} modifié(s)
+          </div>
+          <table class="rom-diff-table">
+            <thead><tr><th>Statut</th><th>Fichier</th><th>Taille</th><th>CRC32</th></tr></thead>
+            <tbody>${tableRows}</tbody>
+          </table>
+        </div>
+        <div class="modal-footer">
+          <button class="btn-close-modal">Fermer</button>
+        </div>
+      </div>
+    `;
+
+    document.body.appendChild(overlay);
+
+    const closeModal = () => overlay.remove();
+    overlay.querySelector('.close-modal')?.addEventListener('click', closeModal);
+    overlay.querySelector('.btn-close-modal')?.addEventListener('click', closeModal);
+    overlay.addEventListener('click', (e) => {
+      if (e.target === overlay) closeModal();
+    });
+  } catch (error) {
+    log(`Erreur lors du chargement du diff : ${error}`, { severity: 'error', context: 'dat' });
+  }
+}
+
+// Rafraîchissement post-consolidation/téléchargement.
+// La consolidation enregistre désormais directement en base les fichiers produits
+// (scanned_files + archive_contents + rom_matches) et nettoie les entrées obsolètes.
+// On évite donc le rescan complet du dossier cible et le re-matching, pour un gain
+// de performance significatif. On se contente de rafraîchir l'UI.
+async function refreshTargetAndMatching() {
+  try {
+    // Rafraîchir la sidebar (compteurs des dossiers)
+    const rootFolders = await window.api.getRootFolders();
+    loadedFolders = rootFolders;
+    updateLeftSidebar();
+
+    matchingComplete = true;
+    updateWorkflowButtons();
+
+    if (typeof displayMatchingReport === 'function') {
+      await displayMatchingReport('matching-report');
+    }
+
+    if (selectedElement) {
+      await updateCenterContent(selectedElement.type, selectedElement.value);
+    }
+
+    log('UI rafraîchie.', { context: 'match', state: 'success' });
+  } catch (error) {
+    log(`Erreur lors du rafraîchissement : ${error}`, { severity: 'error', context: 'match' });
+  }
+}
+
 async function rescanFolder(folderPath: string) {
   try {
     log(`Re-scan du dossier : ${folderPath}...`, { context: 'folder', state: 'loading' });
@@ -235,7 +628,12 @@ async function rescanFolder(folderPath: string) {
     
     const stats = await window.api.addRomsFolder(folderPath);
     log(`Re-scan terminé : ${stats.length} fichiers trouvés.`, { context: 'folder', state: 'success' });
-    
+
+    // Rafraîchir les compteurs dans la sidebar
+    const rootFolders = await window.api.getRootFolders();
+    loadedFolders = rootFolders;
+    updateLeftSidebar();
+
     // Rafraîchir l'affichage si c'est le dossier actuel
     if (currentFolderPath === folderPath) {
       await updateCenterContent('folder', folderPath);
@@ -246,57 +644,139 @@ async function rescanFolder(folderPath: string) {
 }
 
 // Fonction pour afficher le menu contextuel
-function showContextMenu(event: MouseEvent, element: HTMLElement) {
+function showContextMenu(event: MouseEvent, element: HTMLElement, options: { isSubfolder?: boolean } = {}) {
   event.preventDefault();
   event.stopPropagation();
-  
+
+  // Fermer tout menu contextuel dynamique déjà ouvert (DAT, jeu)
+  document.querySelectorAll('.dynamic-context-menu').forEach(m => m.remove());
+
   const contextMenu = document.getElementById('context-menu');
   if (!contextMenu) return;
-  
+
   (contextMenu as any).targetElement = element;
-  
+
+  const folderPath = element.dataset.path;
+  const isTarget = folderPath !== null && folderPath === targetFolderPath;
+
+  // Construire le menu dynamiquement.
+  // Sous-dossier : seulement "Retirer de la base" + "Supprimer le dossier".
+  // Dossier racine : "Re-scanner" + "Définir comme cible" (si pas déjà cible) + suppressions.
+  let menuHtml = '';
+  if (!options.isSubfolder) {
+    menuHtml += `<div id="ctx-refresh-folder" class="context-menu-item">🔄 Re-scanner le dossier</div>`;
+    if (!isTarget) {
+      menuHtml += `<div id="ctx-set-target" class="context-menu-item">📁 Définir comme dossier cible</div>`;
+    }
+  }
+  if (!isTarget) {
+    menuHtml += `<div id="ctx-delete-folder-database" class="context-menu-item">❌ Retirer le dossier de la base</div>`;
+    menuHtml += `<div id="ctx-delete-folder-physical" class="context-menu-item danger">🗑️ Supprimer le dossier</div>`;
+  }
+
+  if (!menuHtml) return;
+
+  contextMenu.innerHTML = menuHtml;
+
   contextMenu.style.display = 'block';
   contextMenu.style.left = event.pageX + 'px';
   contextMenu.style.top = event.pageY + 'px';
+
+  // Attacher les handlers après l'insertion du HTML
+  attachContextMenuHandlers(contextMenu);
 }
 
 // Ajouter un bouton pour la conversion CHD dans le menu contextuel des fichiers
 async function showFileContextMenu(event: MouseEvent, file: any) {
   event.preventDefault();
-  
+  event.stopPropagation();
+
+  // Fermer tout autre menu contextuel
+  closeDynamicContextMenus();
+
   const menu = document.createElement('div');
-  menu.className = 'context-menu';
-  menu.style.position = 'absolute';
+  menu.className = 'context-menu dynamic-context-menu';
+  menu.style.position = 'fixed';
+  menu.style.display = 'block';
   menu.style.left = event.pageX + 'px';
   menu.style.top = event.pageY + 'px';
-  
-  // Si c'est un fichier CD/ISO, proposer la conversion
-  const ext = file.fileName.split('.').pop()?.toLowerCase();
+  menu.style.zIndex = '1000';
+
+  const ext = (file.fileName || '').split('.').pop()?.toLowerCase();
+
+  // CD/ISO → conversion CHD
   if (['cue', 'gdi', 'toc', 'nrg', 'iso', 'bin'].includes(ext)) {
-    menu.innerHTML += `
-      <div class="context-menu-item" onclick="convertToChd('${file.filePath}')">
-        💿 Convertir en CHD
-      </div>
-    `;
+    menu.innerHTML += `<div class="context-menu-item" id="ctx-convert-chd">💿 Convertir en CHD</div>`;
   }
-  
-  // Si c'est un CHD, proposer l'extraction
+
+  // CHD → extraction / vérif / infos
   if (ext === 'chd') {
-    menu.innerHTML += `
-      <div class="context-menu-item" onclick="extractChd('${file.filePath}')">
-        📦 Extraire le CHD
-      </div>
-      <div class="context-menu-item" onclick="verifyChdFile('${file.filePath}')">
-        ✔️ Vérifier l'intégrité
-      </div>
-      <div class="context-menu-item" onclick="showChdInfo('${file.filePath}')">
-        ℹ️ Informations CHD
-      </div>
-    `;
+    menu.innerHTML += `<div class="context-menu-item" id="ctx-extract-chd">📦 Extraire le CHD</div>`;
+    menu.innerHTML += `<div class="context-menu-item" id="ctx-verify-chd">✔️ Vérifier l'intégrité</div>`;
+    menu.innerHTML += `<div class="context-menu-item" id="ctx-info-chd">ℹ️ Informations CHD</div>`;
   }
-  
+
+  // Toujours : retirer de la base + supprimer (corbeille)
+  menu.innerHTML += `<div class="context-menu-item" id="ctx-remove-file">❌ Retirer le fichier de la base</div>`;
+  menu.innerHTML += `<div class="context-menu-item danger" id="ctx-delete-file">🗑️ Supprimer le fichier</div>`;
+
   document.body.appendChild(menu);
-  
+
+  // Handlers CHD
+  menu.querySelector('#ctx-convert-chd')?.addEventListener('click', () => {
+    menu.remove();
+    (window as any).convertToChd?.(file.filePath);
+  });
+  menu.querySelector('#ctx-extract-chd')?.addEventListener('click', () => {
+    menu.remove();
+    (window as any).extractChd?.(file.filePath);
+  });
+  menu.querySelector('#ctx-verify-chd')?.addEventListener('click', () => {
+    menu.remove();
+    (window as any).verifyChdFile?.(file.filePath);
+  });
+  menu.querySelector('#ctx-info-chd')?.addEventListener('click', () => {
+    menu.remove();
+    (window as any).showChdInfo?.(file.filePath);
+  });
+
+  // Handler "Retirer de la base"
+  menu.querySelector('#ctx-remove-file')?.addEventListener('click', async () => {
+    menu.remove();
+    const confirmed = confirm(`Retirer "${file.fileName}" de la base de données ?\n\nLe fichier physique ne sera pas supprimé.`);
+    if (!confirmed) return;
+    try {
+      await window.api.removeFile(file.filePath);
+      log(`Fichier retiré de la base : ${file.fileName}`, { context: 'folder', state: 'deleted' });
+      if (currentFolderPath) await updateFolderContent(currentFolderPath);
+    } catch (error) {
+      log(`Erreur lors du retrait : ${error}`, { severity: 'error', context: 'folder' });
+    }
+  });
+
+  // Handler "Supprimer (corbeille)"
+  menu.querySelector('#ctx-delete-file')?.addEventListener('click', async () => {
+    menu.remove();
+    const result = await window.api.showMessageBox({
+      type: 'warning',
+      title: 'Supprimer le fichier',
+      message: `Êtes-vous sûr de vouloir supprimer "${file.fileName}" ?`,
+      detail: 'Cette action déplacera le fichier vers la corbeille. Vous pourrez le restaurer depuis la corbeille si nécessaire.',
+      buttons: ['Annuler', 'Déplacer vers la corbeille'],
+      defaultId: 0,
+      cancelId: 0,
+      noLink: true
+    });
+    if (result.response !== 1) return;
+    try {
+      await window.api.deleteFile(file.filePath);
+      log(`Fichier supprimé : ${file.fileName}`, { context: 'folder', state: 'deleted' });
+      if (currentFolderPath) await updateFolderContent(currentFolderPath);
+    } catch (error) {
+      log(`Erreur lors de la suppression : ${error}`, { severity: 'error', context: 'folder' });
+    }
+  });
+
   // Fermer le menu au clic ailleurs
   const closeMenu = () => {
     menu.remove();
@@ -391,23 +871,119 @@ function updateBreadcrumb(path: string) {
 }
 
 // Mise à jour du bandeau d'information de la base de données
-function updateDbInfoBanner() {
-  const dbName = document.getElementById('db-info-name');
+async function updateDbInfoBanner() {
+  const dbSystem = document.getElementById('db-info-system');
   const dbPath = document.getElementById('db-info-path');
 
-  if (!dbName || !dbPath) return;
+  if (!dbPath || !dbSystem) return;
 
   if (currentDbPath) {
-    const name = currentDbPath.split(/[\\\/]/).pop() || 'Base de données';
-    dbName.textContent = name;
     dbPath.textContent = currentDbPath;
-    dbPath.title = currentDbPath; // Tooltip pour voir le chemin complet
+    dbPath.title = currentDbPath;
+
+    // Récupérer le système depuis les metadata
+    try {
+      const systemName = await window.api.getDbMetadata('system_name');
+      const systemId = await window.api.getDbMetadata('system_id');
+      if (systemName && systemId) {
+        dbSystem.textContent = `${systemName} (${systemId})`;
+        dbSystem.title = `Système : ${systemName}\nID : ${systemId}`;
+        (dbSystem as HTMLElement).style.color = '';
+        (dbSystem as HTMLElement).style.fontStyle = '';
+      } else {
+        dbSystem.textContent = 'À définir';
+        dbSystem.title = 'Aucun système associé — sélection manuelle requise';
+        (dbSystem as HTMLElement).style.color = '#e67e22';
+        (dbSystem as HTMLElement).style.fontStyle = 'italic';
+        // Déclencher la modale de sélection manuelle (bloquante)
+        await openSystemSelectionModal();
+      }
+    } catch {
+      dbSystem.textContent = '';
+    }
   } else {
     // Vider les champs quand il n'y a pas de base de données
-    dbName.textContent = '';
+    dbSystem.textContent = '';
+    dbSystem.title = '';
     dbPath.textContent = '';
     dbPath.title = '';
   }
+}
+
+// Ouvre la modale de sélection système. Ne se ferme que sur "Valider" avec un système choisi.
+async function openSystemSelectionModal(): Promise<void> {
+  const modal = document.getElementById('system-selection-modal') as HTMLElement;
+  const dropdown = document.getElementById('system-selection-dropdown') as HTMLSelectElement;
+  const validateBtn = document.getElementById('system-selection-validate') as HTMLButtonElement;
+  if (!modal || !dropdown || !validateBtn) return;
+
+  // Importer dynamiquement le registre central
+  const { getSystemsGrouped } = await import('../config/systems.js');
+  const grouped = getSystemsGrouped();
+
+  // Construire la liste : <optgroup label="Manufacturer (type)"><option value="systemId">Fullname</option></optgroup>
+  dropdown.innerHTML = '';
+  // Manufacturer triés alphabétiquement
+  const sortedManufacturers = [...grouped.entries()].sort((a, b) => a[0].localeCompare(b[0]));
+  for (const [manufacturer, byType] of sortedManufacturers) {
+    const sortedTypes = [...byType.entries()].sort((a, b) => a[0].localeCompare(b[0]));
+    for (const [type, systems] of sortedTypes) {
+      const optgroup = document.createElement('optgroup');
+      optgroup.label = `${manufacturer} — ${type}`;
+      for (const sys of [...systems].sort((a, b) => a.fullname.localeCompare(b.fullname))) {
+        const opt = document.createElement('option');
+        opt.value = sys.systemId;
+        opt.textContent = sys.fullname;
+        optgroup.appendChild(opt);
+      }
+      dropdown.appendChild(optgroup);
+    }
+  }
+
+  return new Promise<void>((resolve) => {
+    validateBtn.disabled = true;
+    dropdown.value = '';
+
+    const onChange = () => {
+      validateBtn.disabled = !dropdown.value;
+    };
+    dropdown.addEventListener('change', onChange);
+
+    const onValidate = async () => {
+      if (!dropdown.value) return;
+      const systemId = dropdown.value;
+      const selectedOpt = dropdown.options[dropdown.selectedIndex];
+      const fullname = selectedOpt.textContent || systemId;
+
+      try {
+        await window.api.setDbMetadata('system_id', systemId);
+        await window.api.setDbMetadata('system_name', fullname);
+        log(`Système défini manuellement : ${fullname} (${systemId})`, { context: 'dat', state: 'success' });
+      } catch (error: any) {
+        log(`Erreur sauvegarde système : ${error?.message || error}`, { severity: 'error', context: 'dat' });
+      }
+
+      // Fermer la modale et rafraîchir le bandeau
+      modal.style.display = 'none';
+      dropdown.removeEventListener('change', onChange);
+      validateBtn.removeEventListener('click', onValidate);
+      await updateDbInfoBanner();
+      resolve();
+    };
+    validateBtn.addEventListener('click', onValidate);
+
+    // Bloquer la touche Escape
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') {
+        e.preventDefault();
+        e.stopPropagation();
+      }
+    };
+    modal.addEventListener('keydown', onKeyDown, true);
+
+    modal.style.display = 'flex';
+    dropdown.focus();
+  });
 }
 
 // Fonction centralisée pour mettre à jour l'état des boutons workflow et des menus
@@ -415,7 +991,6 @@ function updateWorkflowButtons() {
   const elements = {
     datSelect: document.getElementById('dat-select') as HTMLButtonElement,
     dbCreate: document.getElementById('db-create') as HTMLButtonElement,
-    datLoad: document.getElementById('dat-load') as HTMLButtonElement,
     romAddFolder: document.getElementById('rom-add-folder') as HTMLButtonElement,
     romAddFolderSidebar: document.getElementById('rom-add-folder-sidebar') as HTMLButtonElement,
     datQuickLoad: document.getElementById('dat-quick-load') as HTMLButtonElement,
@@ -438,11 +1013,6 @@ function updateWorkflowButtons() {
   // Bouton "Créer base de données" : disponible si DAT sélectionné mais pas de DB
   if (elements.dbCreate) {
     elements.dbCreate.disabled = !(currentDatPath && !currentDbPath);
-  }
-
-  // Bouton "Charger DAT" : disponible si DAT et DB existent mais DAT pas encore chargé
-  if (elements.datLoad) {
-    elements.datLoad.disabled = !(currentDatPath && currentDbPath && !currentDatInfo);
   }
 
   // Boutons "Ajouter dossier ROMs" : disponibles si currentDatPath existe ET currentDbPath existe ET DAT chargé dans la base
@@ -486,6 +1056,7 @@ function resetInterface() {
   currentRootFolder = null; // Réinitialiser le dossier racine
   breadcrumbPath = [];
   matchingComplete = false;
+  targetFolderPath = null;
 
   // Masquer le bandeau d'info DB
   updateDbInfoBanner();
@@ -493,7 +1064,6 @@ function resetInterface() {
   const elements = {
     datSelect: document.getElementById('dat-select') as HTMLButtonElement,
     dbCreate: document.getElementById('db-create') as HTMLButtonElement,
-    datLoad: document.getElementById('dat-load') as HTMLButtonElement,
     romAddFolder: document.getElementById('rom-add-folder') as HTMLButtonElement,
     romAddFolderSidebar: document.getElementById('rom-add-folder-sidebar') as HTMLButtonElement,
     datQuickLoad: document.getElementById('dat-quick-load') as HTMLButtonElement,
@@ -503,7 +1073,6 @@ function resetInterface() {
 
   if (elements.datSelect) elements.datSelect.disabled = false;
   if (elements.dbCreate) elements.dbCreate.disabled = true;
-  if (elements.datLoad) elements.datLoad.disabled = true;
   if (elements.romAddFolder) elements.romAddFolder.disabled = true;
   if (elements.romAddFolderSidebar) elements.romAddFolderSidebar.disabled = true;
   if (elements.datQuickLoad) elements.datQuickLoad.disabled = false;
@@ -586,6 +1155,13 @@ function updateLeftSidebar() {
         }
       });
 
+      // Menu contextuel sur le DAT
+      div.addEventListener('contextmenu', (e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        showDatContextMenu(e);
+      });
+
       datList.appendChild(div);
     }
   }
@@ -594,15 +1170,20 @@ function updateLeftSidebar() {
     folderList.innerHTML = '';
     loadedFolders.forEach(folder => {
       const div = document.createElement('div');
-      div.className = 'sidebar-item';
+      const isTarget = targetFolderPath !== null && folder.path === targetFolderPath;
+      div.className = 'sidebar-item' + (isTarget ? ' target-folder' : '');
       div.dataset.type = 'folder';
       div.dataset.path = folder.path;
 
-      const name = folder.path.split(/[\\\/]/).pop() || folder.path;
+      const parts = folder.path.replace(/\\/g, '/').split('/');
+      const name = parts.pop() || folder.path;
+      const parentPath = parts.join('/');
+      const badge = isTarget ? '<span class="target-folder-badge">CIBLE</span>' : '';
       div.innerHTML = `
         <div class="folder-header" style="display: flex; justify-content: space-between; align-items: center; gap: 8px;">
           <div style="flex: 1; min-width: 0;">
-            <div style="font-weight: 600; margin-bottom: 5px;">${name}</div>
+            <div style="font-size: 11px; color: #7f8c8d; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;" title="${folder.path}">${parentPath}/</div>
+            <div style="font-weight: 600; margin-bottom: 2px;">${name}${badge}</div>
             <div style="font-size: 11px; color: #7f8c8d;">${folder.fileCount} fichiers</div>
           </div>
           <button class="folder-remove-btn" title="Retirer le dossier de la base de données">×</button>
@@ -613,6 +1194,9 @@ function updateLeftSidebar() {
       const removeBtn = div.querySelector('.folder-remove-btn') as HTMLButtonElement;
       removeBtn?.addEventListener('click', async (e) => {
         e.stopPropagation(); // Empêcher la sélection du sidebar-item
+
+        // Ne pas permettre la suppression du dossier cible
+        if (targetFolderPath !== null && folder.path === targetFolderPath) return;
 
         const confirmed = confirm(`Êtes-vous sûr de vouloir retirer "${folder.path}" de la base de données ?`);
         if (confirmed) {
@@ -737,6 +1321,27 @@ async function updateCenterContent(type: 'dat' | 'folder', path: string) {
         // Matching pas encore effectué, pas de statut
       }
 
+      // Charger les jeux disparus s'il y a eu une mise à jour du DAT
+      const hasChangeStatus = games.some((g: GameInfo) => g.change_status);
+      if (hasChangeStatus) {
+        try {
+          const disappeared = await window.api.getDisappearedGames();
+          for (const dg of disappeared) {
+            games.push({
+              id: -(dg.id || 0), // ID négatif pour éviter les conflits
+              name: dg.name,
+              description: dg.description || undefined,
+              category: dg.category || undefined,
+              is_selected: dg.is_selected ?? 0,
+              change_status: 'disappeared',
+              is_disappeared: true
+            });
+          }
+        } catch {
+          // Pas de jeux disparus ou table inexistante
+        }
+      }
+
       // Sauvegarder les jeux et recalculer les compteurs (sans effacer les filtres actifs)
       allGames = games;
       categoryCounts = extractCategoryCounts(games);
@@ -749,11 +1354,27 @@ async function updateCenterContent(type: 'dat' | 'folder', path: string) {
       for (const f of activeMatchFilters) {
         if (!matchStatusCounts.has(f)) activeMatchFilters.delete(f);
       }
+      // Nettoyer les filtres d'évolution DAT (invalides si pas de change_status)
+      const hasChangeData = games.some((g: GameInfo) => g.change_status);
+      if (!hasChangeData) {
+        activeChangeFilters.clear();
+      } else {
+        const validStatuses = new Set(games.map((g: GameInfo) => g.change_status).filter(Boolean) as string[]);
+        for (const f of activeChangeFilters) {
+          if (!validStatuses.has(f)) activeChangeFilters.delete(f);
+        }
+      }
+      // Nettoyer les filtres de sélection
+      for (const f of activeSelectionFilters) {
+        if (f === 'selected' && !games.some((g: GameInfo) => g.is_selected !== 0 && !g.is_disappeared)) activeSelectionFilters.delete(f);
+        if (f === 'unselected' && !games.some((g: GameInfo) => g.is_selected === 0 && !g.is_disappeared)) activeSelectionFilters.delete(f);
+      }
 
       // Générer les filtres (en restaurant l'état actif)
       generateCategoryFilters();
       generateMatchStatusFilters();
       generateSelectionFilters();
+      generateChangeStatusFilters();
 
       // Restaurer la valeur du select de groupement
       const groupBySelect = document.getElementById('group-by') as HTMLSelectElement;
@@ -767,6 +1388,7 @@ async function updateCenterContent(type: 'dat' | 'folder', path: string) {
       if (groupFilterBar) groupFilterBar.style.display = 'block';
       const selectAllBar = document.getElementById('select-all-bar');
       if (selectAllBar) selectAllBar.style.display = 'flex';
+      updateGroupFilterSummary();
 
       // Masquer les contrôles de vue et le breadcrumb
       const viewControls = document.getElementById('view-controls');
@@ -788,9 +1410,11 @@ async function updateCenterContent(type: 'dat' | 'folder', path: string) {
       currentFolderPath = path;
       await updateFolderContent(path);
 
-      // Masquer la barre de groupement/filtrage et la barre de sélection pour les dossiers
+      // Masquer la barre de groupement/filtrage, les filtres actifs et la barre de sélection pour les dossiers
       const groupFilterBar = document.getElementById('group-filter-bar');
       if (groupFilterBar) groupFilterBar.style.display = 'none';
+      const activeFiltersBar = document.getElementById('active-filters-bar');
+      if (activeFiltersBar) activeFiltersBar.classList.remove('visible');
       const selectAllBar = document.getElementById('select-all-bar');
       if (selectAllBar) selectAllBar.style.display = 'none';
 
@@ -876,23 +1500,23 @@ async function updateFolderContent(path: string) {
       content.folders.forEach((folder: any) => {
         const item = document.createElement('div');
         item.className = 'list-item folder';
+        // Définir dataset.path AVANT le rendu pour que showContextMenu puisse le lire
+        item.dataset.path = folder.path;
         item.innerHTML = `
           <div>
             <div class="list-item-name">📁 ${folder.name}</div>
             <div class="list-item-info">${folder.fileCount} fichier${folder.fileCount > 1 ? 's' : ''}</div>
           </div>
         `;
-        
+
         item.addEventListener('click', () => {
           updateFolderContent(folder.path);
         });
-        
+
         item.addEventListener('contextmenu', (e) => {
-          e.preventDefault();
-          showContextMenu(e, item);
-          (item as any).dataset = { path: folder.path };
+          showContextMenu(e, item, { isSubfolder: true });
         });
-        
+
         gameList.appendChild(item);
       });
     }
@@ -987,32 +1611,57 @@ function displayGames(games: GameInfo[]) {
     }*/
     let icon = getIconGameCategory(game.category);
 
-    const isChecked = game.is_selected !== 0;
+    const isDisappeared = !!game.is_disappeared;
+    const isChecked = !isDisappeared && game.is_selected !== 0;
 
     item.innerHTML = `
-      <input type="checkbox" class="game-checkbox" data-game-id="${game.id}" ${isChecked ? 'checked' : ''}>
+      <input type="checkbox" class="game-checkbox" data-game-id="${game.id}" ${isChecked ? 'checked' : ''} ${isDisappeared ? 'disabled' : ''}>
       <div style="flex: 1; min-width: 0;">
-        <div class="list-item-name">${icon} ${game.name}</div>
+        <div class="list-item-name">${icon} ${game.name}${getChangeStatusBadgeHtml(game)}</div>
         ${game.description ? `<div class="list-item-info">${game.description}</div>` : ''}
         ${game.category ? `<div class="list-item-info"><strong>Categorie :</strong> ${game.category}</div>` : ''}
       </div>
-      ${getMatchStatusBadgeHtml(game)}
+      ${isDisappeared ? '' : getMatchStatusBadgeHtml(game)}
     `;
 
-    if (!isChecked) item.classList.add('deselected');
+    if (isDisappeared) {
+      item.classList.add('disappeared');
+    } else if (!isChecked) {
+      item.classList.add('deselected');
+    }
 
-    // Checkbox click handler
-    const checkbox = item.querySelector('.game-checkbox') as HTMLInputElement;
-    checkbox.addEventListener('click', (e) => {
-      e.stopPropagation();
-      const selected = checkbox.checked;
-      game.is_selected = selected ? 1 : 0;
-      item.classList.toggle('deselected', !selected);
-      window.api.updateGameSelection(game.id, selected);
-      updateSelectAllCheckbox();
-    });
+    // Checkbox click handler (pas pour les jeux disparus)
+    if (!isDisappeared) {
+      const checkbox = item.querySelector('.game-checkbox') as HTMLInputElement;
+      checkbox.addEventListener('click', (e) => {
+        e.stopPropagation();
+        const selected = checkbox.checked;
+        game.is_selected = selected ? 1 : 0;
+        item.classList.toggle('deselected', !selected);
+        window.api.updateGameSelection(game.id, selected);
+        updateSelectAllCheckbox();
+        generateSelectionFilters();
+      });
+    }
 
-    item.addEventListener('click', () => selectGame(item, game));
+    // Clic sur le badge "MODIFIÉ" → afficher le détail des changements
+    const changeBadge = item.querySelector('.change-status-badge.status-modified') as HTMLElement;
+    if (changeBadge) {
+      changeBadge.style.cursor = 'pointer';
+      changeBadge.addEventListener('click', (e) => {
+        e.stopPropagation();
+        showGameDiffDetail(game.name);
+      });
+    }
+
+    if (!isDisappeared) {
+      item.addEventListener('click', () => selectGame(item, game));
+      item.addEventListener('contextmenu', (e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        showGameContextMenu(e, game);
+      });
+    }
     gameList.appendChild(item);
   });
 
@@ -1173,6 +1822,19 @@ function getMatchStatusBadgeHtml(game: GameInfo): string {
   return `<span class="match-status-badge status-${status}">${icon} ${label}</span>`;
 }
 
+function getChangeStatusBadgeHtml(game: GameInfo): string {
+  if (!game.change_status || game.change_status === 'unchanged') return '';
+  const labels: Record<string, string> = { 'new': 'NOUVEAU', 'modified': 'MODIFIÉ', 'disappeared': 'DISPARU' };
+  const label = labels[game.change_status] || '';
+  if (!label) return '';
+  let html = `<span class="change-status-badge status-${game.change_status}" data-game-name="${game.name.replace(/"/g, '&quot;')}">${label}</span>`;
+  // Pour les jeux disparus, afficher l'ancien statut de sélection
+  if (game.is_disappeared && game.is_selected) {
+    html += '<span class="was-selected-badge">ÉTAIT SÉLECTIONNÉ</span>';
+  }
+  return html;
+}
+
 // Extraction des compteurs par statut de matching
 function extractMatchStatusCounts(games: GameInfo[]): Map<string, number> {
   const counts = new Map<string, number>();
@@ -1216,6 +1878,34 @@ function generateSelectionFilters() {
   });
 }
 
+// Génération du dropdown de filtrage par évolution DAT
+function generateChangeStatusFilters() {
+  const hasAnyChangeStatus = allGames.some(g => g.change_status);
+  if (!hasAnyChangeStatus) {
+    // Pas de données d'évolution, masquer le filtre
+    const container = document.getElementById('change-status-filters-container');
+    if (container) container.innerHTML = '';
+    return;
+  }
+
+  const newCount = allGames.filter(g => g.change_status === 'new').length;
+  const modifiedCount = allGames.filter(g => g.change_status === 'modified').length;
+  const unchangedCount = allGames.filter(g => g.change_status === 'unchanged').length;
+  const disappearedCount = allGames.filter(g => g.change_status === 'disappeared').length;
+
+  const items = [
+    { key: 'new', displayName: '🆕 Nouveau', count: newCount },
+    { key: 'modified', displayName: '✏️ Modifié', count: modifiedCount },
+    { key: 'unchanged', displayName: '⏸️ Inchangé', count: unchangedCount },
+    { key: 'disappeared', displayName: '❌ Disparu', count: disappearedCount }
+  ];
+
+  createFilterDropdown('change-status-filters-container', 'Évolution DAT', items, activeChangeFilters, () => {
+    applyFiltersAndGrouping();
+    updateGroupFilterSummary();
+  });
+}
+
 // Récupère le statut effectif d'un jeu (pour le filtrage)
 function getGameMatchStatus(game: GameInfo): string {
   return game.match_status || 'unknown';
@@ -1250,8 +1940,18 @@ function applyFiltersAndGrouping() {
     });
   }
 
+  // Appliquer les filtres d'évolution DAT
+  // Les jeux disparus sont masqués par défaut, visibles uniquement si le filtre est actif
+  if (activeChangeFilters.size > 0) {
+    filteredGames = filteredGames.filter(game => {
+      return activeChangeFilters.has(game.change_status || '');
+    });
+  } else {
+    filteredGames = filteredGames.filter(game => game.change_status !== 'disappeared');
+  }
+
   // Mettre à jour les compteurs globaux
-  updateGlobalCounters(filteredGames.length, allGames.length);
+  updateGlobalCounters(filteredGames.length, allGames.filter(g => !g.is_disappeared).length);
 
   // Afficher les jeux avec ou sans groupement
   if (currentGroupBy === 'none') {
@@ -1301,6 +2001,8 @@ function displayGroupedGames(games: GameInfo[]) {
       groupKey = getGameMatchStatus(game);
     } else if (currentGroupBy === 'selection') {
       groupKey = game.is_selected !== 0 ? 'selected' : 'unselected';
+    } else if (currentGroupBy === 'change-status') {
+      groupKey = game.change_status || 'unchanged';
     } else {
       groupKey = 'Tous';
     }
@@ -1324,6 +2026,10 @@ function displayGroupedGames(games: GameInfo[]) {
       const selectionOrder = ['selected', 'unselected'];
       return selectionOrder.indexOf(a[0]) - selectionOrder.indexOf(b[0]);
     }
+    if (currentGroupBy === 'change-status') {
+      const changeOrder = ['new', 'modified', 'unchanged', 'disappeared'];
+      return changeOrder.indexOf(a[0]) - changeOrder.indexOf(b[0]);
+    }
     return a[0].localeCompare(b[0]);
   });
 
@@ -1331,10 +2037,13 @@ function displayGroupedGames(games: GameInfo[]) {
   sortedGroups.forEach(([groupKey, groupGames]) => {
     // Nom d'affichage du groupe
     const selectionLabelsMap: Record<string, string> = { 'selected': '✅ Sélectionné', 'unselected': '⬜ Non sélectionné' };
+    const changeStatusLabelsMap: Record<string, string> = { 'new': '🆕 Nouveau', 'modified': '✏️ Modifié', 'unchanged': '⏸️ Inchangé', 'disappeared': '❌ Disparu' };
     const groupName = currentGroupBy === 'match-status'
       ? `${matchStatusIcons[groupKey]} ${matchStatusLabels[groupKey]}`
       : currentGroupBy === 'selection'
       ? selectionLabelsMap[groupKey]
+      : currentGroupBy === 'change-status'
+      ? (changeStatusLabelsMap[groupKey] || groupKey)
       : groupKey;
     // Trier les jeux par nom dans chaque groupe
     groupGames.sort((a, b) => a.name.localeCompare(b.name));
@@ -1345,34 +2054,44 @@ function displayGroupedGames(games: GameInfo[]) {
     const headerDiv = document.createElement('div');
     headerDiv.className = 'game-group-header';
 
-    const groupSelectedCount = groupGames.filter(g => g.is_selected !== 0).length;
-    const groupAllSelected = groupSelectedCount === groupGames.length;
+    const selectableGames = groupGames.filter(g => !g.is_disappeared);
+    const groupSelectedCount = selectableGames.filter(g => g.is_selected !== 0).length;
+    const groupAllSelected = selectableGames.length > 0 && groupSelectedCount === selectableGames.length;
     const groupSomeSelected = groupSelectedCount > 0 && !groupAllSelected;
 
     headerDiv.innerHTML = `
+      <span class="group-chevron">▼</span>
       <input type="checkbox" class="group-checkbox" ${groupAllSelected ? 'checked' : ''}>
       <span class="group-header-label">${groupName}</span>
-      <!--span class="count group-count">Sélectionné${groupSelectedCount > 1 ? 's' : ''} : ${groupSelectedCount} ✔️ / ${groupGames.length}</span-->
       <span class="count group-count">✔️ ${groupSelectedCount} / ${groupGames.length}</span>
     `;
 
     const groupCheckbox = headerDiv.querySelector('.group-checkbox') as HTMLInputElement;
     if (groupSomeSelected) groupCheckbox.indeterminate = true;
 
-    // Fonction commune pour toggler la sélection du groupe
+    // Clic sur le chevron → replier/déplier le groupe
+    const chevron = headerDiv.querySelector('.group-chevron') as HTMLElement;
+    chevron.addEventListener('click', (e) => {
+      e.stopPropagation();
+      groupDiv.classList.toggle('collapsed');
+    });
+
+    // Fonction commune pour toggler la sélection du groupe (exclut les jeux disparus)
     async function toggleGroupSelection(forceState?: boolean) {
       const isSelected = forceState !== undefined ? forceState : !groupCheckbox.checked;
       groupCheckbox.checked = isSelected;
       groupCheckbox.indeterminate = false;
 
-      const gameIds = groupGames.map(g => g.id);
-      await window.api.updateGameSelectionBulk(gameIds, isSelected);
-      groupGames.forEach(g => g.is_selected = isSelected ? 1 : 0);
+      const gameIds = selectableGames.map(g => g.id);
+      if (gameIds.length > 0) {
+        await window.api.updateGameSelectionBulk(gameIds, isSelected);
+      }
+      selectableGames.forEach(g => g.is_selected = isSelected ? 1 : 0);
 
-      // Mettre à jour les checkboxes des jeux du groupe
+      // Mettre à jour les checkboxes des jeux du groupe (hors disabled)
       const groupContent = groupDiv.querySelector('.game-group-content');
       if (groupContent) {
-        const checkboxes = groupContent.querySelectorAll('.game-checkbox') as NodeListOf<HTMLInputElement>;
+        const checkboxes = groupContent.querySelectorAll('.game-checkbox:not(:disabled)') as NodeListOf<HTMLInputElement>;
         checkboxes.forEach(cb => {
           cb.checked = isSelected;
           const listItem = cb.closest('.list-item');
@@ -1383,11 +2102,12 @@ function displayGroupedGames(games: GameInfo[]) {
       // Mettre à jour le compteur du groupe
       const countSpan = headerDiv.querySelector('.group-count');
       if (countSpan) {
-        countSpan.textContent = `✔️ ${isSelected ? groupGames.length : 0} / ${groupGames.length}`;
+        countSpan.textContent = `✔️ ${isSelected ? selectableGames.length : 0} / ${groupGames.length}`;
       }
 
       updateSelectAllCheckbox();
       updateSelectionCounter();
+      generateSelectionFilters();
     }
 
     groupCheckbox.addEventListener('click', async (e) => {
@@ -1395,10 +2115,11 @@ function displayGroupedGames(games: GameInfo[]) {
       await toggleGroupSelection(groupCheckbox.checked);
     });
 
-    // Clic sur le titre du groupe → toggle la sélection
-    headerDiv.addEventListener('click', async (e) => {
-      if ((e.target as HTMLElement).tagName === 'INPUT') return; // déjà géré par le checkbox
-      await toggleGroupSelection();
+    // Clic sur l'en-tête du groupe → plier/déplier (sauf checkbox)
+    headerDiv.addEventListener('click', (e) => {
+      const target = e.target as HTMLElement;
+      if (target.tagName === 'INPUT') return; // déjà géré par le checkbox
+      groupDiv.classList.toggle('collapsed');
     });
 
     groupDiv.appendChild(headerDiv);
@@ -1413,32 +2134,57 @@ function displayGroupedGames(games: GameInfo[]) {
 
       const icon = getIconGameCategory(game.category);
 
-      const isChecked = game.is_selected !== 0;
+      const isDisappeared = !!game.is_disappeared;
+      const isChecked = !isDisappeared && game.is_selected !== 0;
 
       item.innerHTML = `
-        <input type="checkbox" class="game-checkbox" data-game-id="${game.id}" ${isChecked ? 'checked' : ''}>
+        <input type="checkbox" class="game-checkbox" data-game-id="${game.id}" ${isChecked ? 'checked' : ''} ${isDisappeared ? 'disabled' : ''}>
         <div style="flex: 1; min-width: 0;">
-          <div class="list-item-name">${icon} ${game.name}</div>
+          <div class="list-item-name">${icon} ${game.name}${getChangeStatusBadgeHtml(game)}</div>
           ${game.description ? `<div class="list-item-info">${game.description}</div>` : ''}
           ${game.category ? `<div class="list-item-info"><strong>Categorie :</strong> ${game.category}</div>` : ''}
         </div>
-        ${getMatchStatusBadgeHtml(game)}
+        ${isDisappeared ? '' : getMatchStatusBadgeHtml(game)}
       `;
 
-      if (!isChecked) item.classList.add('deselected');
+      if (isDisappeared) {
+        item.classList.add('disappeared');
+      } else if (!isChecked) {
+        item.classList.add('deselected');
+      }
 
-      const checkbox = item.querySelector('.game-checkbox') as HTMLInputElement;
-      checkbox.addEventListener('click', (e) => {
-        e.stopPropagation();
-        const selected = checkbox.checked;
-        game.is_selected = selected ? 1 : 0;
-        item.classList.toggle('deselected', !selected);
-        window.api.updateGameSelection(game.id, selected);
-        updateGroupCheckboxes();
-        updateSelectAllCheckbox();
-      });
+      if (!isDisappeared) {
+        const checkbox = item.querySelector('.game-checkbox') as HTMLInputElement;
+        checkbox.addEventListener('click', (e) => {
+          e.stopPropagation();
+          const selected = checkbox.checked;
+          game.is_selected = selected ? 1 : 0;
+          item.classList.toggle('deselected', !selected);
+          window.api.updateGameSelection(game.id, selected);
+          updateGroupCheckboxes();
+          updateSelectAllCheckbox();
+          generateSelectionFilters();
+        });
+      }
 
-      item.addEventListener('click', () => selectGame(item, game));
+      // Clic sur le badge "MODIFIÉ" → détail des changements
+      const changeBadge = item.querySelector('.change-status-badge.status-modified') as HTMLElement;
+      if (changeBadge) {
+        changeBadge.style.cursor = 'pointer';
+        changeBadge.addEventListener('click', (e) => {
+          e.stopPropagation();
+          showGameDiffDetail(game.name);
+        });
+      }
+
+      if (!isDisappeared) {
+        item.addEventListener('click', () => selectGame(item, game));
+        item.addEventListener('contextmenu', (e) => {
+          e.preventDefault();
+          e.stopPropagation();
+          showGameContextMenu(e, game);
+        });
+      }
       contentDiv.appendChild(item);
     });
 
@@ -1469,6 +2215,12 @@ function getDisplayedGames(): GameInfo[] {
       return false;
     });
   }
+  // Appliquer les filtres d'évolution DAT
+  if (activeChangeFilters.size > 0) {
+    result = result.filter(game => activeChangeFilters.has(game.change_status || ''));
+  } else {
+    result = result.filter(game => game.change_status !== 'disappeared');
+  }
   return result;
 }
 
@@ -1477,10 +2229,12 @@ function updateSelectAllCheckbox() {
   const selectAllCheckbox = document.getElementById('select-all-checkbox') as HTMLInputElement;
   if (!selectAllCheckbox) return;
 
-  const checkboxes = document.querySelectorAll('.game-checkbox') as NodeListOf<HTMLInputElement>;
+  const allCheckboxes = document.querySelectorAll('.game-checkbox') as NodeListOf<HTMLInputElement>;
+  // Exclure les checkboxes désactivées (jeux disparus)
+  const checkboxes = Array.from(allCheckboxes).filter(cb => !cb.disabled);
   if (checkboxes.length === 0) return;
 
-  const checkedCount = Array.from(checkboxes).filter(cb => cb.checked).length;
+  const checkedCount = checkboxes.filter(cb => cb.checked).length;
 
   if (checkedCount === 0) {
     selectAllCheckbox.checked = false;
@@ -1501,9 +2255,9 @@ function updateSelectionCounter() {
   const counterSpan = document.getElementById('selection-counter');
   if (!counterSpan) return;
 
-  const selectedCount = allGames.filter(g => g.is_selected !== 0).length;
-  //counterSpan.textContent = `Sélectionné${selectedCount > 1 ? 's' : ''} : ${selectedCount} ✔️ / ${allGames.length}`;
-  counterSpan.textContent = `✔️ ${selectedCount} / ${allGames.length}`;
+  const realGames = allGames.filter(g => !g.is_disappeared);
+  const selectedCount = realGames.filter(g => g.is_selected !== 0).length;
+  counterSpan.textContent = `✔️ ${selectedCount} / ${realGames.length}`;
 }
 
 // Mise à jour des checkboxes de groupes
@@ -1513,13 +2267,14 @@ function updateGroupCheckboxes() {
     const groupCheckbox = groupDiv.querySelector('.group-checkbox') as HTMLInputElement;
     if (!groupCheckbox) return;
 
-    const gameCheckboxes = groupDiv.querySelectorAll('.game-checkbox') as NodeListOf<HTMLInputElement>;
-    const checkedCount = Array.from(gameCheckboxes).filter(cb => cb.checked).length;
+    const allGameCheckboxes = groupDiv.querySelectorAll('.game-checkbox') as NodeListOf<HTMLInputElement>;
+    const selectableCheckboxes = Array.from(allGameCheckboxes).filter(cb => !cb.disabled);
+    const checkedCount = selectableCheckboxes.filter(cb => cb.checked).length;
 
-    if (checkedCount === 0) {
+    if (selectableCheckboxes.length === 0 || checkedCount === 0) {
       groupCheckbox.checked = false;
       groupCheckbox.indeterminate = false;
-    } else if (checkedCount === gameCheckboxes.length) {
+    } else if (checkedCount === selectableCheckboxes.length) {
       groupCheckbox.checked = true;
       groupCheckbox.indeterminate = false;
     } else {
@@ -1530,8 +2285,7 @@ function updateGroupCheckboxes() {
     // Mettre à jour le compteur du groupe
     const countSpan = groupDiv.querySelector('.group-count');
     if (countSpan) {
-      //countSpan.textContent = `Sélectionné${checkedCount > 1 ? 's' : ''} :✔️  ${checkedCount} / ${gameCheckboxes.length} `;
-      countSpan.textContent = `✔️ ${checkedCount} / ${gameCheckboxes.length} `;
+      countSpan.textContent = `✔️ ${checkedCount} / ${allGameCheckboxes.length} `;
     }
   });
 }
@@ -1626,6 +2380,7 @@ function displayFiles(files: any[], matchInfoMap: Record<number, any> = {}) {
     `;
 
     item.addEventListener('click', () => selectFile(item, file, matchInfo));
+    item.addEventListener('contextmenu', (e) => showFileContextMenu(e, file));
     gameList.appendChild(item);
   });
 }
@@ -2089,13 +2844,18 @@ async function runMatching() {
     matchingComplete = true;
     updateWorkflowButtons();
     log(`Matching terminé avec succès !`, { context: 'match', state: 'success' });
+
+    // Rafraîchir le volet central si un contenu est affiché
+    if (selectedElement) {
+      await updateCenterContent(selectedElement.type, selectedElement.value);
+    }
   } catch (error) {
     log(`Erreur lors du matching : ${error}`, { severity: 'error', context: 'match' });
     alert('❌ Erreur lors du matching. Consultez les logs pour plus de détails.');
   } finally {
     // Réactiver le bouton
     btn.disabled = false;
-    btn.textContent = '🎯 5. Matcher les ROMs';
+    btn.textContent = '🎯 4. Matcher les ROMs';
   }
 }
 
@@ -2196,12 +2956,17 @@ async function runConsolidation() {
 
     log('Consolidation terminée !', { context: 'match', state: 'success' });
     removeListener();
+
+    // Rafraîchissement automatique du dossier cible + rematching
+    if (result.stats.gamesConsolidated > 0) {
+      await refreshTargetAndMatching();
+    }
   } catch (error) {
     log(`Erreur lors de la consolidation : ${error}`, { severity: 'error', context: 'match' });
     alert('❌ Erreur lors de la consolidation. Consultez les logs.');
   } finally {
     btn.disabled = false;
-    btn.textContent = '🧹 6. Consolider';
+    btn.textContent = '🧹 5. Consolider';
   }
 }
 
@@ -2304,6 +3069,12 @@ async function openExistingDatabase() {
       if (result.folders && result.folders.length > 0) {
         loadedFolders = result.folders;
         log(`Dossiers de ROMs trouvés : ${result.folders.length}`, { context: 'folder', state: 'count' });
+      }
+
+      // Restaurer le dossier cible depuis la métadonnée de la base
+      const savedTargetFolder = await window.api.getDbMetadata('target_folder');
+      if (savedTargetFolder) {
+        targetFolderPath = savedTargetFolder;
       }
 
       // Mettre à jour l'état des boutons workflow en fonction de l'état réel de la base de données
@@ -2643,7 +3414,6 @@ async function handleDeleteFolder(folderPath: string): Promise<void> {
 // Récupération des éléments du DOM
 const datSelectButton = document.getElementById('dat-select') as HTMLButtonElement;
 const dbCreateButton = document.getElementById('db-create') as HTMLButtonElement;
-const datLoadButton = document.getElementById('dat-load') as HTMLButtonElement;
 const romAddFolderButton = document.getElementById('rom-add-folder') as HTMLButtonElement;
 const romAddFolderButtonSidebar = document.getElementById('rom-add-folder-sidebar') as HTMLButtonElement;
 const datQuickLoadButton = document.getElementById('dat-quick-load') as HTMLButtonElement;
@@ -2673,7 +3443,7 @@ datSelectButton?.addEventListener('click', async () => {
   }
 });
 
-// Étape 2 : Création de la base de données
+// Étape 2 : Création de la base de données + chargement des données DAT
 dbCreateButton?.addEventListener('click', async () => {
   if (!currentDatPath) {
     log('Aucun fichier DAT sélectionné !', { severity: 'warning', context: 'database' });
@@ -2685,15 +3455,63 @@ dbCreateButton?.addEventListener('click', async () => {
     dbCreateButton.disabled = true;
     log('Création de la base de données...', { context: 'database', state: 'question' });
 
-    const resultCreateDb = await window.api.createDatabase(currentDatPath, true);
-    if (resultCreateDb) {
-      log(`Base de données créée : ${resultCreateDb.dbPath}`, { context: 'database', state: 'success' });
-      currentDbPath = resultCreateDb.dbPath;
+    const result = await window.api.createDatabase(currentDatPath, true);
+    if (result) {
+      log(`Base de données créée : ${result.dbPath}`, { context: 'database', state: 'success' });
+      log(`Jeux importés : ${result.gamesCount}`, { context: 'game', state: 'count' });
+      log(`ROMs référencées : ${result.romsCount}`, { context: 'romfile', state: 'count' });
+
+      currentDbPath = result.dbPath;
+      currentDatInfo = result.datInfo || null;
 
       // Mettre à jour le bandeau d'info DB
       updateDbInfoBanner();
-
+      updateLeftSidebar();
       updateWorkflowButtons();
+
+      // Afficher le rapport initial
+      if (result.gamesCount > 0) {
+        await displayInitialReport(result.gamesCount, result.romsCount);
+        log('📊 Rapport de matching initialisé', { context: 'match', state: 'waiting' });
+      }
+
+      // Auto-ajouter le dossier de ROMs validées s'il est configuré
+      // (avec sous-dossier système si l'option multi-système est activée)
+      const settings = await window.api.getSettings();
+      if (settings.validatedRomsFolder) {
+        const effectiveFolder = await window.api.getEffectiveValidatedFolder();
+        targetFolderPath = effectiveFolder;
+        await window.api.setDbMetadata('target_folder', effectiveFolder);
+        try {
+          log(`Vérification du dossier cible : ${effectiveFolder}`, { context: 'folder', state: 'loading' });
+
+          const progressHandler = (data: any) => {
+            if (data.fileName) {
+              const icon = data.isArchive ? '📦' : '💾';
+              log(`${icon} ${data.fileName}`, { context: 'romfile', state: 'loading' });
+            }
+          };
+          window.api.onScanProgress(progressHandler);
+
+          const stats = await window.api.addRomsFolder(effectiveFolder);
+
+          if (stats.length > 0) {
+            log(`Dossier cible ajouté : ${stats.length} fichiers trouvés`, { context: 'folder', state: 'success' });
+          } else {
+            log(`Dossier cible ajouté (vide)`, { context: 'folder', state: 'success' });
+          }
+
+          // Rafraîchir la liste des dossiers
+          const rootFolders = await window.api.getRootFolders();
+          loadedFolders = rootFolders;
+          updateLeftSidebar();
+          updateWorkflowButtons();
+        } catch (folderError) {
+          log(`Impossible d'ajouter le dossier cible : ${folderError instanceof Error ? folderError.message : String(folderError)}`, { severity: 'warning', context: 'folder' });
+        }
+      }
+
+      log('Prêt pour ajouter des dossiers de ROMs !', { context: 'folder', state: 'waiting' });
     } else {
       log('Création annulée.', { context: 'database', state: 'cancel' });
       datQuickLoadButton.disabled = false;
@@ -2701,40 +3519,6 @@ dbCreateButton?.addEventListener('click', async () => {
     }
   } catch (error) {
     log(`Erreur : ${error instanceof Error ? error.message : String(error)}`, { severity: 'error', context: 'database' });
-  }
-});
-
-// Étape 3 : Chargement des données
-datLoadButton?.addEventListener('click', async () => {
-  if (!currentDatPath || !currentDbPath) {
-    log('Aucun fichier DAT/XML ou base de données sélectionnés !', { severity: 'warning', context: 'dat' });
-    return;
-  }
-
-  try {
-    datQuickLoadButton.disabled = true;
-    datLoadButton.disabled = true;
-    log('Chargement des données...', { context: 'dat', state: 'loading' });
-
-    const resultLoadDatFile = await window.api.loadDatFile(currentDatPath);
-
-    log('Données chargées avec succès !', { context: 'dat', state: 'success' });
-    log(`Jeux importés : ${resultLoadDatFile.gamesCount}`, { context: 'game', state: 'count' });
-    log(`ROMs référencées : ${resultLoadDatFile.romsCount}`, { context: 'romfile', state: 'count' });
-
-    currentDatInfo = resultLoadDatFile.datInfo || null;
-    updateLeftSidebar();
-
-    // Mettre à jour l'état des boutons workflow
-    updateWorkflowButtons();
-
-    // Afficher le rapport initial avec tous les jeux/fichiers en "manquants"
-    if (resultLoadDatFile.gamesCount > 0) {
-      await displayInitialReport(resultLoadDatFile.gamesCount, resultLoadDatFile.romsCount);
-      log('📊 Rapport de matching initialisé', { context: 'match', state: 'waiting' });
-    }
-  } catch (error) {
-    log(`Erreur : ${error instanceof Error ? error.message : String(error)}`, { severity: 'error', context: 'dat' });
   }
 });
 
@@ -2808,7 +3592,6 @@ datQuickLoadButton?.addEventListener('click', async () => {
     datQuickLoadButton.disabled = allDisabled;
     datSelectButton.disabled = allDisabled;
     dbCreateButton.disabled = allDisabled;
-    datLoadButton.disabled = allDisabled;
     romAddFolderButton.disabled = allDisabled;
     romAddFolderButtonSidebar.disabled = allDisabled;
 
@@ -2855,6 +3638,42 @@ datQuickLoadButton?.addEventListener('click', async () => {
     if (resultQuick.gamesCount > 0) {
       await displayInitialReport(resultQuick.gamesCount, resultQuick.romsCount);
       log('📊 Rapport de matching initialisé', { context: 'match', state: 'waiting' });
+    }
+
+    // Auto-ajouter le dossier de ROMs validées s'il est configuré
+    // (avec sous-dossier système si l'option multi-système est activée)
+    const settings = await window.api.getSettings();
+    if (settings.validatedRomsFolder) {
+      const effectiveFolder = await window.api.getEffectiveValidatedFolder();
+      targetFolderPath = effectiveFolder;
+      await window.api.setDbMetadata('target_folder', effectiveFolder);
+      try {
+        log(`Vérification du dossier cible : ${effectiveFolder}`, { context: 'folder', state: 'loading' });
+
+        const progressHandler = (data: any) => {
+          if (data.fileName) {
+            const icon = data.isArchive ? '📦' : '💾';
+            log(`${icon} ${data.fileName}`, { context: 'romfile', state: 'loading' });
+          }
+        };
+        window.api.onScanProgress(progressHandler);
+
+        const stats = await window.api.addRomsFolder(effectiveFolder);
+
+        if (stats.length > 0) {
+          log(`Dossier cible ajouté : ${stats.length} fichiers trouvés`, { context: 'folder', state: 'success' });
+        } else {
+          log(`Dossier cible ajouté (vide)`, { context: 'folder', state: 'success' });
+        }
+
+        // Rafraîchir la liste des dossiers
+        const rootFolders = await window.api.getRootFolders();
+        loadedFolders = rootFolders;
+        updateLeftSidebar();
+        updateWorkflowButtons();
+      } catch (folderError) {
+        log(`Impossible d'ajouter le dossier cible : ${folderError instanceof Error ? folderError.message : String(folderError)}`, { severity: 'warning', context: 'folder' });
+      }
     }
 
     log('Prêt pour ajouter des dossiers de ROMs !', { context: 'folder', state: 'waiting' });
@@ -2957,7 +3776,7 @@ function setupGroupingAndFiltering() {
   if (!groupBySelect) return;
 
   groupBySelect.addEventListener('change', () => {
-    currentGroupBy = groupBySelect.value as 'none' | 'category' | 'letter' | 'match-status' | 'selection';
+    currentGroupBy = groupBySelect.value as 'none' | 'category' | 'letter' | 'match-status' | 'selection' | 'change-status';
     applyFiltersAndGrouping();
     updateGroupFilterSummary();
   });
@@ -2969,8 +3788,8 @@ function setupGroupingAndFiltering() {
       const isSelected = selectAllCheckbox.checked;
       selectAllCheckbox.indeterminate = false;
 
-      // Récupérer les jeux actuellement affichés (filtrés)
-      const displayedGames = getDisplayedGames();
+      // Récupérer les jeux actuellement affichés (filtrés), hors jeux disparus
+      const displayedGames = getDisplayedGames().filter((g: GameInfo) => !g.is_disappeared);
       const gameIds = displayedGames.map((g: GameInfo) => g.id);
 
       if (gameIds.length === 0) return;
@@ -2981,8 +3800,8 @@ function setupGroupingAndFiltering() {
       // Mettre à jour l'état local
       displayedGames.forEach((g: GameInfo) => g.is_selected = isSelected ? 1 : 0);
 
-      // Mettre à jour les checkboxes dans le DOM
-      const checkboxes = document.querySelectorAll('.game-checkbox') as NodeListOf<HTMLInputElement>;
+      // Mettre à jour les checkboxes dans le DOM (hors disabled)
+      const checkboxes = document.querySelectorAll('.game-checkbox:not(:disabled)') as NodeListOf<HTMLInputElement>;
       checkboxes.forEach(cb => {
         cb.checked = isSelected;
         const listItem = cb.closest('.list-item');
@@ -2991,47 +3810,95 @@ function setupGroupingAndFiltering() {
 
       updateGroupCheckboxes();
       updateSelectionCounter();
+      generateSelectionFilters();
     });
   }
 }
 
 // Mise à jour du résumé de groupement et filtrage
 function updateGroupFilterSummary() {
-  const summary = document.getElementById('group-filter-summary');
-  if (!summary) return;
+  const bar = document.getElementById('active-filters-bar');
+  if (!bar) return;
 
-  let summaryText = '';
+  const selectionLabels: Record<string, string> = { 'selected': '✅ Sélectionné', 'unselected': '⬜ Non sélectionné' };
+  const changeStatusLabels: Record<string, string> = { 'new': '🆕 Nouveau', 'modified': '✏️ Modifié', 'unchanged': '⏸️ Inchangé', 'disappeared': '❌ Disparu' };
 
-  // Groupement
-  const groupByLabels: Record<string, string> = {
-    'none': 'Aucun',
-    'category': 'Par catégorie',
-    'letter': 'Par première lettre',
-    'match-status': 'Par statut de matching',
-    'selection': 'Par sélection'
-  };
-  summaryText += `<span class="gf-summary-item">Groupement : <span class="gf-summary-value">${groupByLabels[currentGroupBy]}</span></span>`;
+  // Définir les groupes de filtres avec leur label, set actif et fonction de label
+  const filterGroups: Array<{ label: string; activeSet: Set<string>; getDisplayName: (key: string) => string; containerId: string }> = [
+    { label: 'Catégorie', activeSet: activeFilters, getDisplayName: (k) => k, containerId: 'category-filters-container' },
+    { label: 'Matching', activeSet: activeMatchFilters, getDisplayName: (k) => `${matchStatusIcons[k]} ${matchStatusLabels[k]}`, containerId: 'match-status-filters-container' },
+    { label: 'Sélection', activeSet: activeSelectionFilters, getDisplayName: (k) => selectionLabels[k] || k, containerId: 'selection-filters-container' },
+    { label: 'Évolution DAT', activeSet: activeChangeFilters, getDisplayName: (k) => changeStatusLabels[k] || k, containerId: 'change-status-filters-container' }
+  ];
 
-  // Filtres catégorie actifs
-  const allFilterLabels: string[] = [];
-  if (activeFilters.size > 0) {
-    allFilterLabels.push(...Array.from(activeFilters));
-  }
-  if (activeMatchFilters.size > 0) {
-    allFilterLabels.push(...Array.from(activeMatchFilters).map(s => matchStatusLabels[s]));
-  }
-  if (activeSelectionFilters.size > 0) {
-    const selectionLabels: Record<string, string> = { 'selected': '✅ Sélectionné', 'unselected': '⬜ Non sélectionné' };
-    allFilterLabels.push(...Array.from(activeSelectionFilters).map(s => selectionLabels[s]));
+  const activeGroups = filterGroups.filter(g => g.activeSet.size > 0);
+
+  if (activeGroups.length === 0) {
+    bar.classList.remove('visible');
+    bar.innerHTML = '';
+    return;
   }
 
-  if (allFilterLabels.length > 0) {
-    summaryText += `<span class="gf-summary-item">Filtres : <span class="gf-summary-value">${allFilterLabels.join(', ')}</span></span>`;
-  } else {
-    summaryText += `<span class="gf-summary-item">Filtres : <span class="gf-summary-value">Aucun</span></span>`;
+  bar.innerHTML = '';
+  bar.classList.add('visible');
+
+  function clearFilterGroup(group: typeof filterGroups[0]) {
+    group.activeSet.clear();
+    const container = document.getElementById(group.containerId);
+    if (container) {
+      const checkboxes = container.querySelectorAll('input[type="checkbox"]') as NodeListOf<HTMLInputElement>;
+      checkboxes.forEach(cb => cb.checked = false);
+      const countSpan = container.querySelector('.filter-active-count');
+      if (countSpan) countSpan.remove();
+    }
+    applyFiltersAndGrouping();
+    updateGroupFilterSummary();
   }
 
-  summary.innerHTML = summaryText;
+  activeGroups.forEach((group, groupIndex) => {
+    if (groupIndex > 0) {
+      const sep = document.createElement('div');
+      sep.className = 'active-filters-separator';
+      bar.appendChild(sep);
+    }
+
+    const groupDiv = document.createElement('div');
+    groupDiv.className = 'active-filters-group';
+
+    const labelSpan = document.createElement('span');
+    labelSpan.className = 'active-filters-group-label';
+    labelSpan.textContent = group.label + ' :';
+    groupDiv.appendChild(labelSpan);
+
+    const tagDiv = document.createElement('span');
+    tagDiv.className = 'active-filters-group-tag';
+
+    const valuesSpan = document.createElement('span');
+    valuesSpan.className = 'active-filter-values';
+    valuesSpan.textContent = Array.from(group.activeSet).map(k => group.getDisplayName(k)).join(', ');
+    tagDiv.appendChild(valuesSpan);
+
+    const removeBtn = document.createElement('span');
+    removeBtn.className = 'remove-filter';
+    removeBtn.textContent = '✕';
+    removeBtn.addEventListener('click', () => clearFilterGroup(group));
+    tagDiv.appendChild(removeBtn);
+
+    groupDiv.appendChild(tagDiv);
+
+    bar.appendChild(groupDiv);
+  });
+
+  // Bouton "Tout effacer" si plusieurs groupes actifs
+  if (activeGroups.length > 1) {
+    const clearAll = document.createElement('span');
+    clearAll.className = 'clear-all-filters';
+    clearAll.textContent = '✕ Tout effacer';
+    clearAll.addEventListener('click', () => {
+      filterGroups.forEach(group => clearFilterGroup(group));
+    });
+    bar.appendChild(clearAll);
+  }
 }
 
 // Initialisation
@@ -3043,5 +3910,19 @@ document.addEventListener('DOMContentLoaded', () => {
   setupGroupingAndFiltering();
   initMatchingUI();
   setupCollapsibleSections();
+
+  // Log panel toggle (retractable)
+  const logHeader = document.getElementById('log-header');
+  if (logHeader) {
+    logHeader.addEventListener('click', () => {
+      document.getElementById('log-panel')?.classList.toggle('collapsed');
+    });
+  }
+
+  // Bouton téléchargement DAT
+  document.getElementById('dat-download-btn')?.addEventListener('click', () => {
+    window.api.openDatDownloadWindow();
+  });
+
   log('RUMCET est prêt ! Utilisez le menu Fichier ou les boutons pour commencer.', { context: 'welcome' });
 }, { once: true });

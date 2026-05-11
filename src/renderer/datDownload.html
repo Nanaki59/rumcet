@@ -1,0 +1,538 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Télécharger un fichier DAT - RUMCET</title>
+  <style>
+    * {
+      box-sizing: border-box;
+      margin: 0;
+      padding: 0;
+    }
+
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+      background-color: #f5f5f5;
+      color: #333;
+      display: flex;
+      flex-direction: column;
+      height: 100vh;
+      overflow: hidden;
+    }
+
+    /* ========== EN-TÊTE ========== */
+    .header {
+      background: #2c3e50;
+      color: white;
+      padding: 15px 20px;
+      flex-shrink: 0;
+    }
+
+    .header h1 {
+      font-size: 18px;
+      font-weight: 600;
+    }
+
+    /* ========== ONGLETS ========== */
+    .tabs {
+      display: flex;
+      background: #34495e;
+      flex-shrink: 0;
+    }
+
+    .tab-btn {
+      padding: 10px 24px;
+      background: none;
+      border: none;
+      color: rgba(255, 255, 255, 0.7);
+      font-size: 14px;
+      font-family: inherit;
+      cursor: pointer;
+      border-bottom: 3px solid transparent;
+      transition: all 0.2s;
+    }
+
+    .tab-btn:hover {
+      color: white;
+      background: rgba(255, 255, 255, 0.05);
+    }
+
+    .tab-btn.active {
+      color: white;
+      border-bottom-color: #3498db;
+      font-weight: 600;
+    }
+
+    /* ========== CONTENU PRINCIPAL ========== */
+    .content {
+      flex: 1;
+      display: flex;
+      flex-direction: column;
+      overflow: hidden;
+      padding: 15px;
+      gap: 12px;
+    }
+
+    .tab-content {
+      display: none;
+      flex-direction: column;
+      flex: 1;
+      overflow: hidden;
+      gap: 12px;
+    }
+
+    .tab-content.active {
+      display: flex;
+    }
+
+    /* ========== RECHERCHE ========== */
+    .search-box {
+      position: relative;
+      flex-shrink: 0;
+    }
+
+    .search-box input {
+      width: 100%;
+      padding: 10px 12px 10px 36px;
+      border: 1px solid #ced4da;
+      border-radius: 6px;
+      font-size: 14px;
+      font-family: inherit;
+      outline: none;
+    }
+
+    .search-box input:focus {
+      border-color: #3498db;
+      box-shadow: 0 0 0 2px rgba(52, 152, 219, 0.2);
+    }
+
+    .search-icon {
+      position: absolute;
+      left: 12px;
+      top: 50%;
+      transform: translateY(-50%);
+      font-size: 14px;
+      color: #95a5a6;
+    }
+
+    /* ========== LISTE DES SYSTÈMES ========== */
+    .system-list {
+      flex: 1;
+      overflow-y: auto;
+      border: 1px solid #dee2e6;
+      border-radius: 6px;
+      background: white;
+    }
+
+    .system-item {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 10px 14px;
+      border-bottom: 1px solid #f0f0f0;
+      cursor: pointer;
+      transition: background 0.15s;
+    }
+
+    .system-item:last-child {
+      border-bottom: none;
+    }
+
+    .system-item:hover {
+      background: #f8f9fa;
+    }
+
+    .system-item.selected {
+      background: #e8f4fd;
+      border-left: 3px solid #3498db;
+      padding-left: 11px;
+    }
+
+    .system-name {
+      font-size: 14px;
+      font-weight: 500;
+    }
+
+    .system-sources {
+      display: flex;
+      gap: 6px;
+    }
+
+    .source-badge {
+      font-size: 11px;
+      padding: 2px 8px;
+      border-radius: 10px;
+      font-weight: 600;
+    }
+
+    .source-badge.no-intro {
+      background: rgba(52, 152, 219, 0.15);
+      color: #2980b9;
+    }
+
+    .source-badge.redump {
+      background: rgba(46, 204, 113, 0.15);
+      color: #27ae60;
+    }
+
+    .source-badge.recommended::after {
+      content: ' \2605';
+    }
+
+    /* ========== LISTE MAME ========== */
+    .mame-item {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 10px 14px;
+      border-bottom: 1px solid #f0f0f0;
+      cursor: pointer;
+      transition: background 0.15s;
+    }
+
+    .mame-item:last-child {
+      border-bottom: none;
+    }
+
+    .mame-item:hover {
+      background: #f8f9fa;
+    }
+
+    .mame-item.selected {
+      background: #e8f4fd;
+      border-left: 3px solid #3498db;
+      padding-left: 11px;
+    }
+
+    .mame-version {
+      font-size: 14px;
+      font-weight: 500;
+    }
+
+    .mame-date {
+      font-size: 12px;
+      color: #7f8c8d;
+    }
+
+    .mame-badge {
+      font-size: 11px;
+      padding: 2px 8px;
+      border-radius: 10px;
+      font-weight: 600;
+      background: rgba(241, 196, 15, 0.2);
+      color: #d4a200;
+      margin-left: 4px;
+    }
+
+    .mame-badge.recalbox {
+      background: rgba(52, 152, 219, 0.15);
+      color: #2980b9;
+    }
+
+    /* ========== OPTIONS DE SOURCE ========== */
+    .source-selection {
+      display: none;
+      padding: 10px 14px;
+      background: #f8f9fa;
+      border: 1px solid #dee2e6;
+      border-radius: 6px;
+      flex-shrink: 0;
+    }
+
+    .source-selection.visible {
+      display: block;
+    }
+
+    .source-selection-label {
+      font-size: 13px;
+      font-weight: 600;
+      margin-bottom: 8px;
+      color: #2c3e50;
+    }
+
+    .source-radio-group {
+      display: flex;
+      gap: 20px;
+    }
+
+    .source-radio-group label {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      font-size: 13px;
+      cursor: pointer;
+    }
+
+    .source-radio-group input[type="radio"] {
+      accent-color: #3498db;
+    }
+
+    .recommended-tag {
+      font-size: 11px;
+      color: #27ae60;
+      font-weight: 600;
+    }
+
+    /* ========== PARAMÈTRES NO-INTRO ========== */
+    .nointro-params {
+      display: none;
+      padding: 10px 14px;
+      background: #fef9e7;
+      border: 1px solid #f9e79f;
+      border-radius: 6px;
+      flex-shrink: 0;
+    }
+
+    .nointro-params.visible {
+      display: block;
+    }
+
+    .nointro-params-title {
+      font-size: 13px;
+      font-weight: 600;
+      margin-bottom: 8px;
+      color: #7d6608;
+    }
+
+    .nointro-params-grid {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px 20px;
+    }
+
+    .nointro-params-grid label {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      font-size: 13px;
+      cursor: pointer;
+    }
+
+    .nointro-params-grid input[type="checkbox"] {
+      accent-color: #3498db;
+    }
+
+    /* ========== DOSSIER DE DESTINATION ========== */
+    .dest-folder {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      flex-shrink: 0;
+    }
+
+    .dest-folder label {
+      font-size: 13px;
+      font-weight: 600;
+      color: #2c3e50;
+      white-space: nowrap;
+    }
+
+    .dest-folder input {
+      flex: 1;
+      padding: 8px 12px;
+      border: 1px solid #ced4da;
+      border-radius: 4px;
+      font-size: 13px;
+      font-family: inherit;
+      background: white;
+    }
+
+    .dest-folder button {
+      padding: 8px 14px;
+      background: #ecf0f1;
+      border: 1px solid #ced4da;
+      border-radius: 4px;
+      cursor: pointer;
+      font-size: 13px;
+      font-family: inherit;
+    }
+
+    .dest-folder button:hover {
+      background: #dee2e6;
+    }
+
+    /* ========== BARRE D'ACTIONS ========== */
+    .actions {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      padding: 12px 15px;
+      background: #f8f9fa;
+      border-top: 1px solid #dee2e6;
+      flex-shrink: 0;
+    }
+
+    .status-message {
+      font-size: 13px;
+      color: #7f8c8d;
+      flex: 1;
+    }
+
+    .status-message.success {
+      color: #27ae60;
+      font-weight: 600;
+    }
+
+    .status-message.error {
+      color: #e74c3c;
+      font-weight: 600;
+    }
+
+    .status-message.loading {
+      color: #3498db;
+    }
+
+    .action-buttons {
+      display: flex;
+      gap: 10px;
+    }
+
+    .btn {
+      padding: 10px 20px;
+      border: none;
+      border-radius: 6px;
+      font-size: 14px;
+      font-family: inherit;
+      font-weight: 600;
+      cursor: pointer;
+      transition: all 0.2s;
+    }
+
+    .btn:disabled {
+      opacity: 0.5;
+      cursor: not-allowed;
+    }
+
+    .btn-primary {
+      background: #3498db;
+      color: white;
+    }
+
+    .btn-primary:hover:not(:disabled) {
+      background: #2980b9;
+    }
+
+    .btn-secondary {
+      background: #ecf0f1;
+      color: #2c3e50;
+    }
+
+    .btn-secondary:hover:not(:disabled) {
+      background: #dee2e6;
+    }
+
+    /* ========== LOADER ========== */
+    .loading-overlay {
+      display: none;
+      position: absolute;
+      top: 0;
+      left: 0;
+      right: 0;
+      bottom: 0;
+      background: rgba(255, 255, 255, 0.8);
+      align-items: center;
+      justify-content: center;
+      z-index: 10;
+    }
+
+    .loading-overlay.visible {
+      display: flex;
+    }
+
+    .spinner {
+      width: 40px;
+      height: 40px;
+      border: 4px solid #dee2e6;
+      border-top-color: #3498db;
+      border-radius: 50%;
+      animation: spin 0.8s linear infinite;
+    }
+
+    @keyframes spin {
+      to { transform: rotate(360deg); }
+    }
+
+    /* ========== COMPTEUR ========== */
+    .list-counter {
+      font-size: 12px;
+      color: #95a5a6;
+      padding: 4px 0;
+      flex-shrink: 0;
+    }
+  </style>
+</head>
+<body>
+  <div class="header">
+    <h1>Télécharger un fichier DAT</h1>
+  </div>
+
+  <div class="tabs">
+    <button class="tab-btn active" data-tab="systems">Systèmes</button>
+    <button class="tab-btn" data-tab="mame">MAME</button>
+  </div>
+
+  <div class="content">
+    <!-- Onglet Systèmes -->
+    <div class="tab-content active" id="tab-systems">
+      <div class="search-box">
+        <span class="search-icon">&#x1F50D;</span>
+        <input type="text" id="system-search" placeholder="Rechercher un système...">
+      </div>
+      <div class="list-counter" id="system-counter"></div>
+      <div class="system-list" id="system-list">
+        <div class="loading-overlay visible" id="system-loading">
+          <div class="spinner"></div>
+        </div>
+      </div>
+
+      <div class="source-selection" id="source-selection">
+        <div class="source-selection-label">Source :</div>
+        <div class="source-radio-group" id="source-radio-group"></div>
+      </div>
+
+      <div class="nointro-params" id="nointro-params">
+        <div class="nointro-params-title">Paramètres No-Intro</div>
+        <div class="nointro-params-grid">
+          <label><input type="checkbox" id="param-bios" checked> BIOS</label>
+          <label><input type="checkbox" id="param-proto" checked> Prototypes</label>
+          <label><input type="checkbox" id="param-beta" checked> Betas</label>
+          <label><input type="checkbox" id="param-demo" checked> Demos</label>
+          <label><input type="checkbox" id="param-sample" checked> Samples</label>
+        </div>
+      </div>
+    </div>
+
+    <!-- Onglet MAME -->
+    <div class="tab-content" id="tab-mame">
+      <div class="search-box">
+        <span class="search-icon">&#x1F50D;</span>
+        <input type="text" id="mame-search" placeholder="Rechercher une version...">
+      </div>
+      <div class="list-counter" id="mame-counter"></div>
+      <div class="system-list" id="mame-list">
+        <div class="loading-overlay visible" id="mame-loading">
+          <div class="spinner"></div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Dossier de destination (commun) -->
+    <div class="dest-folder">
+      <label>Dossier :</label>
+      <input type="text" id="dest-folder" readonly>
+      <button id="browse-folder">Parcourir</button>
+    </div>
+  </div>
+
+  <div class="actions">
+    <span class="status-message" id="status-message"></span>
+    <div class="action-buttons">
+      <button class="btn btn-primary" id="btn-download" disabled>Télécharger</button>
+      <button class="btn btn-secondary" id="btn-close">Fermer</button>
+    </div>
+  </div>
+
+  <script type="module" src="./datDownload.js"></script>
+</body>
+</html>

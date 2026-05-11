@@ -9,7 +9,8 @@
     "build": "tsc && tsc -p tsconfig.preload.json && npm run copy-html && npm run copy-wasm",
     "copy-html": "copyfiles -f \"src/renderer/*.html\" dist/src/renderer",
     "copy-wasm": "echo 'No WASM files to copy'",
-    "clean": "rimraf dist"
+    "clean": "rimraf dist",
+    "sync-systems": "node scripts/generateSystems.mjs"
   },
   "keywords": [
     "rom",

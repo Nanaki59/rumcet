@@ -38,6 +38,8 @@ import { registerNavigationHandlers } from './handlers/navigation.handlers.js';
 import { registerSettingsHandlers } from './handlers/settings.handlers.js';
 import { registerSearchHandlers } from './handlers/search.handlers.js';
 import { registerConsolidationHandlers } from './handlers/consolidation.handlers.js';
+import { registerDatDownloadHandlers } from './handlers/datDownload.handlers.js';
+import { registerRomDownloadHandlers } from './handlers/romDownload.handlers.js';
 
 // Définition de __dirname pour les modules ES6
 const __filename = fileURLToPath(import.meta.url);
@@ -46,6 +48,7 @@ const __dirname = path.dirname(__filename);
 // Variables globales
 let mainWindow: BrowserWindow | null = null;
 let settingsWindow: BrowserWindow | null = null;
+let datDownloadWindow: BrowserWindow | null = null;
 
 // ==========================================
 // Création des fenêtres
@@ -103,6 +106,31 @@ function createSettingsWindow(): void {
   });
 }
 
+function createDatDownloadWindow(): void {
+  if (datDownloadWindow) {
+    datDownloadWindow.focus();
+    return;
+  }
+
+  datDownloadWindow = new BrowserWindow({
+    width: 750,
+    height: 600,
+    parent: mainWindow!,
+    modal: true,
+    webPreferences: {
+      preload: path.join(__dirname, '../../preload.js'),
+      contextIsolation: true,
+      nodeIntegration: false
+    }
+  });
+
+  datDownloadWindow.loadFile(path.join(__dirname, '../renderer/datDownload.html'));
+
+  datDownloadWindow.on('closed', () => {
+    datDownloadWindow = null;
+  });
+}
+
 // ==========================================
 // Menu de l'application
 // ==========================================
@@ -124,6 +152,13 @@ function createMenu(): void {
           accelerator: 'CmdOrCtrl+O',
           click: () => {
             mainWindow?.webContents.send('menu-action', 'open-database');
+          }
+        },
+        {
+          label: 'Télécharger un fichier DAT...',
+          accelerator: 'CmdOrCtrl+Shift+D',
+          click: () => {
+            createDatDownloadWindow();
           }
         },
         { type: 'separator' },
@@ -302,6 +337,20 @@ function registerMenuHandlers(): void {
   });
 }
 
+function registerDatDownloadWindowHandlers(): void {
+  ipcMain.handle('dat-download:open-window', () => {
+    createDatDownloadWindow();
+  });
+
+  ipcMain.handle('dat-download:select-folder', async () => {
+    const result = await dialog.showOpenDialog(datDownloadWindow || mainWindow!, {
+      properties: ['openDirectory'],
+      title: 'Sélectionner le dossier de destination'
+    });
+    return result.canceled ? null : result.filePaths[0];
+  });
+}
+
 // ==========================================
 // Initialisation de l'application
 // ==========================================
@@ -360,6 +409,9 @@ async function initializeApp(): Promise<void> {
     registerNavigationHandlers(ipcMain);
     registerSettingsHandlers(ipcMain, mainWindow);
     registerSearchHandlers(ipcMain);
+    registerDatDownloadHandlers();
+    registerDatDownloadWindowHandlers();
+    registerRomDownloadHandlers(ipcMain, mainWindow);
     registerLogHandlers();
     registerMenuHandlers();
   }

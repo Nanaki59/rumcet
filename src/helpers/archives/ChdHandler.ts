@@ -133,7 +133,8 @@ export class ChdHandler extends EventEmitter implements IArchiveHandler {
     }
     
     const chdInfo = await this.info(filePath);
-    const baseDir = settingsManager.get('tempExtractionFolder') || os.tmpdir();
+    // Respecte le mode "Dossier multi-système" : ajoute le sous-dossier system_id si activé.
+    const baseDir = settingsManager.getEffectiveFolderSync('tempExtractionFolder') || os.tmpdir();
     const tempDir = path.join(baseDir, 'chd_list_' + Date.now());
     await fs.mkdir(tempDir, { recursive: true });
     

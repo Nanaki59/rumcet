@@ -171,6 +171,10 @@ contextBridge.exposeInMainWorld('api', {
   selectDatFile: () => ipcRenderer.invoke('dat:select-file'),
   createDatabase: (datPath: string, clearExisting?: boolean) => ipcRenderer.invoke('database:create', datPath, clearExisting),
   loadDatFile: (datPath: string) => ipcRenderer.invoke('dat:load', datPath) as Promise<DatLoadResult>,
+  updateDat: () => ipcRenderer.invoke('dat:update'),
+  getDatUpdateReport: () => ipcRenderer.invoke('dat:get-update-report'),
+  getGameDiff: (gameName: string) => ipcRenderer.invoke('dat:get-game-diff', gameName),
+  getDisappearedGames: () => ipcRenderer.invoke('dat:get-disappeared-games'),
   selectRomFolders: () => ipcRenderer.invoke('roms:select-folders'),
   addRomsFolder: (folderPaths: string | string[]) => ipcRenderer.invoke('roms:add', folderPaths),
   quickLoadDatabase: (datPath: string) => ipcRenderer.invoke('database:quick-load', datPath),
@@ -179,9 +183,21 @@ contextBridge.exposeInMainWorld('api', {
   openDatabase: () => ipcRenderer.invoke('database:open') as Promise<DatabaseOpenResult | null>,
   closeDatabase: () => ipcRenderer.invoke('database:close'),
 
+  // Métadonnées de la base
+  getDbMetadata: (key: string) => ipcRenderer.invoke('database:get-metadata', key) as Promise<string | null>,
+  setDbMetadata: (key: string, value: string) => ipcRenderer.invoke('database:set-metadata', key, value),
+
+  // Dossier cible effectif (avec sous-dossier système si mode multi-système)
+  getEffectiveValidatedFolder: () => ipcRenderer.invoke('database:get-effective-validated-folder') as Promise<string>,
+
   // Fonction pour supprimer un dossier
   removeFolder: (folderPath: string) => ipcRenderer.invoke('roms:remove-folder', folderPath),
   deleteFolder: (folderPath: string): Promise<boolean> => ipcRenderer.invoke('folder:delete', folderPath),
+
+  // Retirer un fichier de la base (sans toucher au fichier physique)
+  removeFile: (filePath: string) => ipcRenderer.invoke('roms:remove-file', filePath),
+  // Supprimer physiquement un fichier (corbeille)
+  deleteFile: (filePath: string): Promise<boolean> => ipcRenderer.invoke('file:delete', filePath),
 
   // ========================================
   // API de données
@@ -238,6 +254,29 @@ contextBridge.exposeInMainWorld('api', {
   getSettings: () => ipcRenderer.invoke('settings:get-all'),
   updateSettings: (settings: any) => ipcRenderer.invoke('settings:update', settings),
   resetSettings: () => ipcRenderer.invoke('settings:reset'),
+
+  // ========================================
+  // API de téléchargement de DAT
+  // ========================================
+
+  getDownloadSystems: () => ipcRenderer.invoke('dat-download:get-systems'),
+  getMameVersions: () => ipcRenderer.invoke('dat-download:get-mame-versions'),
+  downloadDat: (params: any) => ipcRenderer.invoke('dat-download:download', params),
+  openDatDownloadWindow: () => ipcRenderer.invoke('dat-download:open-window'),
+  selectDownloadFolder: () => ipcRenderer.invoke('dat-download:select-folder'),
+
+  // ========================================
+  // API de téléchargement de ROMs
+  // ========================================
+
+  downloadRom: (gameIds: number[]) => ipcRenderer.invoke('rom-download:start', gameIds),
+  downloadAllMissingRoms: () => ipcRenderer.invoke('rom-download:start-all-missing'),
+  cancelRomDownload: () => ipcRenderer.invoke('rom-download:cancel'),
+  onRomDownloadProgress: (callback: (data: any) => void) => {
+    const handler = (_event: any, data: any) => callback(data);
+    ipcRenderer.on('rom-download-progress', handler);
+    return () => ipcRenderer.removeListener('rom-download-progress', handler);
+  },
 
   // ========================================
   // API des événements et logs

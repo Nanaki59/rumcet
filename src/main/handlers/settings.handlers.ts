@@ -111,6 +111,10 @@ export function registerSettingsHandlers(ipcMain: IpcMain, mainWindow: BrowserWi
         title = 'Sélectionner le dossier temporaire d\'extraction';
         defaultPath = settingsManager.get('tempExtractionFolder');
         break;
+      case 'incomplete':
+        title = 'Sélectionner le dossier pour les ROMs incomplètes';
+        defaultPath = settingsManager.get('incompleteRomsFolder') || '';
+        break;
     }
 
     const result = await dialog.showOpenDialog(mainWindow, {

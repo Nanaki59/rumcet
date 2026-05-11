@@ -1,0 +1,18 @@
+{
+  "permissions": {
+    "allow": [
+      "WebFetch(domain:www.progettosnaps.net)",
+      "WebFetch(domain:wiki.recalbox.com)",
+      "WebFetch(domain:gitlab.com)",
+      "WebFetch(domain:datomatic.no-intro.org)",
+      "Bash(curl -s \"https://gitlab.com/api/v4/projects/recalbox%2Frecalbox/repository/tags?per_page=30&order_by=updated&sort=desc\")",
+      "Bash(python3 -c \"import sys,json; [print\\(t['name']\\) for t in json.load\\(sys.stdin\\)]\")",
+      "WebFetch(domain:redump.org)",
+      "Bash(curl -sSL --max-time 90 \"http://redump.org/downloads/\" -A \"Mozilla/5.0 \\(Windows NT 10.0; Win64; x64\\) AppleWebKit/537.36\" -o /tmp/redump.html)",
+      "Read(//tmp/**)",
+      "Bash(curl -sSL --max-time 90 \"https://datomatic.no-intro.org/index.php?page=download\" -A \"Mozilla/5.0 \\(Windows NT 10.0; Win64; x64\\) AppleWebKit/537.36\" -o /tmp/nointro.html)",
+      "Bash(cp /tmp/nointro.html C:/Users/nanak/AppData/Local/Temp/nointro.html)",
+      "Read(//c/Users/nanak/AppData/Local/Temp/**)"
+    ]
+  }
+}

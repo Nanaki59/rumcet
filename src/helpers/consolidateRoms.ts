@@ -1,8 +1,21 @@
 // src/helpers/consolidateRoms.ts
 
 import { Database, getMetadata } from '../database/init.js';
-import { settingsManager, ArchiveFormat, DEFAULT_SYSTEM_COMPATIBILITY } from './settingsManager.js';
+import {
+  settingsManager,
+  ArchiveFormat,
+  getEffectiveValidatedRomsFolder,
+  getEffectiveUnmatchedRomsFolder,
+  getEffectiveTempExtractionFolder
+} from './settingsManager.js';
+import { getSystemById, detectSystemFromDatName as detectSystem } from '../config/systems.js';
 import { ArchiveManager } from './archives/ArchiveManager.js';
+import {
+  recordConsolidatedArchive,
+  recordConsolidatedRawFiles,
+  cleanupStaleScannedFiles,
+  type ConsolidatedRomEntry
+} from './recordConsolidation.js';
 import path from 'path';
 import fs from 'fs/promises';
 
@@ -30,7 +43,12 @@ export interface ConsolidationResult {
 type ProgressCallback = (progress: ConsolidationProgress) => void;
 
 interface MatchedRomInfo {
+  datRomId: number;
   datRomName: string;
+  datRomSize: number | null;
+  datRomCrc32: string | null;
+  datRomMd5: string | null;
+  datRomSha1: string | null;
   scannedFileId: number | null;
   scannedFilePath: string | null;
   scannedFileName: string | null;
@@ -43,92 +61,69 @@ interface MatchedRomInfo {
 /**
  * Sanitise un nom de fichier en remplaçant les caractères interdits
  */
-function sanitizeFileName(name: string): string {
+export function sanitizeFileName(name: string): string {
   return name.replace(/[<>:"/\\|?*]/g, '_').trim();
 }
 
 /**
- * Table de correspondance DAT name → systemId pour la compatibilité système
+ * Détecte le systemId à partir du nom du DAT.
+ * Délègue à src/config/systems.ts. Retourne 'default' si aucun match.
  */
-const DAT_NAME_TO_SYSTEM: Array<{ pattern: RegExp; systemId: string }> = [
-  // Sony
-  { pattern: /playstation\s*2|ps2/i, systemId: 'ps2' },
-  { pattern: /playstation\s*portable|psp/i, systemId: 'psp' },
-  { pattern: /playstation|psx|ps1/i, systemId: 'psx' },
-  // Sega
-  { pattern: /dreamcast/i, systemId: 'dreamcast' },
-  { pattern: /saturn/i, systemId: 'saturn' },
-  { pattern: /sega\s*cd|mega\s*cd/i, systemId: 'segacd' },
-  { pattern: /32x/i, systemId: 'sega32x' },
-  { pattern: /mega\s*drive|genesis/i, systemId: 'genesis' },
-  { pattern: /master\s*system/i, systemId: 'mastersystem' },
-  { pattern: /game\s*gear/i, systemId: 'gamegear' },
-  // Nintendo
-  { pattern: /3ds/i, systemId: '3ds' },
-  { pattern: /nintendo\s*ds|nds/i, systemId: 'nds' },
-  { pattern: /game\s*boy\s*advance|gba/i, systemId: 'gba' },
-  { pattern: /game\s*boy\s*color|gbc/i, systemId: 'gbc' },
-  { pattern: /game\s*boy|gb(?!a|c)/i, systemId: 'gb' },
-  { pattern: /gamecube|gc/i, systemId: 'gamecube' },
-  { pattern: /wii(?!u)/i, systemId: 'wii' },
-  { pattern: /super\s*nintendo|snes|super\s*famicom/i, systemId: 'snes' },
-  { pattern: /nintendo\s*64|n64/i, systemId: 'n64' },
-  { pattern: /nintendo\s*entertainment|nes|famicom(?!\s*disk)/i, systemId: 'nes' },
-  // Arcade
-  { pattern: /mame/i, systemId: 'mame' },
-  { pattern: /final\s*burn|fba|fbneo/i, systemId: 'fba' },
-  { pattern: /neo\s*geo/i, systemId: 'neogeo' },
-  // Ordinateurs
-  { pattern: /dos|ibm\s*pc/i, systemId: 'pc' },
-  // Autres
-  { pattern: /atari\s*2600/i, systemId: 'atari2600' },
-  { pattern: /pc\s*engine|turbografx/i, systemId: 'pcengine' },
-];
-
-/**
- * Détecte le systemId à partir du nom du DAT
- */
-function detectSystemFromDatName(datName: string): string {
-  for (const entry of DAT_NAME_TO_SYSTEM) {
-    if (entry.pattern.test(datName)) {
-      return entry.systemId;
-    }
-  }
-  return 'default';
+export function detectSystemFromDatName(datName: string): string {
+  return detectSystem(datName)?.systemId ?? 'default';
 }
 
 /**
- * Retourne les formats autorisés pour un système, en se basant sur :
- * 1. Les settings utilisateur (systemCompatibility) — prioritaire
- * 2. Les valeurs par défaut (DEFAULT_SYSTEM_COMPATIBILITY) — fallback
+ * Retourne les formats d'archive autorisés pour un système :
+ * 1. Surcharge utilisateur (systemCompatibility) — prioritaire, MÊME si vide
+ *    (vide = "pas de compression voulue par l'utilisateur")
+ * 2. Registre central src/config/systems.ts (supportedFormats Recalbox)
+ * 3. zip + 7z si système totalement inconnu
+ *
+ * Un tableau vide signifie : aucun format d'archive supporté → la consolidation
+ * doit conserver les fichiers bruts (datRawFormats) sans compression.
  */
-function getSystemAllowedFormats(
+export function getSystemAllowedFormats(
   systemId: string,
   settings: ReturnType<typeof settingsManager.getAll>
 ): ArchiveFormat[] {
-  // Chercher dans les settings utilisateur
-  const systemCompat = settings.systemCompatibility || DEFAULT_SYSTEM_COMPATIBILITY;
-  const config = systemCompat.find(
-    sc => sc.systemId.toLowerCase() === systemId.toLowerCase()
+  // 1) Surcharge utilisateur — respectée même si vide (choix explicite)
+  const userOverride = settings.systemCompatibility?.find(
+    (sc: { systemId: string; supportedFormats: ArchiveFormat[] }) =>
+      sc.systemId.toLowerCase() === systemId.toLowerCase()
   );
-  if (config && config.supportedFormats.length > 0) {
-    return config.supportedFormats;
+  if (userOverride) {
+    return userOverride.supportedFormats;
   }
 
-  // Système non configuré : fallback zip + 7z
+  // 2) Registre central — peut renvoyer un tableau vide (système sans archive supportée)
+  const sys = getSystemById(systemId);
+  if (sys) {
+    return sys.supportedFormats;
+  }
+
+  // 3) Système totalement inconnu : fallback prudent zip + 7z
   return ['7z', 'zip'];
 }
 
 /**
- * Détermine le meilleur format d'archive pour un système donné
- * en croisant les formats autorisés (par système) avec la priorité utilisateur
+ * Détermine le meilleur format d'archive pour un système donné en croisant les
+ * formats autorisés avec la priorité utilisateur.
+ *
+ * Retourne `null` si aucun format d'archive n'est autorisé pour ce système
+ * (l'utilisateur a explicitement décoché tous les formats, OU système Recalbox
+ * sans aucun format archive compatible). Dans ce cas, la consolidation doit
+ * conserver les fichiers bruts (datRawFormats) sans compression.
  */
-function determineTargetFormat(
+export function determineTargetFormat(
   systemId: string,
   settings: ReturnType<typeof settingsManager.getAll>,
   chdPossible: boolean
-): ArchiveFormat {
+): ArchiveFormat | null {
   const allowedFormats = getSystemAllowedFormats(systemId, settings);
+
+  // Aucun format d'archive autorisé → mode brut
+  if (allowedFormats.length === 0) return null;
 
   // Croiser la priorité utilisateur avec les formats autorisés du système
   for (const format of settings.archiveFormatPriority) {
@@ -144,8 +139,8 @@ function determineTargetFormat(
     return format;
   }
 
-  // Dernier recours
-  return '7z';
+  // Aucun format autorisé hors CHD impossible → mode brut
+  return null;
 }
 
 /**
@@ -183,6 +178,10 @@ export async function consolidateRoms(
   onProgress?: ProgressCallback
 ): Promise<ConsolidationResult> {
   const settings = settingsManager.getAll();
+  // Résoudre les dossiers cibles effectifs (avec sous-dossier système si mode multi-système)
+  settings.validatedRomsFolder = await getEffectiveValidatedRomsFolder(db);
+  settings.unmatchedRomsFolder = await getEffectiveUnmatchedRomsFolder(db);
+  settings.tempExtractionFolder = await getEffectiveTempExtractionFolder(db);
   const archiveManager = new ArchiveManager();
 
   // Détecter le système à partir du DAT
@@ -295,6 +294,17 @@ export async function consolidateRoms(
     });
 
     await moveUnmatchedFiles(db, settings, result);
+  }
+
+  // Phase 5 : Nettoyer les entrées scanned_files dont le fichier n'existe plus
+  // (suppression cascade des rom_matches/archive_contents associés). Évite le rescan.
+  try {
+    const stale = await cleanupStaleScannedFiles(db);
+    if (stale > 0) {
+      console.log(`[Cleanup] ${stale} entrée(s) scanned_files obsolète(s) retirée(s) de la base`);
+    }
+  } catch (err) {
+    console.warn(`[Cleanup] échec nettoyage des fichiers obsolètes : ${err}`);
   }
 
   onProgress?.({
@@ -455,7 +465,12 @@ async function consolidateGame(
   // archive_content_id est renseigné si le match vient d'un contenu d'archive
   const allMatches = await db.all<MatchedRomInfo>(`
     SELECT
+      dr.id as datRomId,
       dr.name as datRomName,
+      dr.size as datRomSize,
+      dr.crc32 as datRomCrc32,
+      dr.md5 as datRomMd5,
+      dr.sha1 as datRomSha1,
       CASE WHEN rm.archive_content_id IS NULL THEN sf.id ELSE NULL END as scannedFileId,
       CASE WHEN rm.archive_content_id IS NULL THEN sf.file_path ELSE NULL END as scannedFilePath,
       CASE WHEN rm.archive_content_id IS NULL THEN sf.file_name ELSE NULL END as scannedFileName,
@@ -558,6 +573,50 @@ async function consolidateGame(
     let tempOutputPath: string;
     let finalFormat: string;
 
+    // Mode brut : aucun format d'archive autorisé → conserver les fichiers tels quels
+    // Les fichiers sont placés à la racine du dossier cible des ROMs validées
+    // (et du sous-dossier système si l'option multi-système est activée).
+    if (targetFormat === null) {
+      console.log(`[4/4 Stockage brut] aucun format d'archive autorisé pour « ${systemId} » → copie des fichiers bruts (sans compression)`);
+      await fs.mkdir(settings.validatedRomsFolder, { recursive: true });
+      const rawEntries: Array<ConsolidatedRomEntry & { filePath: string }> = [];
+      for (const fp of filePaths) {
+        const dest = path.join(settings.validatedRomsFolder, path.basename(fp));
+        await fs.copyFile(fp, dest);
+
+        // Faire correspondre ce fichier extrait à un dat_rom (par nom de fichier)
+        const baseName = path.basename(fp);
+        const matched = matchedRoms.find(m => m.datRomName === baseName);
+        if (matched) {
+          rawEntries.push({
+            datRomId: matched.datRomId,
+            fileName: baseName,
+            filePath: dest,
+            size: matched.datRomSize ?? 0,
+            crc32: matched.datRomCrc32,
+            md5: matched.datRomMd5,
+            sha1: matched.datRomSha1
+          });
+        }
+      }
+      console.log(`[✓ Terminé]      ${filePaths.length} fichier(s) bruts copiés → ${settings.validatedRomsFolder}`);
+
+      // Enregistrer directement en base : scanned_files + rom_matches dans le dossier cible
+      if (rawEntries.length > 0) {
+        await recordConsolidatedRawFiles(db, settings.validatedRomsFolder, settings.validatedRomsFolder, rawEntries);
+      }
+
+      result.stats.archivesCreated++;
+      result.stats.gamesConsolidated++;
+
+      await db.run(
+        `INSERT INTO consolidation_log (game_id, game_name, output_path, output_format, status, roms_consolidated, roms_total)
+         VALUES (?, ?, ?, ?, 'success', ?, ?)`,
+        [game.id, game.name, settings.validatedRomsFolder, 'raw', matchedRoms.length, game.totalRoms]
+      );
+      return;
+    }
+
     if (settings.useBestCompression) {
       // Mode meilleure compression : tester plusieurs formats et garder le plus petit
       const result_best = await createBestCompressedArchive(
@@ -602,6 +661,24 @@ async function consolidateGame(
 
     result.stats.archivesCreated++;
     result.stats.gamesConsolidated++;
+
+    // Enregistrer directement l'archive en base (scanned_files + archive_contents + rom_matches)
+    // au lieu de rescanner le dossier après coup.
+    try {
+      const archiveEntries: ConsolidatedRomEntry[] = matchedRoms.map(m => ({
+        datRomId: m.datRomId,
+        fileName: m.datRomName,
+        size: m.datRomSize ?? 0,
+        crc32: m.datRomCrc32,
+        md5: m.datRomMd5,
+        sha1: m.datRomSha1
+      }));
+      await recordConsolidatedArchive(
+        db, finalDestPath, settings.validatedRomsFolder, finalFormat, archiveEntries
+      );
+    } catch (recErr) {
+      console.warn(`[recordConsolidation] échec enregistrement direct, un rescan ultérieur le rattrapera : ${recErr}`);
+    }
 
     // Logger en base
     await db.run(
@@ -857,6 +934,21 @@ async function tryDirectArchiveCopy(
       result.stats.gamesConsolidated++;
       result.stats.romsExtracted += matchedRoms.length;
 
+      // Enregistrer directement en base pour éviter le rescan post-consolidation
+      try {
+        const entries: ConsolidatedRomEntry[] = matchedRoms.map(m => ({
+          datRomId: m.datRomId,
+          fileName: m.datRomName,
+          size: m.datRomSize ?? 0,
+          crc32: m.datRomCrc32,
+          md5: m.datRomMd5,
+          sha1: m.datRomSha1
+        }));
+        await recordConsolidatedArchive(db, finalDestPath, settings.validatedRomsFolder, 'chd', entries);
+      } catch (recErr) {
+        console.warn(`[recordConsolidation] échec enregistrement direct (CHD direct copy) : ${recErr}`);
+      }
+
       await db.run(
         `INSERT INTO consolidation_log (game_id, game_name, output_path, output_format, status, roms_consolidated, roms_total)
          VALUES (?, ?, ?, ?, 'success', ?, ?)`,
@@ -947,6 +1039,23 @@ async function tryDirectArchiveCopy(
     result.stats.gamesConsolidated++;
     result.stats.romsExtracted += matchedRoms.length;
 
+    // Enregistrer directement en base pour éviter le rescan post-consolidation
+    try {
+      const entries: ConsolidatedRomEntry[] = matchedRoms.map(m => ({
+        datRomId: m.datRomId,
+        fileName: m.datRomName,
+        size: m.datRomSize ?? 0,
+        crc32: m.datRomCrc32,
+        md5: m.datRomMd5,
+        sha1: m.datRomSha1
+      }));
+      await recordConsolidatedArchive(
+        db, finalDestPath, settings.validatedRomsFolder, candidate.archive_type, entries
+      );
+    } catch (recErr) {
+      console.warn(`[recordConsolidation] échec enregistrement direct (direct archive copy) : ${recErr}`);
+    }
+
     await db.run(
       `INSERT INTO consolidation_log (game_id, game_name, output_path, output_format, status, roms_consolidated, roms_total)
        VALUES (?, ?, ?, ?, 'success', ?, ?)`,
@@ -985,6 +1094,9 @@ async function consolidateChdGame(
 
   await fs.mkdir(targetDir, { recursive: true });
 
+  // Liste des fichiers produits pour enregistrement direct en base
+  const producedChds: Array<{ targetPath: string; rom: MatchedRomInfo }> = [];
+
   for (const rom of matchedRoms) {
     const sourcePath = rom.scannedFilePath || rom.archivePath;
     if (!sourcePath) continue;
@@ -1003,10 +1115,33 @@ async function consolidateChdGame(
       await fs.copyFile(sourcePath, targetPath);
     }
 
+    producedChds.push({ targetPath, rom });
     result.stats.romsExtracted++;
   }
 
   result.stats.gamesConsolidated++;
+
+  // Enregistrer chaque CHD produit en base pour éviter le rescan
+  // Si plusieurs CHD : ils sont dans un sous-dossier
+  // Si un seul : il est directement dans validatedRomsFolder
+  try {
+    for (const { targetPath, rom } of producedChds) {
+      const entry: ConsolidatedRomEntry = {
+        datRomId: rom.datRomId,
+        fileName: rom.datRomName,
+        size: rom.datRomSize ?? 0,
+        crc32: rom.datRomCrc32,
+        md5: rom.datRomMd5,
+        sha1: rom.datRomSha1
+      };
+      const parentDir = matchedRoms.length > 1 ? targetDir : settings.validatedRomsFolder;
+      // Pour le cas multi-CHD, on doit s'assurer que le sous-dossier existe en scanned_folders
+      // recordConsolidatedArchive le créera si besoin via ensureScannedFolder
+      await recordConsolidatedArchive(db, targetPath, parentDir, 'chd', [entry]);
+    }
+  } catch (recErr) {
+    console.warn(`[recordConsolidation] échec enregistrement direct (CHD game) : ${recErr}`);
+  }
 
   await db.run(
     `INSERT INTO consolidation_log (game_id, game_name, output_path, output_format, status, roms_consolidated, roms_total)
@@ -1237,5 +1372,185 @@ async function moveUnmatchedFiles(
       );
       console.error(`Erreur déplacement ${file.file_name}:`, error);
     }
+  }
+}
+
+/**
+ * Consolide un jeu unique à partir de fichiers déjà extraits et vérifiés.
+ * Utilisé par le moteur de téléchargement après download + hash matching.
+ *
+ * @param gameName - Nom du jeu (sera sanitisé pour le nom de fichier)
+ * @param extractedFiles - Chemins absolus des fichiers extraits déjà matchés (nommés selon le DAT)
+ * @param systemId - Identifiant du système (ex: 'psx', 'nes')
+ * @param matchedDatRomIds - Optionnel : map filename → datRomId pour enregistrer
+ *   directement les rom_matches en base (évite un rescan post-consolidation).
+ * @returns Chemin du fichier consolidé dans validatedRomsFolder
+ */
+export async function consolidateSingleGame(
+  db: Database,
+  gameName: string,
+  extractedFiles: string[],
+  systemId: string,
+  matchedDatRomIds?: Map<string, number>
+): Promise<string> {
+  const settings = settingsManager.getAll();
+  // Résoudre les dossiers cibles effectifs (avec sous-dossier système si mode multi-système)
+  settings.validatedRomsFolder = await getEffectiveValidatedRomsFolder(db);
+  settings.tempExtractionFolder = await getEffectiveTempExtractionFolder(db);
+  const archiveManager = new ArchiveManager();
+  const sanitizedName = sanitizeFileName(gameName);
+
+  await fs.mkdir(settings.validatedRomsFolder, { recursive: true });
+
+  // Helper : construire les entrées d'enregistrement (size + hashs depuis dat_roms)
+  // pour les fichiers extraits qui ont un datRomId connu.
+  async function buildEntries(): Promise<ConsolidatedRomEntry[]> {
+    if (!matchedDatRomIds || matchedDatRomIds.size === 0) return [];
+    const ids = [...matchedDatRomIds.values()];
+    const placeholders = ids.map(() => '?').join(',');
+    const rows = await db.all<{ id: number; name: string; size: number | null; crc32: string | null; md5: string | null; sha1: string | null }>(
+      `SELECT id, name, size, crc32, md5, sha1 FROM dat_roms WHERE id IN (${placeholders})`,
+      ids
+    );
+    return rows.map(r => ({
+      datRomId: r.id,
+      fileName: r.name,
+      size: r.size ?? 0,
+      crc32: r.crc32,
+      md5: r.md5,
+      sha1: r.sha1
+    }));
+  }
+
+  // Cas spécial CHD : si tous les fichiers sont déjà des CHD, copier directement
+  const allChd = extractedFiles.every(f => path.extname(f).toLowerCase() === '.chd');
+
+  if (allChd) {
+    // Copier les CHD directement dans validatedRomsFolder
+    const copiedPaths: string[] = [];
+    for (const filePath of extractedFiles) {
+      const destPath = path.join(settings.validatedRomsFolder, path.basename(filePath));
+      await fs.copyFile(filePath, destPath);
+      copiedPaths.push(destPath);
+    }
+    console.log(`[consolidateSingleGame] ${gameName} → ${extractedFiles.length} CHD copié(s) directement`);
+
+    // Enregistrer chaque CHD copié en base pour éviter le rescan
+    try {
+      const entries = await buildEntries();
+      for (const destPath of copiedPaths) {
+        const matching = entries.find(e => e.fileName === path.basename(destPath));
+        if (matching) {
+          await recordConsolidatedArchive(db, destPath, settings.validatedRomsFolder, 'chd', [matching]);
+        }
+      }
+    } catch (recErr) {
+      console.warn(`[recordConsolidation] échec enregistrement direct (single CHD copy) : ${recErr}`);
+    }
+
+    return settings.validatedRomsFolder;
+  }
+
+  // Déterminer si conversion CHD est possible
+  const chdPossible = extractedFiles.some(f =>
+    CHD_ENTRY_EXTENSIONS.includes(path.extname(f).toLowerCase())
+  );
+
+  const targetFormat = determineTargetFormat(systemId, settings, chdPossible);
+
+  // Mode brut : aucun format d'archive autorisé → copier les fichiers bruts directement
+  // à la racine du dossier cible (pas de sous-dossier par jeu).
+  if (targetFormat === null) {
+    await fs.mkdir(settings.validatedRomsFolder, { recursive: true });
+    const rawCopies: Array<{ filePath: string; fileName: string }> = [];
+    for (const fp of extractedFiles) {
+      const fileName = path.basename(fp);
+      const dest = path.join(settings.validatedRomsFolder, fileName);
+      await fs.copyFile(fp, dest);
+      rawCopies.push({ filePath: dest, fileName });
+    }
+    console.log(`[consolidateSingleGame] ${gameName} → ${extractedFiles.length} fichier(s) bruts copiés dans ${settings.validatedRomsFolder}`);
+
+    // Enregistrer en base pour éviter le rescan
+    try {
+      const entries = await buildEntries();
+      const rawEntries = rawCopies
+        .map(c => {
+          const matching = entries.find(e => e.fileName === c.fileName);
+          if (!matching) return null;
+          return { ...matching, filePath: c.filePath };
+        })
+        .filter((e): e is ConsolidatedRomEntry & { filePath: string } => e !== null);
+      if (rawEntries.length > 0) {
+        await recordConsolidatedRawFiles(db, settings.validatedRomsFolder, settings.validatedRomsFolder, rawEntries);
+      }
+    } catch (recErr) {
+      console.warn(`[recordConsolidation] échec enregistrement direct (single raw) : ${recErr}`);
+    }
+
+    return settings.validatedRomsFolder;
+  }
+
+  // Créer un dossier temporaire pour l'output
+  const tempOutputDir = path.join(settings.tempExtractionFolder, `download-consolidate-${Date.now()}`);
+  await fs.mkdir(tempOutputDir, { recursive: true });
+
+  try {
+    const tempOutputBasePath = path.join(tempOutputDir, sanitizedName);
+    let tempOutputPath: string;
+
+    if (settings.useBestCompression) {
+      const bestResult = await createBestCompressedArchive(
+        extractedFiles, tempOutputBasePath, settings, archiveManager, systemId, chdPossible
+      );
+      tempOutputPath = bestResult.outputPath;
+    } else {
+      const archiveFiles = (targetFormat === 'chd')
+        ? getChdInputFiles(extractedFiles)
+        : extractedFiles;
+
+      if (archiveFiles.length === 0) {
+        // Fallback si CHD impossible
+        tempOutputPath = await withTimeout(
+          archiveManager.createArchive(extractedFiles, tempOutputBasePath,
+            { archiveFormatPriority: ['7z'], compressionLevel: settings.compressionLevel,
+              solidArchive: settings.solidArchive, multithreading: settings.multithreading },
+            '7z' as any),
+          ARCHIVE_CREATION_TIMEOUT_MS, `Création archive 7z (fallback) pour ${gameName}`
+        );
+      } else {
+        tempOutputPath = await withTimeout(
+          archiveManager.createArchive(archiveFiles, tempOutputBasePath,
+            { archiveFormatPriority: [targetFormat], compressionLevel: settings.compressionLevel,
+              solidArchive: settings.solidArchive, multithreading: settings.multithreading },
+            targetFormat as any),
+          ARCHIVE_CREATION_TIMEOUT_MS, `Création archive ${targetFormat} pour ${gameName}`
+        );
+      }
+    }
+
+    // Copier le résultat final vers validatedRomsFolder
+    const finalDestPath = path.join(settings.validatedRomsFolder, path.basename(tempOutputPath));
+    await fs.copyFile(tempOutputPath, finalDestPath);
+    console.log(`[consolidateSingleGame] ${gameName} → ${finalDestPath}`);
+
+    // Enregistrer l'archive directement en base pour éviter le rescan
+    try {
+      const entries = await buildEntries();
+      if (entries.length > 0) {
+        const archiveType = path.extname(finalDestPath).toLowerCase().slice(1) || targetFormat;
+        await recordConsolidatedArchive(
+          db, finalDestPath, settings.validatedRomsFolder, archiveType, entries
+        );
+      }
+    } catch (recErr) {
+      console.warn(`[recordConsolidation] échec enregistrement direct (single archive) : ${recErr}`);
+    }
+
+    return finalDestPath;
+  } finally {
+    try {
+      await fs.rm(tempOutputDir, { recursive: true, force: true });
+    } catch { /* ignore */ }
   }
 }

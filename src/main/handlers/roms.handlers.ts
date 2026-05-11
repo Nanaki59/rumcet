@@ -76,6 +76,40 @@ export function registerRomsHandlers(ipcMain: IpcMain, mainWindow: BrowserWindow
     }
   });
 
+  // Retirer un fichier de la base (sans toucher au fichier physique)
+  ipcMain.handle('roms:remove-file', async (_event, filePath: string) => {
+    const database = databaseService.getDatabase();
+    if (!database) {
+      throw new Error('Aucune base de données active');
+    }
+    try {
+      await database.run('DELETE FROM scanned_files WHERE file_path = ?', [filePath]);
+      return { success: true };
+    } catch (error) {
+      console.error('Erreur lors du retrait du fichier :', error);
+      throw error;
+    }
+  });
+
+  // Supprimer physiquement un fichier (corbeille)
+  ipcMain.handle('file:delete', async (_event, filePath: string) => {
+    try {
+      const exists = await fs.access(filePath).then(() => true).catch(() => false);
+      if (!exists) throw new Error("Le fichier n'existe pas");
+      await shell.trashItem(filePath);
+      // Retirer aussi de la base (le fichier physique n'existe plus)
+      const database = databaseService.getDatabase();
+      if (database) {
+        await database.run('DELETE FROM scanned_files WHERE file_path = ?', [filePath]);
+      }
+      sendLogToRenderer(mainWindow, 'info', 'folder', `Fichier déplacé vers la corbeille : ${filePath}`);
+      return true;
+    } catch (error) {
+      sendLogToRenderer(mainWindow, 'error', 'folder', `Erreur lors de la suppression du fichier : ${error}`);
+      throw error;
+    }
+  });
+
   // Supprimer un dossier de ROMs
   ipcMain.handle('roms:remove-folder', async (_event, folderPath: string) => {
     const database = databaseService.getDatabase();

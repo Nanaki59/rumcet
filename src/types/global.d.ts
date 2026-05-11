@@ -7,8 +7,10 @@ export type RarTool = '7zip' | 'winrar' | 'unrar';
 export type Theme = 'light' | 'dark';
 export type Language = 'fr' | 'en';
 
-export type SystemCategory = 'Nintendo' | 'Sega' | 'Sony' | 'Arcade' | 'Ordinateurs' | 'Autres';
-export type SystemSubcategory = 'Consoles de salon' | 'Consoles portables';
+// Manufacturer (ex: 'Sony', 'Nintendo', 'Sega', 'Atari'...). Aligné sur le registre central src/config/systems.ts.
+export type SystemCategory = string;
+// Type de plateforme tel que défini par Recalbox (console, handheld, arcade, computer).
+export type SystemSubcategory = string;
 
 // Interface pour la compatibilité des systèmes
 export interface SystemCompatibility {
@@ -42,6 +44,7 @@ export interface AppSettings {
   defaultRomsFolder: string;
   unmatchedRomsFolder: string;
   validatedRomsFolder: string;
+  validatedRomsMultiSystem?: boolean;
   tempExtractionFolder: string;
 
   // ========================================
@@ -50,6 +53,24 @@ export interface AppSettings {
   cleanSourceAfterConsolidation: boolean;
   cleanupScope: CleanupScope;
   protectFilesForUnselectedGames: boolean;
+
+  // ========================================
+  // ONGLET GÉNÉRAL - Mise à jour DAT
+  // ========================================
+  autoSelectNewGames: boolean;
+
+  // ========================================
+  // ONGLET GÉNÉRAL - Téléchargement DAT (No-Intro defaults)
+  // ========================================
+  noIntroDefaults?: NoIntroFormParams;
+
+  // ========================================
+  // ONGLET TÉLÉCHARGEMENT - Sources et extensions
+  // ========================================
+  downloadSources?: DownloadSource[];
+  downloadExtensions?: string[];
+  downloadSystemExtensions?: SystemDownloadExtensions[];
+  incompleteRomsFolder?: string;
 
   // ========================================
   // ONGLET ARCHIVES - Niveau de compression
@@ -114,6 +135,138 @@ export interface DatLoadResult {
     homepage: string;
     url: string;
   };
+}
+
+// Rapport de comparaison entre ancienne et nouvelle version du DAT
+export interface DatUpdateReport {
+  success: boolean;
+  datInfo: {
+    name: string;
+    description: string;
+    version: string;
+    date: string;
+    author: string;
+    homepage: string;
+    url: string;
+  };
+  previousVersion: string;
+  previousName: string;
+  comparison: {
+    newGames: number;
+    modifiedGames: number;
+    unchangedGames: number;
+    disappearedGames: number;
+    disappeared: Array<{ name: string; description: string; category: string }>;
+  };
+}
+
+// Interface pour le résultat de mise à jour DAT (inclut aussi les totaux d'import)
+export interface DatUpdateResult extends DatUpdateReport {
+  gamesCount: number;
+  romsCount: number;
+}
+
+// Interface pour le diff ROM d'un jeu
+export interface GameDiffResult {
+  added: Array<{ name: string; size: number; crc32: string; md5: string; sha1: string }>;
+  removed: Array<{ name: string; size: number; crc32: string; md5: string; sha1: string }>;
+  changed: Array<{
+    name: string;
+    old: { name: string; size: number; crc32: string; md5: string; sha1: string };
+    new: { name: string; size: number; crc32: string; md5: string; sha1: string };
+  }>;
+}
+
+// Interface pour un jeu disparu
+export interface DisappearedGame {
+  id: number;
+  name: string;
+  description: string;
+  category: string;
+  is_selected: number;
+  roms: Array<{ name: string; size: number; crc32: string }>;
+}
+
+// Interfaces pour le téléchargement de fichiers DAT
+export interface DatSystemInfo {
+  name: string;
+  sources: Array<{
+    type: 'no-intro' | 'redump';
+    id: string;
+    recommended: boolean;
+  }>;
+}
+
+export interface MameVersion {
+  version: string;
+  date?: string;
+  isLatest?: boolean;
+  recalboxTag?: string;
+  downloadUrl: string;
+}
+
+export interface NoIntroFormParams {
+  includeBios: boolean;
+  includeProto: boolean;
+  includeBeta: boolean;
+  includeDemo: boolean;
+  includeSample: boolean;
+}
+
+export interface DatDownloadParams {
+  type: 'system' | 'mame';
+  source?: 'no-intro' | 'redump';
+  systemId?: string;
+  mameVersion?: string;
+  destFolder: string;
+  noIntroParams?: NoIntroFormParams;
+}
+
+export interface DatDownloadResult {
+  success: boolean;
+  filePath?: string;
+  error?: string;
+}
+
+// ========================================
+// INTERFACES POUR LE TÉLÉCHARGEMENT DE ROMS
+// ========================================
+
+export interface DownloadSource {
+  id: string;
+  name: string;
+  baseUrl: string;
+  enabled: boolean;
+  extensions?: string[];
+  systemExtensions?: Record<string, string[]>;
+}
+
+export interface SystemDownloadExtensions {
+  systemId: string;
+  extensions: string[];
+}
+
+export interface RomDownloadProgress {
+  phase: 'preparing' | 'local-search' | 'downloading' | 'extracting' | 'hashing' | 'matching' | 'consolidating' | 'incomplete' | 'complete';
+  currentGame?: string;
+  currentGameIndex: number;
+  totalGames: number;
+  currentSource?: string;
+  currentExtension?: string;
+  downloadPercent?: number;
+  message: string;
+}
+
+export interface RomDownloadGameResult {
+  gameName: string;
+  success: boolean;
+  sourcesUsed?: string[];
+  error?: string;
+}
+
+export interface RomDownloadResult {
+  stats: { totalGames: number; downloaded: number; matched: number; consolidated: number; failed: number };
+  results: RomDownloadGameResult[];
 }
 
 // Interface pour l'ouverture d'une base de données existante
@@ -405,6 +558,22 @@ declare global {
       loadDatFile: (filePath: string) => Promise<DatLoadResult>;
 
       /**
+       * Mettre à jour le DAT : snapshot, import nouveau DAT, comparaison.
+       */
+      updateDat: () => Promise<DatUpdateResult | null>;
+      getDatUpdateReport: () => Promise<DatUpdateReport | null>;
+
+      /**
+       * Obtenir le détail des différences de ROMs pour un jeu modifié.
+       */
+      getGameDiff: (gameName: string) => Promise<GameDiffResult>;
+
+      /**
+       * Obtenir la liste des jeux disparus après une mise à jour DAT.
+       */
+      getDisappearedGames: () => Promise<DisappearedGame[]>;
+
+      /**
        * Etape 4 - Partie 1 - Sélectionner des dossiers de ROMs
        * @returns Les dossiers de ROMs à scanner et à ajouter dans la base de données
        */
@@ -437,6 +606,24 @@ declare global {
       closeDatabase: () => Promise<boolean>;
 
       /**
+       * Lire une métadonnée de la base de données.
+       */
+      getDbMetadata: (key: string) => Promise<string | null>;
+
+      /**
+       * Écrire une métadonnée dans la base de données.
+       */
+      setDbMetadata: (key: string, value: string) => Promise<void>;
+
+      /**
+       * Retourne le dossier cible effectif pour les ROMs validées.
+       * Si l'option "Dossier multi-système" est activée et qu'un system_id est défini,
+       * retourne validatedRomsFolder/<systemId> (et crée le sous-dossier).
+       * Sinon retourne validatedRomsFolder tel quel.
+       */
+      getEffectiveValidatedFolder: () => Promise<string>;
+
+      /**
        * Supprime un dossier de la base de données.
        * @param folderPath - Le chemin du dossier à supprimer.
        * @returns true si le dossier a été supprimé.
@@ -449,6 +636,12 @@ declare global {
        * @returns true si le dossier a été supprimé.
        */
       deleteFolder: (folderPath: string) => Promise<boolean>;
+
+      /** Retire un fichier de la base de données (sans toucher au fichier physique). */
+      removeFile: (filePath: string) => Promise<{ success: boolean }>;
+
+      /** Supprime physiquement un fichier (le déplace vers la corbeille) + retire de la base. */
+      deleteFile: (filePath: string) => Promise<boolean>;
 
       /**
        * Liste les jeux depuis la base de données.
@@ -704,6 +897,25 @@ declare global {
       onMenuAction: (callback: (action: string) => void) => void;
       onScanProgress: (callback: (data: any) => void) => void;
       onViewMode: (callback: (mode: string) => void) => void;
+
+      // ========================================
+      // API de téléchargement de DAT
+      // ========================================
+
+      getDownloadSystems: () => Promise<DatSystemInfo[]>;
+      getMameVersions: () => Promise<MameVersion[]>;
+      downloadDat: (params: DatDownloadParams) => Promise<DatDownloadResult>;
+      openDatDownloadWindow: () => Promise<void>;
+      selectDownloadFolder: () => Promise<string | null>;
+
+      // ========================================
+      // API de téléchargement de ROMs
+      // ========================================
+
+      downloadRom: (gameIds: number[]) => Promise<RomDownloadResult>;
+      downloadAllMissingRoms: () => Promise<RomDownloadResult>;
+      cancelRomDownload: () => Promise<void>;
+      onRomDownloadProgress: (callback: (data: RomDownloadProgress) => void) => () => void;
 
       // ========================================
       // API de mise à jour du menu
