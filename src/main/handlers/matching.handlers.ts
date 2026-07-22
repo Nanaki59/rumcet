@@ -3,6 +3,8 @@ import { IpcMain, dialog, BrowserWindow, app } from 'electron';
 import path from 'path';
 import fs from 'fs/promises';
 import { matchRomsWithFiles, getMissingRoms, getExtraFiles, getGameMatchStatuses } from '../../helpers/matchRoms.js';
+import { detectScannedSetMode } from '../../helpers/detectSetMode.js';
+import { setMetadata } from '../../database/init.js';
 import { databaseService } from '../services/database.service.js';
 import { sendLogToRenderer } from '../utils/logger.js';
 
@@ -16,22 +18,34 @@ export function registerMatchingHandlers(ipcMain: IpcMain, mainWindow: BrowserWi
     }
 
     try {
-      sendLogToRenderer(mainWindow, 'info', 'match', '🔍 Début du matching des ROMs...');
+      sendLogToRenderer(mainWindow, 'info', 'match', 'logs.match.start');
       
       const result = await matchRomsWithFiles(database);
-      
-      sendLogToRenderer(mainWindow, 'info', 'match', '✅ Matching terminé !');
-      sendLogToRenderer(mainWindow, 'info', 'match', `📊 Statistiques :`);
-      sendLogToRenderer(mainWindow, 'info', 'match', `   - Jeux complets : ${result.stats.completeGames}/${result.stats.totalGames} ✅`);
-      sendLogToRenderer(mainWindow, 'info', 'match', `   - Jeux partiels : ${result.stats.partialGames}/${result.stats.totalGames} ⚠️`);
-      sendLogToRenderer(mainWindow, 'warning', 'match', `   - Jeux manquants : ${result.stats.missingGames}/${result.stats.totalGames} ❌`);
-      sendLogToRenderer(mainWindow, 'info', 'match', `   - ROMs matchées : ${result.stats.matchedRoms}/${result.stats.totalDatRoms}`);
-      sendLogToRenderer(mainWindow, 'warning', 'match', `   - ROMs manquantes : ${result.stats.missingRoms}/${result.stats.totalDatRoms}`);
-      sendLogToRenderer(mainWindow, 'warning', 'match', `   - Fichiers non matchés : ${result.stats.extraFiles}`);
-      
+
+      sendLogToRenderer(mainWindow, 'info', 'match', 'logs.match.done');
+      sendLogToRenderer(mainWindow, 'info', 'match', 'logs.match.statsHeader');
+      sendLogToRenderer(mainWindow, 'info', 'match', 'logs.match.statsComplete', { count: result.stats.completeGames, total: result.stats.totalGames });
+      sendLogToRenderer(mainWindow, 'info', 'match', 'logs.match.statsPartial', { count: result.stats.partialGames, total: result.stats.totalGames });
+      sendLogToRenderer(mainWindow, 'warning', 'match', 'logs.match.statsMissing', { count: result.stats.missingGames, total: result.stats.totalGames });
+      sendLogToRenderer(mainWindow, 'info', 'match', 'logs.match.statsMatchedRoms', { count: result.stats.matchedRoms, total: result.stats.totalDatRoms });
+      sendLogToRenderer(mainWindow, 'warning', 'match', 'logs.match.statsMissingRoms', { count: result.stats.missingRoms, total: result.stats.totalDatRoms });
+      sendLogToRenderer(mainWindow, 'warning', 'match', 'logs.match.statsExtraFiles', { count: result.stats.extraFiles });
+
+      // Détection du mode du set scanné (split / non-merged / merged)
+      // — seulement pertinent pour les DAT arcade.
+      try {
+        const scannedSetMode = await detectScannedSetMode(database);
+        await setMetadata(database, 'scanned_set_mode', scannedSetMode);
+        if (scannedSetMode !== 'n/a') {
+          sendLogToRenderer(mainWindow, 'info', 'match', 'logs.match.scannedSetMode', { mode: scannedSetMode });
+        }
+      } catch (modeError) {
+        sendLogToRenderer(mainWindow, 'warning', 'match', 'logs.match.setModeDetectionFailed', { error: String(modeError) });
+      }
+
       return result;
     } catch (error) {
-      sendLogToRenderer(mainWindow, 'error', 'match', `❌ Erreur lors du matching : ${error}`);
+      sendLogToRenderer(mainWindow, 'error', 'match', 'logs.match.error', { error: String(error) });
       throw error;
     }
   });
@@ -46,7 +60,7 @@ export function registerMatchingHandlers(ipcMain: IpcMain, mainWindow: BrowserWi
     try {
       return await getMissingRoms(database);
     } catch (error) {
-      console.error('Erreur lors de la récupération des ROMs manquantes:', error);
+      console.error('Error while retrieving missing ROMs:', error);
       throw error;
     }
   });
@@ -62,7 +76,7 @@ export function registerMatchingHandlers(ipcMain: IpcMain, mainWindow: BrowserWi
     try {
       return await getGameMatchStatuses(database);
     } catch (error) {
-      console.error('Erreur lors de la récupération des statuts des jeux:', error);
+      console.error('Error while retrieving game statuses:', error);
       // Retourner un tableau vide en cas d'erreur
       return [];
     }
@@ -114,7 +128,7 @@ export function registerMatchingHandlers(ipcMain: IpcMain, mainWindow: BrowserWi
         archiveIsPerfect: !!m.archiveIsPerfect
       }));
     } catch (error) {
-      console.error('Erreur lors de la récupération des matches du jeu:', error);
+      console.error('Error while retrieving game matches:', error);
       return [];
     }
   });
@@ -129,7 +143,7 @@ export function registerMatchingHandlers(ipcMain: IpcMain, mainWindow: BrowserWi
     try {
       return await getExtraFiles(database);
     } catch (error) {
-      console.error('Erreur lors de la récupération des fichiers extras:', error);
+      console.error('Error while retrieving extra files:', error);
       throw error;
     }
   });
@@ -142,47 +156,58 @@ export function registerMatchingHandlers(ipcMain: IpcMain, mainWindow: BrowserWi
     }
 
     try {
-      const placeholders = fileIds.map(() => '?').join(',');
+      // Chunké par lots de 900 IDs — la vue à plat d'un gros dossier (DAT MAME
+      // complet ≈ 48k fichiers) dépasserait la limite de variables SQLite.
+      const ID_CHUNK = 900;
+      const looseMatches: any[] = [];
+      const archiveMatches: any[] = [];
 
-      // Pour les fichiers loose : matches directs (archive_content_id IS NULL)
-      const looseMatches = await database.all(`
-        SELECT
-          rm.scanned_file_id as fileId,
-          g.id as gameId,
-          g.name as gameName,
-          dr.id as datRomId,
-          dr.name as datRomName
-        FROM rom_matches rm
-        JOIN dat_roms dr ON rm.dat_rom_id = dr.id
-        JOIN games g ON dr.game_id = g.id
-        WHERE rm.scanned_file_id IN (${placeholders})
-          AND rm.archive_content_id IS NULL
-      `, fileIds);
+      for (let i = 0; i < fileIds.length; i += ID_CHUNK) {
+        const chunk = fileIds.slice(i, i + ID_CHUNK);
+        const placeholders = chunk.map(() => '?').join(',');
 
-      // Pour les archives : matches via archive_contents
-      const archiveMatches = await database.all(`
-        SELECT
-          rm.scanned_file_id as fileId,
-          g.id as gameId,
-          g.name as gameName,
-          dr.id as datRomId,
-          dr.name as datRomName,
-          ac.file_name as contentFileName,
-          rm.archive_is_perfect as archiveIsPerfect,
-          (SELECT COUNT(*) FROM dat_roms dr2 WHERE dr2.game_id = g.id) as totalGameRoms,
-          (SELECT COUNT(DISTINCT rm2.dat_rom_id) FROM rom_matches rm2
-           JOIN dat_roms dr3 ON rm2.dat_rom_id = dr3.id
-           WHERE rm2.scanned_file_id = rm.scanned_file_id
-             AND dr3.game_id = g.id
-             AND rm2.archive_content_id IS NOT NULL
-          ) as matchedGameRoms
-        FROM rom_matches rm
-        JOIN dat_roms dr ON rm.dat_rom_id = dr.id
-        JOIN games g ON dr.game_id = g.id
-        JOIN archive_contents ac ON rm.archive_content_id = ac.id
-        WHERE rm.scanned_file_id IN (${placeholders})
-          AND rm.archive_content_id IS NOT NULL
-      `, fileIds);
+        // Pour les fichiers loose : matches directs (archive_content_id IS NULL)
+        const loose = await database.all(`
+          SELECT
+            rm.scanned_file_id as fileId,
+            g.id as gameId,
+            g.name as gameName,
+            dr.id as datRomId,
+            dr.name as datRomName
+          FROM rom_matches rm
+          JOIN dat_roms dr ON rm.dat_rom_id = dr.id
+          JOIN games g ON dr.game_id = g.id
+          WHERE rm.scanned_file_id IN (${placeholders})
+            AND rm.archive_content_id IS NULL
+        `, chunk);
+        looseMatches.push(...loose);
+
+        // Pour les archives : matches via archive_contents
+        const arch = await database.all(`
+          SELECT
+            rm.scanned_file_id as fileId,
+            g.id as gameId,
+            g.name as gameName,
+            dr.id as datRomId,
+            dr.name as datRomName,
+            ac.file_name as contentFileName,
+            rm.archive_is_perfect as archiveIsPerfect,
+            (SELECT COUNT(*) FROM dat_roms dr2 WHERE dr2.game_id = g.id) as totalGameRoms,
+            (SELECT COUNT(DISTINCT rm2.dat_rom_id) FROM rom_matches rm2
+             JOIN dat_roms dr3 ON rm2.dat_rom_id = dr3.id
+             WHERE rm2.scanned_file_id = rm.scanned_file_id
+               AND dr3.game_id = g.id
+               AND rm2.archive_content_id IS NOT NULL
+            ) as matchedGameRoms
+          FROM rom_matches rm
+          JOIN dat_roms dr ON rm.dat_rom_id = dr.id
+          JOIN games g ON dr.game_id = g.id
+          JOIN archive_contents ac ON rm.archive_content_id = ac.id
+          WHERE rm.scanned_file_id IN (${placeholders})
+            AND rm.archive_content_id IS NOT NULL
+        `, chunk);
+        archiveMatches.push(...arch);
+      }
 
       // Construire le résultat par fileId
       const result: Record<number, {
@@ -245,7 +270,7 @@ export function registerMatchingHandlers(ipcMain: IpcMain, mainWindow: BrowserWi
 
       return result;
     } catch (error) {
-      console.error('Erreur lors de la récupération des infos de matching fichiers:', error);
+      console.error('Error while retrieving file matching info:', error);
       return {};
     }
   });
@@ -306,10 +331,10 @@ export function registerMatchingHandlers(ipcMain: IpcMain, mainWindow: BrowserWi
 
       await fs.writeFile(result.filePath, csvContent, 'utf8');
       
-      sendLogToRenderer(mainWindow, 'info', 'match', `📄 Rapport exporté : ${result.filePath}`);
+      sendLogToRenderer(mainWindow, 'info', 'match', 'logs.match.reportExported', { path: result.filePath });
       return { success: true, filePath: result.filePath };
     } catch (error) {
-      sendLogToRenderer(mainWindow, 'error', 'match', `❌ Erreur lors de l'export : ${error}`);
+      sendLogToRenderer(mainWindow, 'error', 'match', 'logs.match.exportError', { error: String(error) });
       throw error;
     }
   });

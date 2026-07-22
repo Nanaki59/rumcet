@@ -61,32 +61,62 @@ type ProgressCallback = (progress: RomDownloadProgress) => void;
 // RÉSOLUTION DES EXTENSIONS
 // ============================================
 
+/**
+ * Construit l'URL de base pour une source × système en concaténant baseUrl et
+ * le sous-dossier paramétré pour ce système (s'il existe), en éliminant les
+ * doublons de '/' à la jointure.
+ *
+ * Exemple : baseUrl="https://site.com/" + subfolder="/psx/" → "https://site.com/psx"
+ */
+function resolveSourceBase(source: DownloadSource, systemId: string): string {
+  const base = source.baseUrl.replace(/\/+$/, '');
+  const sourceSystem = source.systems?.find(s => s.systemId === systemId);
+  const sub = (sourceSystem?.subfolder || '').replace(/^\/+|\/+$/g, '');
+  return sub ? `${base}/${sub}` : base;
+}
+
+/**
+ * Résout la liste ordonnée des extensions à tester pour un couple source × système.
+ * Retourne des entries `{ ext, isArchive }` où isArchive détermine le mode de recherche :
+ *   - true  : tenter `gameName.ext`
+ *   - false : tenter chaque `datRom.name` qui se termine par `.ext`
+ *
+ * 1) Si la source a un override pour ce système → utiliser activeExtensions tel quel
+ * 2) Sinon, résolution globale via downloadSystemExtensions[systemId] → activeExtensions
+ * 3) Si aucune entrée existante : fallback prudent ['7z', 'zip', 'rar'] en mode archive.
+ */
+type ResolvedExtensionEntry = { ext: string; isArchive: boolean };
+
 function resolveExtensions(
   source: DownloadSource,
   systemId: string,
   settings: ReturnType<typeof settingsManager.getAll>
-): string[] {
-  // 1. Extensions spécifiques à ce système sur cette source
-  if (source.systemExtensions?.[systemId]?.length) {
-    return source.systemExtensions[systemId];
+): ResolvedExtensionEntry[] {
+  const dedup = (entries: { ext: string; isArchive: boolean }[]): ResolvedExtensionEntry[] => {
+    const seen = new Set<string>();
+    const out: ResolvedExtensionEntry[] = [];
+    for (const e of entries) {
+      const key = `${e.isArchive ? 'A' : 'R'}:${e.ext}`;
+      if (e.ext && !seen.has(key)) { seen.add(key); out.push({ ext: e.ext, isArchive: e.isArchive }); }
+    }
+    return out;
+  };
+
+  // 1) Override au niveau source × système
+  const sourceSystem = source.systems?.find(s => s.systemId === systemId);
+  if (sourceSystem?.override?.activeExtensions?.length) {
+    return dedup(sourceSystem.override.activeExtensions);
   }
-  // 2. Extensions globales de cette source
-  if (source.extensions?.length) {
-    return source.extensions;
+
+  // 2) Résolution globale via downloadSystemExtensions
+  const sysCfg = settings.downloadSystemExtensions?.find(s => s.systemId === systemId);
+  if (sysCfg?.activeExtensions?.length) {
+    return dedup(sysCfg.activeExtensions);
   }
-  // 3. Extensions globales pour ce système (settings)
-  const systemExt = settings.downloadSystemExtensions?.find(s => s.systemId === systemId);
-  if (systemExt?.extensions?.length) {
-    return systemExt.extensions;
-  }
-  // 4. Extensions par défaut dérivées de la compatibilité système (registre central)
-  const sysDef = getSystemById(systemId);
-  if (sysDef) {
-    const exts = [...sysDef.supportedFormats, ...sysDef.warningFormats];
-    if (exts.length > 0) return exts;
-  }
-  // 5. Fallback global
-  return settings.downloadExtensions || ['7z', 'zip', 'chd', 'rar', 'iso', 'cso', 'pbp'];
+
+  // 3) Fallback : extensions globales en mode archive
+  const globals = settings.downloadExtensions ?? ['7z', 'zip', 'rar'];
+  return dedup(globals.map(e => ({ ext: e.replace(/^\./, '').toLowerCase(), isArchive: true })));
 }
 
 // ============================================
@@ -185,7 +215,8 @@ async function searchLocalFiles(
     currentGame: gameName,
     currentGameIndex: gameIndex || 0,
     totalGames: totalGames || 0,
-    message: `Recherche locale pour ${gameName}...`
+    key: 'logs.download.progress.localSearch',
+    params: { game: gameName }
   });
 
   try {
@@ -218,7 +249,7 @@ async function searchLocalFiles(
       }
     }
   } catch (error) {
-    console.error(`Erreur recherche locale ${gameFolder}:`, error);
+    console.error(`Local search error ${gameFolder}:`, error);
   }
 
   return matchedFiles;
@@ -252,144 +283,148 @@ async function tryDownloadAndVerifyGame(
     if (remainingDatRoms().length === 0) break;
     if (isCancelled?.()) break;
 
-    const extensions = resolveExtensions(source, systemId, settings);
+    const entries = resolveExtensions(source, systemId, settings);
+    const baseUrl = resolveSourceBase(source, systemId);
 
-    // ── Phase 1 : Téléchargement d'archives (gameName.ext) ──
-    for (const ext of extensions) {
+    // Une seule boucle : ordre = priorité de recherche définie dans activeExtensions
+    for (const entry of entries) {
       if (remainingDatRoms().length === 0) break;
       if (isCancelled?.()) break;
 
-      const url = source.baseUrl.replace(/\/+$/, '') + '/' + encodeURIComponent(gameName) + '.' + ext;
-      const destPath = path.join(gameTempDir, `_download.${ext}`);
+      if (entry.isArchive) {
+        // ─── Mode archive : tenter gameName.ext, extraire, hasher, matcher ───
+        const url = `${baseUrl}/${encodeURIComponent(gameName)}.${entry.ext}`;
+        const destPath = path.join(gameTempDir, `_download.${entry.ext}`);
 
-      console.log(`[Download] Tentative : ${url}`);
-      onProgress?.({
-        phase: 'downloading',
-        currentGame: gameName,
-        currentGameIndex: gameIndex || 0,
-        totalGames: totalGames || 0,
-        currentSource: source.name,
-        currentExtension: ext,
-        message: `${gameName} : ${url}`
-      });
-
-      try {
-        await streamDownload(url, destPath);
-        console.log(`[Download] OK : ${url}`);
-      } catch (err: any) {
-        console.log(`[Download] Échec (${err.message}) : ${url}`);
-        // 404 ou erreur réseau → essayer l'extension suivante
-        try { await fs.unlink(destPath); } catch { /* ignore */ }
-        continue;
-      }
-
-      // Extraire si c'est une archive
-      onProgress?.({
-        phase: 'extracting',
-        currentGame: gameName,
-        currentGameIndex: gameIndex || 0,
-        totalGames: totalGames || 0,
-        message: `${gameName} : extraction...`
-      });
-
-      const extractDir = path.join(gameTempDir, `_extract_${ext}`);
-      await fs.mkdir(extractDir, { recursive: true });
-
-      let extractedFiles: string[] = [];
-      try {
-        // Tenter l'extraction comme archive
-        await archiveManager.extractArchive(destPath, extractDir);
-        extractedFiles = await getAllFilesRecursive(extractDir);
-      } catch {
-        // Pas une archive valide — considérer le fichier téléchargé comme un fichier brut
-        extractedFiles = [destPath];
-      }
-
-      // Hasher et matcher chaque fichier extrait
-      for (const filePath of extractedFiles) {
-        if (remainingDatRoms().length === 0) break;
-
-        onProgress?.({
-          phase: 'hashing',
-          currentGame: gameName,
-          currentGameIndex: gameIndex || 0,
-          totalGames: totalGames || 0,
-          message: `${gameName} : vérification de ${path.basename(filePath)}...`
-        });
-
-        const hashes = await calculateFileHashes(filePath);
-
-        for (const datRom of remainingDatRoms()) {
-          const result = compareHashes(
-            { crc32: datRom.crc32, md5: datRom.md5, sha1: datRom.sha1 },
-            { crc32: hashes.crc32, md5: hashes.md5, sha1: hashes.sha1 }
-          );
-
-          if (result.matched) {
-            // Conserver le fichier matché dans un dossier dédié
-            const keepPath = path.join(gameTempDir, datRom.name);
-            if (filePath !== keepPath) {
-              await fs.mkdir(path.dirname(keepPath), { recursive: true });
-              await fs.copyFile(filePath, keepPath);
-            }
-            matchedFiles.set(datRom.id, {
-              datRomId: datRom.id,
-              datRomName: datRom.name,
-              filePath: keepPath,
-              source: source.name
-            });
-            break;
-          }
-        }
-      }
-
-      // Nettoyage des fichiers d'extraction temporaires
-      try { await fs.rm(extractDir, { recursive: true, force: true }); } catch { /* ignore */ }
-      try { await fs.unlink(destPath); } catch { /* ignore */ }
-    }
-
-    // ── Phase 2 : Fallback fichiers individuels ──
-    if (remainingDatRoms().length > 0) {
-      for (const datRom of [...remainingDatRoms()]) {
-        if (isCancelled?.()) break;
-
-        const url = source.baseUrl.replace(/\/+$/, '') + '/' + encodeURIComponent(datRom.name);
-        const destPath = path.join(gameTempDir, datRom.name);
-
-        console.log(`[ROM Download] Téléchargement individuel : ${url}`);
+        console.log(`[Download archive] Trying: ${url}`);
         onProgress?.({
           phase: 'downloading',
           currentGame: gameName,
           currentGameIndex: gameIndex || 0,
           totalGames: totalGames || 0,
           currentSource: source.name,
-          message: `${gameName} : téléchargement individuel ${url}`
+          currentExtension: entry.ext,
+          key: 'logs.download.progress.trying',
+          params: { game: gameName, url }
         });
 
         try {
           await streamDownload(url, destPath);
-          console.log(`[ROM Download] Téléchargement individuel réussi : ${url}`);
-        } catch {
-          console.log(`[ROM Download] Téléchargement individuel échoué : ${url}`);
+          console.log(`[Download archive] OK : ${url}`);
+        } catch (err: any) {
+          console.log(`[Download archive] Failed (${err.message}): ${url}`);
           try { await fs.unlink(destPath); } catch { /* ignore */ }
           continue;
         }
 
-        const hashes = await calculateFileHashes(destPath);
-        const result = compareHashes(
-          { crc32: datRom.crc32, md5: datRom.md5, sha1: datRom.sha1 },
-          { crc32: hashes.crc32, md5: hashes.md5, sha1: hashes.sha1 }
-        );
+        onProgress?.({
+          phase: 'extracting',
+          currentGame: gameName,
+          currentGameIndex: gameIndex || 0,
+          totalGames: totalGames || 0,
+          key: 'logs.download.progress.extracting',
+          params: { game: gameName }
+        });
 
-        if (result.matched) {
-          matchedFiles.set(datRom.id, {
-            datRomId: datRom.id,
-            datRomName: datRom.name,
-            filePath: destPath,
-            source: source.name
+        const extractDir = path.join(gameTempDir, `_extract_${entry.ext}`);
+        await fs.mkdir(extractDir, { recursive: true });
+
+        let extractedFiles: string[] = [];
+        try {
+          await archiveManager.extractArchive(destPath, extractDir);
+          extractedFiles = await getAllFilesRecursive(extractDir);
+        } catch {
+          // Pas une archive valide — considérer le fichier téléchargé comme un fichier brut
+          extractedFiles = [destPath];
+        }
+
+        for (const filePath of extractedFiles) {
+          if (remainingDatRoms().length === 0) break;
+
+          onProgress?.({
+            phase: 'hashing',
+            currentGame: gameName,
+            currentGameIndex: gameIndex || 0,
+            totalGames: totalGames || 0,
+            key: 'logs.download.progress.hashing',
+            params: { game: gameName, file: path.basename(filePath) }
           });
-        } else {
-          try { await fs.unlink(destPath); } catch { /* ignore */ }
+
+          const hashes = await calculateFileHashes(filePath);
+          for (const datRom of remainingDatRoms()) {
+            const result = compareHashes(
+              { crc32: datRom.crc32, md5: datRom.md5, sha1: datRom.sha1 },
+              { crc32: hashes.crc32, md5: hashes.md5, sha1: hashes.sha1 }
+            );
+            if (result.matched) {
+              const keepPath = path.join(gameTempDir, datRom.name);
+              if (filePath !== keepPath) {
+                await fs.mkdir(path.dirname(keepPath), { recursive: true });
+                await fs.copyFile(filePath, keepPath);
+              }
+              matchedFiles.set(datRom.id, {
+                datRomId: datRom.id,
+                datRomName: datRom.name,
+                filePath: keepPath,
+                source: source.name
+              });
+              break;
+            }
+          }
+        }
+
+        try { await fs.rm(extractDir, { recursive: true, force: true }); } catch { /* ignore */ }
+        try { await fs.unlink(destPath); } catch { /* ignore */ }
+      } else {
+        // ─── Mode raw : tenter chaque datRom dont le nom se termine par .ext ───
+        const targetRoms = remainingDatRoms().filter(r =>
+          r.name.toLowerCase().endsWith(`.${entry.ext.toLowerCase()}`)
+        );
+        if (targetRoms.length === 0) continue;
+
+        for (const datRom of targetRoms) {
+          if (isCancelled?.()) break;
+
+          const url = `${baseUrl}/${encodeURIComponent(datRom.name)}`;
+          const destPath = path.join(gameTempDir, datRom.name);
+
+          console.log(`[Download raw] Trying: ${url}`);
+          onProgress?.({
+            phase: 'downloading',
+            currentGame: gameName,
+            currentGameIndex: gameIndex || 0,
+            totalGames: totalGames || 0,
+            currentSource: source.name,
+            currentExtension: entry.ext,
+            key: 'logs.download.progress.individualDownload',
+            params: { game: gameName, url }
+          });
+
+          try {
+            await streamDownload(url, destPath);
+            console.log(`[Download raw] OK : ${url}`);
+          } catch (err: any) {
+            console.log(`[Download raw] Failed (${err.message}): ${url}`);
+            try { await fs.unlink(destPath); } catch { /* ignore */ }
+            continue;
+          }
+
+          const hashes = await calculateFileHashes(destPath);
+          const result = compareHashes(
+            { crc32: datRom.crc32, md5: datRom.md5, sha1: datRom.sha1 },
+            { crc32: hashes.crc32, md5: hashes.md5, sha1: hashes.sha1 }
+          );
+
+          if (result.matched) {
+            matchedFiles.set(datRom.id, {
+              datRomId: datRom.id,
+              datRomName: datRom.name,
+              filePath: destPath,
+              source: source.name
+            });
+          } else {
+            try { await fs.unlink(destPath); } catch { /* ignore */ }
+          }
         }
       }
     }
@@ -453,7 +488,8 @@ export async function downloadRoms(
     phase: 'preparing',
     currentGameIndex: 0,
     totalGames: gameIds.length,
-    message: `Préparation du téléchargement de ${gameIds.length} jeu(x)...`
+    key: 'logs.download.progress.preparing',
+    params: { count: gameIds.length }
   });
 
   for (let i = 0; i < gameIds.length; i++) {
@@ -486,7 +522,8 @@ export async function downloadRoms(
         currentGame: game.name,
         currentGameIndex: i + 1,
         totalGames: gameIds.length,
-        message: `${game.name} : tous les fichiers trouvés localement`
+        key: 'logs.download.progress.allFoundLocally',
+        params: { game: game.name }
       });
     }
 
@@ -512,7 +549,8 @@ export async function downloadRoms(
         currentGame: game.name,
         currentGameIndex: i + 1,
         totalGames: gameIds.length,
-        message: `${game.name} : consolidation...`
+        key: 'logs.download.progress.consolidating',
+        params: { game: game.name }
       });
 
       try {
@@ -561,7 +599,8 @@ export async function downloadRoms(
           currentGame: game.name,
           currentGameIndex: i + 1,
           totalGames: gameIds.length,
-          message: `${game.name} : ${matchedFiles.size}/${datRoms.length} fichiers trouvés, stockés dans le dossier des ROMs incomplètes`
+          key: 'logs.download.progress.incomplete',
+          params: { game: game.name, found: matchedFiles.size, total: datRoms.length }
         });
       }
 
@@ -589,16 +628,17 @@ export async function downloadRoms(
   try {
     const { cleanupStaleScannedFiles } = await import('./recordConsolidation.js');
     const stale = await cleanupStaleScannedFiles(db);
-    if (stale > 0) console.log(`[Cleanup] ${stale} entrée(s) scanned_files obsolète(s) retirée(s)`);
+    if (stale > 0) console.log(`[Cleanup] ${stale} stale scanned_files entry(ies) removed`);
   } catch (err) {
-    console.warn(`[Cleanup] échec nettoyage des fichiers obsolètes : ${err}`);
+    console.warn(`[Cleanup] failed to clean up stale files: ${err}`);
   }
 
   onProgress({
     phase: 'complete',
     currentGameIndex: gameIds.length,
     totalGames: gameIds.length,
-    message: `Téléchargement terminé : ${result.stats.consolidated} consolidé(s), ${result.stats.failed} échec(s)`
+    key: 'logs.download.done',
+    params: { consolidated: result.stats.consolidated, failed: result.stats.failed }
   });
 
   return result;

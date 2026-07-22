@@ -1,6 +1,8 @@
 // src/renderer/matchingUI.ts
 // Module pour l'affichage du matching des ROMs dans l'UI
 
+import { t } from './i18n.js';
+
 // ========================================
 // TYPES LOCAUX (depuis global.d.ts)
 // ========================================
@@ -91,6 +93,46 @@ export function formatMatchCount(matched: number, total: number): string {
   return `${matched}/${total}`;
 }
 
+/**
+ * Génère le HTML du résumé de matching (volet gauche).
+ * Utilisé par le rapport normal, le rapport d'erreur ("?") et le rapport initial.
+ */
+function buildMatchingSummaryHtml(counts: {
+  total: string | number; totalRoms: string | number;
+  complete: string | number; completeRoms: string | number;
+  partial: string | number; partialRoms: string | number;
+  missing: string | number; missingRoms: string | number;
+}, overviewIcon: string = '📈'): string {
+  const row = (icon: string, label: string, main: string | number, roms: string | number) => `
+    <div class="summary-item">
+      <span class="summary-icon">${icon}</span>
+      <span class="summary-label">${label}</span>
+      <span class="summary-count">
+        <span class="summary-count-main">${main}</span>
+        <span class="summary-count-roms">${t('matching.filesCount', { count: roms })}</span>
+      </span>
+    </div>`;
+
+  return `
+    <div class="matching-summary">
+      ${row(overviewIcon, t('matching.overview'), counts.total, counts.totalRoms)}
+      ${row('✅', t('matching.completeGames'), counts.complete, counts.completeRoms)}
+      ${row('⚠️', t('matching.partialGames'), counts.partial, counts.partialRoms)}
+      ${row('❌', t('matching.missingGames'), counts.missing, counts.missingRoms)}
+
+      <div class="summary-item clickable" data-action="show-missing-roms">
+        <span class="summary-icon">🔍</span>
+        <span class="summary-label">${t('matching.missingRoms')}</span>
+      </div>
+
+      <div class="summary-item clickable" data-action="export-report">
+        <span class="summary-icon">📄</span>
+        <span class="summary-label">${t('matching.exportReport')}</span>
+      </div>
+    </div>
+  `;
+}
+
 // ========================================
 // SECTION : RAPPORT DE MATCHING (VOLET GAUCHE)
 // ========================================
@@ -141,112 +183,26 @@ export async function displayMatchingReport(containerId: string = 'matching-repo
     }
 
     // Générer le HTML - toujours le même format
-    container.innerHTML = `
-      <div class="matching-summary">
-        <div class="summary-item">
-          <span class="summary-icon">📈</span>
-          <span class="summary-label">Vue d'ensemble</span>
-          <span class="summary-count">
-            <span class="summary-count-main">${totalCount}</span>
-            <span class="summary-count-roms">${totalRomsCount} fichier(s)</span>
-          </span>
-        </div>
-        
-        <div class="summary-item">
-          <span class="summary-icon">✅</span>
-          <span class="summary-label">Jeux complets</span>
-          <span class="summary-count">
-            <span class="summary-count-main">${completeCount}</span>
-            <span class="summary-count-roms">${completeRomsCount} fichier(s)</span>
-          </span>
-        </div>
-        
-        <div class="summary-item">
-          <span class="summary-icon">⚠️</span>
-          <span class="summary-label">Jeux partiels</span>
-          <span class="summary-count">
-            <span class="summary-count-main">${partialCount}</span>
-            <span class="summary-count-roms">${partialRomsCount} fichier(s)</span>
-          </span>
-        </div>
-        
-        <div class="summary-item">
-          <span class="summary-icon">❌</span>
-          <span class="summary-label">Jeux manquants</span>
-          <span class="summary-count">
-            <span class="summary-count-main">${missingCount}</span>
-            <span class="summary-count-roms">${missingRomsCount} fichier(s)</span>
-          </span>
-        </div>
-        
-        <div class="summary-item clickable" data-action="show-missing-roms">
-          <span class="summary-icon">🔍</span>
-          <span class="summary-label">ROMs manquantes</span>
-        </div>
-        
-        <div class="summary-item clickable" data-action="export-report">
-          <span class="summary-icon">📄</span>
-          <span class="summary-label">Exporter le rapport</span>
-        </div>
-      </div>
-    `;
+    container.innerHTML = buildMatchingSummaryHtml({
+      total: totalCount, totalRoms: totalRomsCount,
+      complete: completeCount, completeRoms: completeRomsCount,
+      partial: partialCount, partialRoms: partialRomsCount,
+      missing: missingCount, missingRoms: missingRomsCount
+    });
 
     // Ajouter les event listeners uniquement pour les actions
     initMatchingReportListeners(container, hasData);
   } catch (error: any) {
-    console.error('Erreur lors de l\'affichage du rapport de matching:', error);
-    
+    console.error('Error while displaying the matching report:', error);
+
     // Même en cas d'erreur, afficher le rapport avec "?"
-    container.innerHTML = `
-      <div class="matching-summary">
-        <div class="summary-item">
-          <span class="summary-icon">📈</span>
-          <span class="summary-label">Vue d'ensemble</span>
-          <span class="summary-count">
-            <span class="summary-count-main">?</span>
-            <span class="summary-count-roms">? fichier(s)</span>
-          </span>
-        </div>
-        
-        <div class="summary-item">
-          <span class="summary-icon">✅</span>
-          <span class="summary-label">Jeux complets</span>
-          <span class="summary-count">
-            <span class="summary-count-main">?</span>
-            <span class="summary-count-roms">? fichier(s)</span>
-          </span>
-        </div>
-        
-        <div class="summary-item">
-          <span class="summary-icon">⚠️</span>
-          <span class="summary-label">Jeux partiels</span>
-          <span class="summary-count">
-            <span class="summary-count-main">?</span>
-            <span class="summary-count-roms">? fichier(s)</span>
-          </span>
-        </div>
-        
-        <div class="summary-item">
-          <span class="summary-icon">❌</span>
-          <span class="summary-label">Jeux manquants</span>
-          <span class="summary-count">
-            <span class="summary-count-main">?</span>
-            <span class="summary-count-roms">? fichier(s)</span>
-          </span>
-        </div>
-        
-        <div class="summary-item clickable" data-action="show-missing-roms">
-          <span class="summary-icon">🔍</span>
-          <span class="summary-label">ROMs manquantes</span>
-        </div>
-        
-        <div class="summary-item clickable" data-action="export-report">
-          <span class="summary-icon">📄</span>
-          <span class="summary-label">Exporter le rapport</span>
-        </div>
-      </div>
-    `;
-    
+    container.innerHTML = buildMatchingSummaryHtml({
+      total: '?', totalRoms: '?',
+      complete: '?', completeRoms: '?',
+      partial: '?', partialRoms: '?',
+      missing: '?', missingRoms: '?'
+    });
+
     initMatchingReportListeners(container, false);
   }
 }
@@ -265,7 +221,7 @@ function initMatchingReportListeners(container: HTMLElement, hasData: boolean): 
       if (hasData) {
         showMissingRomsModal();
       } else {
-        alert('ℹ️ Aucune donnée de matching disponible.\nEffectuez d\'abord le matching des ROMs.');
+        alert(t('matching.noDataAlert'));
       }
     });
   }
@@ -276,7 +232,7 @@ function initMatchingReportListeners(container: HTMLElement, hasData: boolean): 
       if (hasData) {
         exportMatchingReport();
       } else {
-        alert('ℹ️ Aucune donnée de matching disponible.\nEffectuez d\'abord le matching des ROMs.');
+        alert(t('matching.noDataAlert'));
       }
     });
   }
@@ -294,7 +250,7 @@ async function showMissingRomsModal(): Promise<void> {
     const missingRoms = await window.api.getMissingRoms();
     
     if (missingRoms.length === 0) {
-      alert('✅ Toutes les ROMs ont été trouvées !');
+      alert(t('matching.allFound'));
       return;
     }
 
@@ -311,7 +267,7 @@ async function showMissingRomsModal(): Promise<void> {
       <div class="modal-overlay" id="missing-roms-modal">
         <div class="modal-content">
           <div class="modal-header">
-            <h2>❌ ROMs manquantes (${missingRoms.length})</h2>
+            <h2>${t('matching.missingModalTitle', { count: missingRoms.length })}</h2>
             <button class="close-modal">×</button>
           </div>
           <div class="modal-body">
@@ -320,7 +276,7 @@ async function showMissingRomsModal(): Promise<void> {
     romsByGame.forEach((roms, gameName) => {
       html += `
         <div class="missing-game-group">
-          <h3>${gameName} (${roms.length} fichier${roms.length > 1 ? 's' : ''})</h3>
+          <h3>${gameName} (${t('matching.filesCount', { count: roms.length })})</h3>
           <ul>
             ${roms.map((rom: RomMatch) => `<li>${rom.datRomName}</li>`).join('')}
           </ul>
@@ -331,8 +287,8 @@ async function showMissingRomsModal(): Promise<void> {
     html += `
           </div>
           <div class="modal-footer">
-            <button class="btn-export-missing">📄 Exporter la liste</button>
-            <button class="btn-close-modal">Fermer</button>
+            <button class="btn-export-missing">${t('matching.exportList')}</button>
+            <button class="btn-close-modal">${t('common.closeWindow')}</button>
           </div>
         </div>
       </div>
@@ -354,8 +310,8 @@ async function showMissingRomsModal(): Promise<void> {
       if (e.target === modal) modal.remove();
     });
   } catch (error) {
-    console.error('Erreur lors de l\'affichage des ROMs manquantes:', error);
-    alert('❌ Erreur lors de l\'affichage des ROMs manquantes');
+    console.error('Error while displaying missing ROMs:', error);
+    alert(t('matching.displayError'));
   }
 }
 
@@ -366,11 +322,11 @@ async function exportMatchingReport(): Promise<void> {
   try {
     const result = await window.api.exportMatchingReport();
     if (result) {
-      alert(`📄 Rapport exporté avec succès :\n${result.filePath}`);
+      alert(t('matching.exportSuccess', { path: result.filePath }));
     }
   } catch (error) {
-    console.error('Erreur lors de l\'export du rapport:', error);
-    alert('❌ Erreur lors de l\'export du rapport');
+    console.error('Error while exporting the report:', error);
+    alert(t('matching.exportError'));
   }
 }
 
@@ -387,11 +343,11 @@ function exportMissingRomsList(missingRoms: RomMatch[]): void {
   });
 
   // Générer le texte
-  let text = `ROMs manquantes (${missingRoms.length})\r\n`;
-  text += `Générée le ${new Date().toLocaleString()}\r\n\r\n`;
+  let text = `${t('matching.missingListHeader', { count: missingRoms.length })}\r\n`;
+  text += `${t('matching.generatedOn', { date: new Date().toLocaleString() })}\r\n\r\n`;
 
   romsByGame.forEach((roms, gameName) => {
-    text += `${gameName} (${roms.length} fichier${roms.length > 1 ? 's' : ''}):\r\n`;
+    text += `${gameName} (${t('matching.filesCount', { count: roms.length })}):\r\n`;
     roms.forEach((rom: RomMatch) => {
       text += `  - ${rom.datRomName}\r\n`;
     });
@@ -421,11 +377,11 @@ export async function showGameDetails(gameId: number): Promise<void> {
     const roms = await window.api.listRomsByGame(gameId);
     
     if (roms.length === 0) {
-      alert('❓ Aucune ROM trouvée pour ce jeu.');
+      alert(t('matching.noRomsForGame'));
       return;
     }
 
-    const gameName = roms[0].game_name || 'Jeu inconnu';
+    const gameName = roms[0].game_name || t('matching.unknownGame');
 
     // Récupérer les statuts de matching existants depuis la base de données
     // NE PAS relancer le matching complet !
@@ -449,10 +405,10 @@ export async function showGameDetails(gameId: number): Promise<void> {
             <table class="roms-table">
               <thead>
                 <tr>
-                  <th>Statut</th>
-                  <th>ROM</th>
-                  <th>Emplacement</th>
-                  <th>Type</th>
+                  <th>${t('matching.tableStatus')}</th>
+                  <th>${t('matching.tableRom')}</th>
+                  <th>${t('matching.tableLocation')}</th>
+                  <th>${t('matching.tableType')}</th>
                 </tr>
               </thead>
               <tbody>
@@ -461,8 +417,8 @@ export async function showGameDetails(gameId: number): Promise<void> {
     roms.forEach((rom: RomInfo) => {
       const match = matchMap.get(rom.id);
       const icon = match ? '✅' : '❌';
-      const location = match?.scannedFileName || match?.archiveFileName || 'Non trouvé';
-      const archiveType = match?.archiveType || (match?.scannedFileName ? 'Non compressé' : '-');
+      const location = match?.scannedFileName || match?.archiveFileName || t('matching.notFound');
+      const archiveType = match?.archiveType || (match?.scannedFileName ? t('matching.uncompressed') : '-');
       const statusClass = match ? 'rom-found' : 'rom-missing';
 
       html += `
@@ -480,7 +436,7 @@ export async function showGameDetails(gameId: number): Promise<void> {
             </table>
           </div>
           <div class="modal-footer">
-            <button class="btn-close-modal">Fermer</button>
+            <button class="btn-close-modal">${t('common.closeWindow')}</button>
           </div>
         </div>
       </div>
@@ -499,8 +455,8 @@ export async function showGameDetails(gameId: number): Promise<void> {
       if (e.target === modal) modal.remove();
     });
   } catch (error) {
-    console.error('Erreur lors de l\'affichage des détails du jeu:', error);
-    alert('❌ Erreur lors de l\'affichage des détails du jeu');
+    console.error('Error while displaying game details:', error);
+    alert(t('matching.gameDetailsError'));
   }
 }
 
@@ -512,7 +468,7 @@ export async function showGameDetails(gameId: number): Promise<void> {
  * Initialise le module de matching UI
  */
 export function initMatchingUI(): void {
-  console.log('📊 Matching UI initialisé');
+  console.log('📊 Matching UI initialized');
   
   // Afficher le rapport de matching si le container existe
   const reportContainer = document.getElementById('matching-report');
@@ -535,58 +491,15 @@ export async function displayInitialReport(gamesCount: number, romsCount: number
     return;
   }
 
-  console.log('DEBUG displayInitialReport - Container trouvé, génération du HTML');
+  console.log('DEBUG displayInitialReport - Container found, generating HTML');
 
   // Tous les jeux et fichiers sont manquants car aucun matching n'a été effectué
-  container.innerHTML = `
-    <div class="matching-summary">
-      <div class="summary-item">
-        <span class="summary-icon">📊</span>
-        <span class="summary-label">Vue d'ensemble</span>
-        <span class="summary-count">
-          <span class="summary-count-main">${gamesCount}</span>
-          <span class="summary-count-roms">${romsCount} fichier(s)</span>
-        </span>
-      </div>
-      
-      <div class="summary-item">
-        <span class="summary-icon">✅</span>
-        <span class="summary-label">Jeux complets</span>
-        <span class="summary-count">
-          <span class="summary-count-main">0</span>
-          <span class="summary-count-roms">0 fichier(s)</span>
-        </span>
-      </div>
-      
-      <div class="summary-item">
-        <span class="summary-icon">⚠️</span>
-        <span class="summary-label">Jeux partiels</span>
-        <span class="summary-count">
-          <span class="summary-count-main">0</span>
-          <span class="summary-count-roms">0 fichier(s)</span>
-        </span>
-      </div>
-      
-      <div class="summary-item">
-        <span class="summary-icon">❌</span>
-        <span class="summary-label">Jeux manquants</span>
-        <span class="summary-count">
-          <span class="summary-count-main">${gamesCount}</span>
-          <span class="summary-count-roms">${romsCount} fichier(s)</span>
-        </span>
-      </div>
-      
-      <div class="summary-item clickable" data-action="show-missing-roms">
-        <span class="summary-icon">🔍</span>
-        <span class="summary-label">ROMs manquantes</span>
-      </div>
-      
-      <div class="summary-item clickable" data-action="export-report">
-        <span class="summary-icon">📄</span>
-        <span class="summary-label">Exporter le rapport</span>
-      </div>
-    </div>
-  `;
+  container.innerHTML = buildMatchingSummaryHtml({
+    total: gamesCount, totalRoms: romsCount,
+    complete: 0, completeRoms: 0,
+    partial: 0, partialRoms: 0,
+    missing: gamesCount, missingRoms: romsCount
+  }, '📊');
 
   // Ajouter les event listeners (mais désactiver les actions car pas de matching)
   initMatchingReportListeners(container, false);

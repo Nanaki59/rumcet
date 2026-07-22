@@ -14,26 +14,26 @@ export function registerConsolidationHandlers(ipcMain: IpcMain, mainWindow: Brow
     }
 
     try {
-      sendLogToRenderer(mainWindow, 'info', 'match', '🧹 Début de la consolidation des ROMs...');
+      sendLogToRenderer(mainWindow, 'info', 'match', 'logs.consolidation.start');
 
       const result = await consolidateRoms(database, (progress) => {
         // Le renderer affiche déjà le message via onConsolidationProgress
         event.sender.send('consolidation-progress', progress);
       });
 
-      sendLogToRenderer(mainWindow, 'info', 'match',
-        `✅ Consolidation terminée ! ${result.stats.gamesConsolidated} jeux consolidés, ` +
-        `${result.stats.archivesCreated} archives créées, ` +
-        `${result.stats.unmatchedFilesMoved} fichiers non matchés déplacés`);
+      sendLogToRenderer(mainWindow, 'info', 'match', 'logs.consolidation.done', {
+        games: result.stats.gamesConsolidated,
+        archives: result.stats.archivesCreated,
+        unmatched: result.stats.unmatchedFilesMoved
+      });
 
       if (result.errors.length > 0) {
-        sendLogToRenderer(mainWindow, 'warning', 'match',
-          `⚠️ ${result.errors.length} erreur(s) durant la consolidation`);
+        sendLogToRenderer(mainWindow, 'warning', 'match', 'logs.consolidation.errorsCount', { count: result.errors.length });
       }
 
       return result;
     } catch (error: any) {
-      sendLogToRenderer(mainWindow, 'error', 'match', `❌ Erreur consolidation: ${error.message}`);
+      sendLogToRenderer(mainWindow, 'error', 'match', 'logs.consolidation.error', { error: error.message });
       throw error;
     }
   });

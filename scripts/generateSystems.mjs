@@ -149,7 +149,7 @@ const SYSTEM_DAT_PATTERNS = {
   // PC
   dos: ['\\bdos\\b|ibm\\s*pc|pc\\s*compatible'],
   // Arcade
-  mame: ['^mame|m\\.a\\.m\\.e\\.'],
+  mame: ['^mame|m\\.a\\.m\\.e\\.|^arcade(?!\\s*pc)'],
   fba: ['finalburn\\s*alpha\\s*2x|fba(?!\\s*neo)'],
   fbneo: ['finalburn\\s*neo|fbneo'],
   atomiswave: ['atomiswave'],

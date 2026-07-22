@@ -7,12 +7,107 @@ import { databaseService } from '../services/database.service.js';
 import { settingsManager, getEffectiveValidatedRomsFolder } from '../../helpers/settingsManager.js';
 import { detectSystemFromDatName } from '../../config/systems.js';
 
+export interface CreateDatabaseResult {
+  success: true;
+  dbPath: string;
+  gamesCount: number;
+  romsCount: number;
+  datInfo: {
+    name: string;
+    description: string;
+    version: string;
+    date: string;
+    author: string;
+    homepage: string;
+    url: string;
+  };
+}
+
+/**
+ * Cœur partagé de « créer la base + charger le DAT primaire » SANS aucune
+ * boîte de dialogue. Utilisé par :
+ *  - le handler `database:create` (après ses dialogs Enregistrer-sous/confirmation)
+ *  - le flux unifié de l'écran de chargement DAT (`dat-download:load`)
+ *
+ * Si un fichier existe déjà à dbPath, il est écrasé — la confirmation
+ * éventuelle est de la responsabilité de l'appelant.
+ */
+export async function createDatabaseAndLoadDat(datPath: string, dbPath: string): Promise<CreateDatabaseResult> {
+  const { parseDatFile, insertGamesFromDat, extractDatHeader } = await import('../../database/insertGamesFromDat.js');
+
+  let clearExisting = false;
+  try {
+    await fs.access(dbPath);
+    clearExisting = true;
+  } catch {
+    // Le fichier n'existe pas — création propre
+  }
+
+  await databaseService.closeDatabase();
+
+  const database = await initDatabase(dbPath, clearExisting);
+
+  // Charger les données du DAT (rôle primaire)
+  const parsed = await parseDatFile(datPath);
+  const { gamesCount, romsCount } = await insertGamesFromDat(database, parsed, { sourceFilePath: datPath });
+
+  // Sauvegarder les métadonnées (gère Logiqx + MAME brut)
+  await setMetadata(database, 'dat_path', datPath);
+
+  const hdr = extractDatHeader(parsed);
+  const fallbackName = path.basename(datPath, path.extname(datPath));
+  const lh = parsed.datafile?.header?.[0];
+  const datName = hdr.name || fallbackName;
+  const datDescription = hdr.description || fallbackName;
+  const datVersion = hdr.version || 'N/A';
+  const datDate = lh?.date?.[0] || 'N/A';
+  const datAuthor = lh?.author?.[0] || 'N/A';
+  const datHomepage = lh?.homepage?.[0] || 'N/A';
+  const datUrl = lh?.url?.[0] || 'N/A';
+
+  await setMetadata(database, 'dat_name', datName);
+  await setMetadata(database, 'dat_description', datDescription);
+  await setMetadata(database, 'dat_version', datVersion);
+  await setMetadata(database, 'dat_date', datDate);
+  await setMetadata(database, 'dat_author', datAuthor);
+  await setMetadata(database, 'dat_homepage', datHomepage);
+  await setMetadata(database, 'dat_url', datUrl);
+
+  // Détection automatique du système depuis le nom du DAT
+  const detectedSystem = detectSystemFromDatName(datName);
+  await setMetadata(database, 'system_id', detectedSystem?.systemId ?? '');
+  await setMetadata(database, 'system_name', detectedSystem?.fullname ?? '');
+  // Synchronise le contexte global (utilisé par ex. par ChdHandler pour le dossier temp)
+  settingsManager.setActiveSystemId(detectedSystem?.systemId ?? null);
+
+  databaseService.setDatabase(database);
+  databaseService.setDatPath(datPath);
+  databaseService.setDbPath(dbPath);
+  databaseService.setDatLoaded(true);
+
+  return {
+    success: true,
+    dbPath,
+    gamesCount,
+    romsCount,
+    datInfo: {
+      name: datName,
+      description: datDescription,
+      version: datVersion,
+      date: datDate,
+      author: datAuthor,
+      homepage: datHomepage,
+      url: datUrl
+    }
+  };
+}
+
 export function registerDatabaseHandlers(ipcMain: IpcMain, mainWindow: BrowserWindow) {
   
-  // Créer une base de données et charger les données du DAT
-  ipcMain.handle('database:create', async (_event, datPath: string, clearExisting: boolean = false) => {
-    const { parseDatFile, insertGamesFromDat } = await import('../../database/insertGamesFromDat.js');
-
+  // Créer une base de données et charger les données du DAT (flux avec dialogs).
+  // Conservé pour compatibilité (menu / anciens flux) — le cœur est partagé
+  // avec le flux unifié via createDatabaseAndLoadDat().
+  ipcMain.handle('database:create', async (_event, datPath: string, _clearExisting: boolean = false) => {
     const defaultName = path.basename(datPath, path.extname(datPath)) + '.sqlite';
     const defaultFolder = settingsManager.get('defaultDatabaseFolder');
 
@@ -53,67 +148,11 @@ export function registerDatabaseHandlers(ipcMain: IpcMain, mainWindow: BrowserWi
         if (confirmResult.response === 1) {
           return null;
         }
-
-        clearExisting = true;
       }
 
-      await databaseService.closeDatabase();
-
-      const database = await initDatabase(result.filePath, clearExisting);
-
-      // Charger les données du DAT directement
-      const parsed = await parseDatFile(datPath);
-      const { gamesCount, romsCount } = await insertGamesFromDat(database, parsed);
-
-      // Sauvegarder les métadonnées
-      await setMetadata(database, 'dat_path', datPath);
-
-      const header = parsed.datafile?.header?.[0];
-      const datName = header?.name?.[0] || path.basename(datPath, path.extname(datPath));
-      const datDescription = header?.description?.[0] || path.basename(datPath, path.extname(datPath));
-      const datVersion = header?.version?.[0] || 'N/A';
-      const datDate = header?.date?.[0] || 'N/A';
-      const datAuthor = header?.author?.[0] || 'N/A';
-      const datHomepage = header?.homepage?.[0] || 'N/A';
-      const datUrl = header?.url?.[0] || 'N/A';
-
-      await setMetadata(database, 'dat_name', datName);
-      await setMetadata(database, 'dat_description', datDescription);
-      await setMetadata(database, 'dat_version', datVersion);
-      await setMetadata(database, 'dat_date', datDate);
-      await setMetadata(database, 'dat_author', datAuthor);
-      await setMetadata(database, 'dat_homepage', datHomepage);
-      await setMetadata(database, 'dat_url', datUrl);
-
-      // Détection automatique du système depuis le nom du DAT
-      const detectedSystem = detectSystemFromDatName(datName);
-      await setMetadata(database, 'system_id', detectedSystem?.systemId ?? '');
-      await setMetadata(database, 'system_name', detectedSystem?.fullname ?? '');
-      // Synchronise le contexte global (utilisé par ex. par ChdHandler pour le dossier temp)
-      settingsManager.setActiveSystemId(detectedSystem?.systemId ?? null);
-
-      databaseService.setDatabase(database);
-      databaseService.setDatPath(datPath);
-      databaseService.setDbPath(result.filePath);
-      databaseService.setDatLoaded(true);
-
-      return {
-        success: true,
-        dbPath: result.filePath,
-        gamesCount,
-        romsCount,
-        datInfo: {
-          name: datName,
-          description: datDescription,
-          version: datVersion,
-          date: datDate,
-          author: datAuthor,
-          homepage: datHomepage,
-          url: datUrl
-        }
-      };
+      return await createDatabaseAndLoadDat(datPath, result.filePath);
     } catch (error) {
-      console.error('Erreur lors de la création de la base: ', error);
+      console.error('Error while creating the database: ', error);
       databaseService.reset();
       throw error;
     }
@@ -165,7 +204,7 @@ export function registerDatabaseHandlers(ipcMain: IpcMain, mainWindow: BrowserWi
         datInfo: dbInfo.datInfo
       };
     } catch (error) {
-      console.error('Erreur lors de l\'ouverture de la base:', error);
+      console.error('Error while opening the database:', error);
       databaseService.reset();
       throw error;
     }
@@ -243,7 +282,7 @@ export function registerDatabaseHandlers(ipcMain: IpcMain, mainWindow: BrowserWi
 
       const database = await initDatabase(filePath, clearExisting);
       const parsed = await parseDatFile(datPath);
-      const result = await insertGamesFromDat(database, parsed);
+      const result = await insertGamesFromDat(database, parsed, { sourceFilePath: datPath });
 
       await setMetadata(database, 'dat_path', datPath);
 
@@ -258,7 +297,7 @@ export function registerDatabaseHandlers(ipcMain: IpcMain, mainWindow: BrowserWi
         ...result
       };
     } catch (error) {
-      console.error('Erreur lors de la création de la base:', error);
+      console.error('Error while creating the database:', error);
       databaseService.reset();
       throw error;
     }
@@ -321,7 +360,7 @@ async function getDBInfo(database: any) {
       } : null
     };
   } catch (error) {
-    console.error('Erreur lors de la récupération des infos DB:', error);
+    console.error('Error while retrieving DB info:', error);
     return {
       datPath: null,
       gamesCount: 0,

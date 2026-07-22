@@ -73,7 +73,7 @@ export function registerSearchHandlers(ipcMain: IpcMain) {
 
       return results;
     } catch (error) {
-      console.error('Erreur lors de la recherche:', error);
+      console.error('Error during search:', error);
       return results;
     }
   });
@@ -95,7 +95,7 @@ export function registerSearchHandlers(ipcMain: IpcMain) {
       
       return roms;
     } catch (error) {
-      console.error('Erreur lors de la recherche des ROMs:', error);
+      console.error('Error during ROM search:', error);
       return [];
     }
   });

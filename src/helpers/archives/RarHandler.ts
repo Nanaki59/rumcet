@@ -53,7 +53,7 @@ export class RarHandler implements IArchiveHandler {
    */
   setToolPriority(priority: Array<'7zip' | 'winrar' | 'unrar'>): void {
     this.toolPriority = priority;
-    console.log('🔧 Ordre des outils RAR mis à jour:', this.toolPriority);
+    console.log('🔧 RAR tool order updated:', this.toolPriority);
   }
   
   /**
@@ -118,7 +118,7 @@ export class RarHandler implements IArchiveHandler {
       return;
     }
     
-    console.log('🔍 Détection des outils RAR disponibles...');
+    console.log('🔍 Detecting available RAR tools...');
     
     // Test 7-Zip
     if (!this.sevenZipPath) {
@@ -127,15 +127,15 @@ export class RarHandler implements IArchiveHandler {
     
     if (await this.isToolAvailable(this.sevenZipPath, `"${this.sevenZipPath}" --help`)) {
       this.availableTools.add('7zip');
-      console.log(`✅ 7-Zip disponible: ${this.sevenZipPath}`);
+      console.log(`✅ 7-Zip available: ${this.sevenZipPath}`);
     } else {
       const altPath = await this.find7ZipAlternativePath();
       if (altPath) {
         this.sevenZipPath = altPath;
         this.availableTools.add('7zip');
-        console.log(`✅ 7-Zip trouvé: ${altPath}`);
+        console.log(`✅ 7-Zip found: ${altPath}`);
       } else {
-        console.log('❌ 7-Zip non disponible');
+        console.log('❌ 7-Zip not available');
       }
     }
     
@@ -150,7 +150,7 @@ export class RarHandler implements IArchiveHandler {
         this.availableTools.add('winrar');
         console.log(`✅ WinRAR (Rar.exe) disponible: ${rarExe}`);
       } else {
-        console.log('❌ WinRAR non disponible');
+        console.log('❌ WinRAR not available');
       }
     }
     
@@ -162,9 +162,9 @@ export class RarHandler implements IArchiveHandler {
     if (this.unrarPath) {
       if (await this.isToolAvailable(this.unrarPath, `"${this.unrarPath}" -?"`)) {
         this.availableTools.add('unrar');
-        console.log(`✅ UnRAR disponible: ${this.unrarPath}`);
+        console.log(`✅ UnRAR available: ${this.unrarPath}`);
       } else {
-        console.log('❌ UnRAR non disponible');
+        console.log('❌ UnRAR not available');
       }
     }
     
@@ -269,28 +269,28 @@ export class RarHandler implements IArchiveHandler {
       );
     }
 
-    console.log('🔧 Ordre d\'essai des outils RAR:', commands.map(c => c.tool).join(', '));
+    console.log('🔧 RAR tool try order:', commands.map(c => c.tool).join(', '));
 
     let lastError: Error | null = null;
     
     for (const { tool, path: toolPath, cmd, parser } of commands) {
-      console.log(`\n📄 Tentative avec ${tool}...`);
+      console.log(`\n📄 Trying with ${tool}...`);
       console.log(`   Chemin: ${toolPath || 'PATH'}`);
       
       try {
         const command = cmd();
         if (!command) {
-          console.log(`⚠️  ${tool} : pas de commande générée`);
+          console.log(`⚠️  ${tool}: no command generated`);
           continue;
         }
         
         console.log(`🔍 Commande: ${command}`);
-        console.log(`⏳ Exécution de la commande...`);
+        console.log(`⏳ Running the command...`);
         
         const { stdout } = await execAsync(command, { maxBuffer: 10 * 1024 * 1024 });
         
-        console.log(`✅ Commande exécutée, parsing de la sortie...`);
-        console.log(`📄 Sortie brute (${stdout.length} caractères):`);
+        console.log(`✅ Command executed, parsing the output...`);
+        console.log(`📄 Raw output (${stdout.length} characters):`);
         console.log(stdout.substring(0, 500));
         
         const contents = parser(stdout);
@@ -299,11 +299,11 @@ export class RarHandler implements IArchiveHandler {
           console.log(`✅ RAR listed with ${tool}: ${path.basename(filePath)} - ${contents.length} fichiers`);
           return contents;
         } else {
-          console.log(`⚠️  ${tool} : aucun fichier trouvé dans le parsing`);
+          console.log(`⚠️  ${tool}: no file found while parsing`);
         }
       } catch (error: any) {
         lastError = error;
-        console.error(`❌ Échec listage RAR avec ${tool}:`);
+        console.error(`❌ RAR listing failed with ${tool}:`);
         console.error(`   Message: ${error.message}`);
         if (error.code) console.error(`   Code: ${error.code}`);
         if (error.stderr) console.error(`   stderr: ${error.stderr}`);
@@ -514,14 +514,14 @@ export class RarHandler implements IArchiveHandler {
         const command = cmd();
         if (!command) continue;
         
-        console.log(`Extraction avec ${tool}: ${command}`);
+        console.log(`Extraction with ${tool}: ${command}`);
         await execAsync(command, { maxBuffer: 50 * 1024 * 1024 });
         
         console.log(`✅ RAR extracted with ${tool}`);
         return;
       } catch (error: any) {
         lastError = error;
-        console.error(`❌ Échec extraction avec ${tool}:`, error.message);
+        console.error(`❌ Extraction failed with ${tool}:`, error.message);
         continue;
       }
     }

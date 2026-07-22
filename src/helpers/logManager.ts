@@ -4,6 +4,11 @@ import { app } from 'electron';
 import path from 'path';
 import fs from 'fs/promises';
 
+// Référence capturée AVANT l'installation du crochet console→fichier (main.ts).
+// Les erreurs internes du LogManager doivent aller à la console SANS repasser
+// par le crochet, sinon un échec d'écriture provoquerait une boucle infinie.
+const rawConsoleError = console.error.bind(console);
+
 export class LogManager {
   private logDir: string;
   private currentLogPath: string;
@@ -30,7 +35,7 @@ export class LogManager {
       await this.write(`=== RUMCET Log - ${new Date().toISOString()} ===\n\n`);
       
     } catch (error) {
-      console.error('Erreur lors de l\'initialisation des logs:', error);
+      rawConsoleError('Erreur lors de l\'initialisation des logs:', error);
     }
   }
 
@@ -56,7 +61,7 @@ export class LogManager {
       await fs.rename(this.currentLogPath, path.join(this.logDir, 'rumcet.log.1'));
       
     } catch (error) {
-      console.error('Erreur lors de la rotation des logs:', error);
+      rawConsoleError('Erreur lors de la rotation des logs:', error);
     }
   }
 
@@ -66,7 +71,7 @@ export class LogManager {
     try {
       await this.logStream.writeFile(message + '\n');
     } catch (error) {
-      console.error('Erreur lors de l\'écriture dans le log:', error);
+      rawConsoleError('Erreur lors de l\'écriture dans le log:', error);
     }
   }
 
@@ -106,7 +111,7 @@ export class LogManager {
         files.push(path.join(this.logDir, file));
       }
     } catch (error) {
-      console.error('Erreur lors de la lecture de l\'historique des logs:', error);
+      rawConsoleError('Erreur lors de la lecture de l\'historique des logs:', error);
     }
     return files;
   }

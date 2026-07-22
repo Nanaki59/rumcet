@@ -1,6 +1,11 @@
 // src/renderer/index.ts
 
 import { displayMatchingReport, initMatchingUI, displayInitialReport } from './matchingUI.js';
+import { initI18n, refreshTranslations, t } from './i18n.js';
+import { setupConsoleCapture } from './consoleCapture.js';
+
+// Capturer les console.* de cette page vers le fichier de logs dès le chargement
+setupConsoleCapture();
 
 // État de l'application
 let currentDatPath: string | null = null;
@@ -33,6 +38,23 @@ let activeFilters: Set<string> = new Set();
 let activeMatchFilters: Set<string> = new Set();
 let activeSelectionFilters: Set<string> = new Set();
 let activeChangeFilters: Set<string> = new Set();
+// Phase 3.5 — filtres arcade
+let activeChdFilters: Set<string> = new Set();
+let activeDriverFilters: Set<string> = new Set();
+// Filtres spécifiques MAME : 'bios' (le jeu est un set BIOS) et 'chd-no-rom'
+// (jeu avec un CHD mais aucune ROM — disque orphelin).
+let activeMameFilters: Set<string> = new Set();
+// Phase 3.5 — résolution des dépendances : IDs auto-sélectionnés et raisons (tooltips).
+let autoSelectedIds: Set<number> = new Set();
+let autoSelectedReasons: Record<number, Array<{ type: string; requiredBy: number; requiredByName: string }>> = {};
+// État persistant des groupes repliés dans la vue DAT groupée (survit aux
+// re-renders déclenchés par les toggles de sélection / cascade de dépendances).
+// Clé : groupKey du groupement courant. Vidé quand le mode de groupement change.
+const collapsedGameGroups = new Set<string>();
+// Phase 3bis-B — mode cible de visualisation (split / non-merged / merged) lu depuis settings.
+// Détermine si les clones doivent être fusionnés dans le parent (merged) ou affichés
+// séparément (split / non-merged), et le libellé des badges de type ROM.
+let currentTargetSetMode: 'split' | 'non-merged' | 'merged' = 'split';
 let allGames: GameInfo[] = [];
 let matchingComplete = false;
 let targetFolderPath: string | null = null; // Dossier cible pour cette session (peut différer des paramètres globaux)
@@ -50,6 +72,20 @@ interface GameInfo {
   change_status?: 'new' | 'modified' | 'unchanged' | 'disappeared' | null;
   is_disappeared?: boolean;
   system_id?: number;
+  // Phase 3.5 — métadonnées arcade
+  is_bios?: number;
+  is_device?: number;
+  driver_status?: string | null;
+  has_chd?: number;
+  parent_name_ref?: string | null;
+  // Phase 4 — nombre de ROMs « fichiers » (is_disk = 0). Les CHD ne sont pas comptés ici.
+  rom_count?: number;
+  // Nombre de disques CHD (is_disk = 1) liés au jeu. La visibilité d'un jeu se base
+  // sur rom_count + disk_count > 0 (un disque orphelin reste visible).
+  disk_count?: number;
+  // Phase 3bis-B — flags dérivés en mémoire (pas en DB)
+  hasParentInDb?: boolean;
+  cloneCount?: number;
 }
 
 interface RomInfo {
@@ -60,6 +96,12 @@ interface RomInfo {
   crc32?: string;
   md5?: string;
   sha1?: string;
+  // Phase 3bis — métadonnées arcade pour badges de type ROM
+  merge_name?: string | null;
+  is_disk?: number;
+  // Phase 3bis-B — annotation locale ajoutée par la vue merged pour signaler
+  // qu'une ROM provient d'un clone du jeu parent affiché.
+  _sourceCloneName?: string;
 }
 
 interface FolderInfo {
@@ -81,6 +123,8 @@ interface LogOptions {
   severity?: LogSeverity;
   context?: LogContext;
   state?: LogState;
+  /** Paramètres d'interpolation {nom} de la clé i18n. */
+  params?: Record<string, string | number>;
 }
 
 interface IconSystem {
@@ -137,9 +181,12 @@ const icons: IconSystem = {
   }
 };
 
-// Fonction de log avec icônes
-function log(message: string, options: LogOptions = {}, isFromMain: boolean = false): void {
-  const { severity = 'info', context, state } = options;
+// Fonction de log avec icônes.
+// `key` est une clé i18n (résolue via t() pour le panneau, dans la langue de
+// l'UI) ; le fichier de log est écrit côté main en ANGLAIS via la même clé.
+// Une clé inconnue est affichée/écrite telle quelle (contenu brut).
+function log(key: string, options: LogOptions = {}, isFromMain: boolean = false): void {
+  const { severity = 'info', context, state, params } = options;
 
   const logDiv = document.getElementById('log');
   if (logDiv) {
@@ -157,7 +204,7 @@ function log(message: string, options: LogOptions = {}, isFromMain: boolean = fa
       finalMessage += ` ${icons.state[state]}`;
     }
 
-    finalMessage += ` ${message}`;
+    finalMessage += ` ${t(key, params)}`;
 
     div.textContent = finalMessage;
     logDiv.appendChild(div);
@@ -170,11 +217,11 @@ function log(message: string, options: LogOptions = {}, isFromMain: boolean = fa
       lastMsg.className = `log-last-message log-${severity}`;
     }
 
-    // IMPORTANT: Ne PAS appeler writeLog si le message vient du main process
-    // pour éviter les boucles infinies
+    // IMPORTANT: Ne PAS appeler writeLog si le message vient du main process :
+    // il a déjà été écrit dans le fichier par sendLogToRenderer (sinon doublon).
     if (!isFromMain) {
-      window.api.writeLog(severity, context || 'ui', message).catch((err: Error) => {
-        console.error('Erreur lors de l\'écriture du log:', err);
+      window.api.writeLog(severity, context || 'ui', key, params).catch((err: Error) => {
+        console.error('Error while writing the log:', err);
       });
     }
   }
@@ -205,17 +252,17 @@ function attachContextMenuHandlers(contextMenu: HTMLElement) {
   document.getElementById('ctx-delete-folder-database')?.addEventListener('click', async () => {
     const target = (contextMenu as any).targetElement;
     if (target && target.dataset.path) {
-      const confirmed = confirm(`Êtes-vous sûr de vouloir supprimer "${target.dataset.path}" de la base de données ?`);
+      const confirmed = confirm(t('index.confirm.removeFolderFromDb', { path: target.dataset.path }));
       if (confirmed) {
         try {
           await window.api.removeFolder(target.dataset.path);
-          log(`Dossier supprimé : ${target.dataset.path}`, { context: 'folder', state: 'deleted' });
+          log('logs.folder.removedFromDb', { params: { path: target.dataset.path }, context: 'folder', state: 'deleted' });
 
           // Retirer de la liste
           loadedFolders = loadedFolders.filter(f => f.path !== target.dataset.path);
           updateLeftSidebar();
         } catch (error) {
-          log(`Erreur lors de la suppression : ${error}`, { severity: 'error', context: 'folder' });
+          log('logs.folder.deleteError', { params: { error: String(error) }, severity: 'error', context: 'folder' });
         }
       }
     }
@@ -236,7 +283,7 @@ function attachContextMenuHandlers(contextMenu: HTMLElement) {
       targetFolderPath = target.dataset.path;
       // Persister dans la base de données
       await window.api.setDbMetadata('target_folder', target.dataset.path);
-      log(`Dossier cible défini : ${target.dataset.path}`, { context: 'folder', state: 'success' });
+      log('logs.folder.targetSet', { params: { path: target.dataset.path }, context: 'folder', state: 'success' });
       updateLeftSidebar();
     }
   });
@@ -273,12 +320,12 @@ async function showDatContextMenu(event: MouseEvent) {
 
   const reportClass = hasUpdateReport ? 'context-menu-item' : 'context-menu-item disabled';
   const reportTitle = hasUpdateReport
-    ? 'Voir le rapport de la dernière mise à jour'
-    : 'Aucune mise à jour du DAT effectuée';
+    ? t('index.datMenu.showReportTitleAvailable')
+    : t('index.datMenu.showReportTitleNone');
 
   menu.innerHTML = `
-    <div class="context-menu-item" id="ctx-update-dat">🔄 Mettre à jour le DAT</div>
-    <div class="${reportClass}" id="ctx-show-dat-report" title="${reportTitle}">📋 Voir le dernier rapport de mise à jour</div>
+    <div class="context-menu-item" id="ctx-update-dat">${t('index.datMenu.update')}</div>
+    <div class="${reportClass}" id="ctx-show-dat-report" title="${reportTitle}">${t('index.datMenu.showReport')}</div>
   `;
 
   document.body.appendChild(menu);
@@ -323,9 +370,9 @@ function showGameContextMenu(event: MouseEvent, game: GameInfo) {
 
   let menuHtml = '';
   if (isMissingOrPartial) {
-    menuHtml += `<div class="context-menu-item" id="ctx-download-rom">&#11015; Télécharger la ROM</div>`;
+    menuHtml += `<div class="context-menu-item" id="ctx-download-rom">&#11015; ${t('index.gameMenu.downloadRom')}</div>`;
   }
-  menuHtml += `<div class="context-menu-item" id="ctx-download-all-missing">&#11015; Télécharger toutes les ROMs manquantes</div>`;
+  menuHtml += `<div class="context-menu-item" id="ctx-download-all-missing">&#11015; ${t('index.gameMenu.downloadAllMissing')}</div>`;
 
   menu.innerHTML = menuHtml;
   document.body.appendChild(menu);
@@ -350,24 +397,24 @@ function showGameContextMenu(event: MouseEvent, game: GameInfo) {
 async function startRomDownload(gameIds: number[]) {
   const removeListener = window.api.onRomDownloadProgress((progress) => {
     if (progress.phase === 'complete') {
-      log(progress.message, { context: 'download', state: 'success' });
+      log(progress.key, { params: progress.params, context: 'download', state: 'success' });
     } else if (progress.phase === 'incomplete') {
-      log(progress.message, { context: 'download', state: 'warning' });
+      log(progress.key, { params: progress.params, context: 'download', state: 'warning' });
     } else {
-      log(progress.message, { context: 'download', state: 'loading' });
+      log(progress.key, { params: progress.params, context: 'download', state: 'loading' });
     }
   });
   try {
     const result = await window.api.downloadRom(gameIds);
     const hasFailures = result.stats.failed > 0;
-    log(`Téléchargement terminé : ${result.stats.consolidated} consolidé(s), ${result.stats.failed} échec(s)`,
-      { context: 'download', state: hasFailures ? 'warning' : 'success' });
+    log('logs.download.done',
+      { params: { consolidated: result.stats.consolidated, failed: result.stats.failed }, context: 'download', state: hasFailures ? 'warning' : 'success' });
 
     if (result.stats.consolidated > 0) {
       await refreshTargetAndMatching();
     }
   } catch (error: any) {
-    log(`Erreur téléchargement : ${error.message}`, { severity: 'error', context: 'download' });
+    log('logs.download.error', { params: { error: error.message }, severity: 'error', context: 'download' });
   } finally {
     removeListener();
   }
@@ -376,24 +423,24 @@ async function startRomDownload(gameIds: number[]) {
 async function startAllMissingRomDownload() {
   const removeListener = window.api.onRomDownloadProgress((progress) => {
     if (progress.phase === 'complete') {
-      log(progress.message, { context: 'download', state: 'success' });
+      log(progress.key, { params: progress.params, context: 'download', state: 'success' });
     } else if (progress.phase === 'incomplete') {
-      log(progress.message, { context: 'download', state: 'warning' });
+      log(progress.key, { params: progress.params, context: 'download', state: 'warning' });
     } else {
-      log(progress.message, { context: 'download', state: 'loading' });
+      log(progress.key, { params: progress.params, context: 'download', state: 'loading' });
     }
   });
   try {
     const result = await window.api.downloadAllMissingRoms();
     const hasFailures = result.stats.failed > 0;
-    log(`Téléchargement terminé : ${result.stats.consolidated} consolidé(s), ${result.stats.failed} échec(s)`,
-      { context: 'download', state: hasFailures ? 'warning' : 'success' });
+    log('logs.download.done',
+      { params: { consolidated: result.stats.consolidated, failed: result.stats.failed }, context: 'download', state: hasFailures ? 'warning' : 'success' });
 
     if (result.stats.consolidated > 0) {
       await refreshTargetAndMatching();
     }
   } catch (error: any) {
-    log(`Erreur téléchargement : ${error.message}`, { severity: 'error', context: 'download' });
+    log('logs.download.error', { params: { error: error.message }, severity: 'error', context: 'download' });
   } finally {
     removeListener();
   }
@@ -404,23 +451,23 @@ async function showLastDatUpdateReport() {
   try {
     const report = await window.api.getDatUpdateReport();
     if (!report) {
-      log('Aucun rapport de mise à jour disponible.', { context: 'dat', state: 'waiting' });
+      log('logs.dat.noUpdateReport', { context: 'dat', state: 'waiting' });
       return;
     }
     showDatUpdateReport(report);
   } catch (error) {
-    log(`Erreur lors du chargement du rapport : ${error instanceof Error ? error.message : String(error)}`, { severity: 'error', context: 'dat' });
+    log('logs.dat.reportLoadError', { params: { error: error instanceof Error ? error.message : String(error) }, severity: 'error', context: 'dat' });
   }
 }
 
 // Gestion de la mise à jour du DAT
 async function handleDatUpdate() {
   try {
-    log('Mise à jour du DAT...', { context: 'dat', state: 'loading' });
+    log('logs.dat.updating', { context: 'dat', state: 'loading' });
 
     const result = await window.api.updateDat();
     if (!result) {
-      log('Mise à jour annulée.', { context: 'dat', state: 'cancel' });
+      log('logs.dat.updateCancelled', { context: 'dat', state: 'cancel' });
       return;
     }
 
@@ -436,15 +483,15 @@ async function handleDatUpdate() {
     // Afficher le rapport de mise à jour dans une modale
     showDatUpdateReport(result);
 
-    log(`DAT mis à jour : ${result.datInfo.name} v${result.datInfo.version}`, { context: 'dat', state: 'success' });
-    log(`${comp.newGames} nouveau(x), ${comp.modifiedGames} modifié(s), ${comp.unchangedGames} inchangé(s), ${comp.disappearedGames} disparu(s)`, { context: 'dat', state: 'count' });
+    log('logs.dat.updated', { params: { name: result.datInfo.name, version: result.datInfo.version }, context: 'dat', state: 'success' });
+    log('logs.dat.updateStats', { params: { newGames: comp.newGames, modified: comp.modifiedGames, unchanged: comp.unchangedGames, disappeared: comp.disappearedGames }, context: 'dat', state: 'count' });
 
     // Rafraîchir le volet central
     if (selectedElement) {
       await updateCenterContent(selectedElement.type, selectedElement.value);
     }
   } catch (error) {
-    log(`Erreur lors de la mise à jour du DAT : ${error instanceof Error ? error.message : String(error)}`, { severity: 'error', context: 'dat' });
+    log('logs.dat.updateError', { params: { error: error instanceof Error ? error.message : String(error) }, severity: 'error', context: 'dat' });
   }
 }
 
@@ -457,7 +504,7 @@ function showDatUpdateReport(result: any) {
   overlay.innerHTML = `
     <div class="modal-content large">
       <div class="modal-header">
-        <h2>Mise à jour du DAT</h2>
+        <h2>${t('index.datUpdate.title')}</h2>
         <button class="close-modal">&times;</button>
       </div>
       <div class="modal-body">
@@ -468,25 +515,25 @@ function showDatUpdateReport(result: any) {
         <div class="dat-update-stats">
           <div class="dat-update-stat stat-new">
             <span class="stat-value">${comp.newGames}</span>
-            <span class="stat-label">Nouveaux</span>
+            <span class="stat-label">${t('index.datUpdate.new')}</span>
           </div>
           <div class="dat-update-stat stat-modified">
             <span class="stat-value">${comp.modifiedGames}</span>
-            <span class="stat-label">Modifiés</span>
+            <span class="stat-label">${t('index.datUpdate.modified')}</span>
           </div>
           <div class="dat-update-stat stat-unchanged">
             <span class="stat-value">${comp.unchangedGames}</span>
-            <span class="stat-label">Inchangés</span>
+            <span class="stat-label">${t('index.datUpdate.unchanged')}</span>
           </div>
           <div class="dat-update-stat stat-disappeared">
             <span class="stat-value">${comp.disappearedGames}</span>
-            <span class="stat-label">Disparus</span>
+            <span class="stat-label">${t('index.datUpdate.disappeared')}</span>
           </div>
         </div>
 
         ${comp.disappearedGames > 0 ? `
           <div class="dat-update-section">
-            <h4>Jeux disparus (${comp.disappearedGames})</h4>
+            <h4>${t('index.datUpdate.disappearedGames', { count: comp.disappearedGames })}</h4>
             <div class="dat-update-game-list">
               ${comp.disappeared.map((g: any) => `
                 <div class="game-entry">
@@ -499,12 +546,11 @@ function showDatUpdateReport(result: any) {
         ` : ''}
 
         <div style="margin-top: 16px; font-size: 13px; color: #7f8c8d;">
-          Le matching a été invalidé. Relancez le matching pour prendre en compte les changements.
-          <br>Utilisez le filtre « Évolution DAT » dans la vue des jeux pour explorer les différences.
+          ${t('index.datUpdate.matchingInvalidated')}
         </div>
       </div>
       <div class="modal-footer">
-        <button class="btn-close-modal">Fermer</button>
+        <button class="btn-close-modal">${t('common.closeWindow')}</button>
       </div>
     </div>
   `;
@@ -535,17 +581,17 @@ async function showGameDiffDetail(gameName: string) {
 
     for (const rom of diff.added) {
       tableRows += `<tr class="diff-added">
-        <td>+ Ajouté</td><td>${rom.name}</td><td>${rom.size || ''}</td><td>${rom.crc32 || ''}</td>
+        <td>${t('index.gameDiff.added')}</td><td>${rom.name}</td><td>${rom.size || ''}</td><td>${rom.crc32 || ''}</td>
       </tr>`;
     }
     for (const rom of diff.removed) {
       tableRows += `<tr class="diff-removed">
-        <td>- Supprimé</td><td>${rom.name}</td><td>${rom.size || ''}</td><td>${rom.crc32 || ''}</td>
+        <td>${t('index.gameDiff.removed')}</td><td>${rom.name}</td><td>${rom.size || ''}</td><td>${rom.crc32 || ''}</td>
       </tr>`;
     }
     for (const c of diff.changed) {
       tableRows += `<tr class="diff-changed">
-        <td>~ Modifié</td><td>${c.name}</td>
+        <td>${t('index.gameDiff.changed')}</td><td>${c.name}</td>
         <td>${c.old.size || ''} &rarr; ${c.new.size || ''}</td>
         <td>${c.old.crc32 || ''} &rarr; ${c.new.crc32 || ''}</td>
       </tr>`;
@@ -554,20 +600,20 @@ async function showGameDiffDetail(gameName: string) {
     overlay.innerHTML = `
       <div class="modal-content large">
         <div class="modal-header">
-          <h2>Évolution : ${gameName}</h2>
+          <h2>${t('index.gameDiff.title', { game: gameName })}</h2>
           <button class="close-modal">&times;</button>
         </div>
         <div class="modal-body">
           <div style="font-size: 13px; color: #7f8c8d; margin-bottom: 12px;">
-            ${diff.added.length} ajouté(s), ${diff.removed.length} supprimé(s), ${diff.changed.length} modifié(s)
+            ${t('index.gameDiff.summary', { added: diff.added.length, removed: diff.removed.length, changed: diff.changed.length })}
           </div>
           <table class="rom-diff-table">
-            <thead><tr><th>Statut</th><th>Fichier</th><th>Taille</th><th>CRC32</th></tr></thead>
+            <thead><tr><th>${t('index.gameDiff.colStatus')}</th><th>${t('index.gameDiff.colFile')}</th><th>${t('index.gameDiff.colSize')}</th><th>CRC32</th></tr></thead>
             <tbody>${tableRows}</tbody>
           </table>
         </div>
         <div class="modal-footer">
-          <button class="btn-close-modal">Fermer</button>
+          <button class="btn-close-modal">${t('common.closeWindow')}</button>
         </div>
       </div>
     `;
@@ -581,7 +627,7 @@ async function showGameDiffDetail(gameName: string) {
       if (e.target === overlay) closeModal();
     });
   } catch (error) {
-    log(`Erreur lors du chargement du diff : ${error}`, { severity: 'error', context: 'dat' });
+    log('logs.dat.diffError', { params: { error: String(error) }, severity: 'error', context: 'dat' });
   }
 }
 
@@ -608,26 +654,26 @@ async function refreshTargetAndMatching() {
       await updateCenterContent(selectedElement.type, selectedElement.value);
     }
 
-    log('UI rafraîchie.', { context: 'match', state: 'success' });
+    log('logs.match.uiRefreshed', { context: 'match', state: 'success' });
   } catch (error) {
-    log(`Erreur lors du rafraîchissement : ${error}`, { severity: 'error', context: 'match' });
+    log('logs.match.refreshError', { params: { error: String(error) }, severity: 'error', context: 'match' });
   }
 }
 
 async function rescanFolder(folderPath: string) {
   try {
-    log(`Re-scan du dossier : ${folderPath}...`, { context: 'folder', state: 'loading' });
-    
+    log('logs.folder.rescanStart', { params: { path: folderPath }, context: 'folder', state: 'loading' });
+
     const progressHandler = (data: any) => {
       if (data.fileName) {
-        log(`Scan : ${data.fileName}`, { context: 'romfile', state: 'loading' });
+        log('logs.romfile.scanning', { params: { file: data.fileName }, context: 'romfile', state: 'loading' });
       }
     };
-    
+
     window.api.onScanProgress(progressHandler);
-    
+
     const stats = await window.api.addRomsFolder(folderPath);
-    log(`Re-scan terminé : ${stats.length} fichiers trouvés.`, { context: 'folder', state: 'success' });
+    log('logs.folder.rescanDone', { params: { count: stats.length }, context: 'folder', state: 'success' });
 
     // Rafraîchir les compteurs dans la sidebar
     const rootFolders = await window.api.getRootFolders();
@@ -639,7 +685,7 @@ async function rescanFolder(folderPath: string) {
       await updateCenterContent('folder', folderPath);
     }
   } catch (error) {
-    log(`Erreur lors du re-scan : ${error}`, { severity: 'error', context: 'folder' });
+    log('logs.folder.rescanError', { params: { error: String(error) }, severity: 'error', context: 'folder' });
   }
 }
 
@@ -664,14 +710,14 @@ function showContextMenu(event: MouseEvent, element: HTMLElement, options: { isS
   // Dossier racine : "Re-scanner" + "Définir comme cible" (si pas déjà cible) + suppressions.
   let menuHtml = '';
   if (!options.isSubfolder) {
-    menuHtml += `<div id="ctx-refresh-folder" class="context-menu-item">🔄 Re-scanner le dossier</div>`;
+    menuHtml += `<div id="ctx-refresh-folder" class="context-menu-item">${t('index.contextMenu.rescan')}</div>`;
     if (!isTarget) {
-      menuHtml += `<div id="ctx-set-target" class="context-menu-item">📁 Définir comme dossier cible</div>`;
+      menuHtml += `<div id="ctx-set-target" class="context-menu-item">${t('index.contextMenu.setTarget')}</div>`;
     }
   }
   if (!isTarget) {
-    menuHtml += `<div id="ctx-delete-folder-database" class="context-menu-item">❌ Retirer le dossier de la base</div>`;
-    menuHtml += `<div id="ctx-delete-folder-physical" class="context-menu-item danger">🗑️ Supprimer le dossier</div>`;
+    menuHtml += `<div id="ctx-delete-folder-database" class="context-menu-item">${t('index.contextMenu.removeFromDb')}</div>`;
+    menuHtml += `<div id="ctx-delete-folder-physical" class="context-menu-item danger">${t('index.contextMenu.deletePhysical')}</div>`;
   }
 
   if (!menuHtml) return;
@@ -706,19 +752,19 @@ async function showFileContextMenu(event: MouseEvent, file: any) {
 
   // CD/ISO → conversion CHD
   if (['cue', 'gdi', 'toc', 'nrg', 'iso', 'bin'].includes(ext)) {
-    menu.innerHTML += `<div class="context-menu-item" id="ctx-convert-chd">💿 Convertir en CHD</div>`;
+    menu.innerHTML += `<div class="context-menu-item" id="ctx-convert-chd">${t('index.fileMenu.convertChd')}</div>`;
   }
 
   // CHD → extraction / vérif / infos
   if (ext === 'chd') {
-    menu.innerHTML += `<div class="context-menu-item" id="ctx-extract-chd">📦 Extraire le CHD</div>`;
-    menu.innerHTML += `<div class="context-menu-item" id="ctx-verify-chd">✔️ Vérifier l'intégrité</div>`;
-    menu.innerHTML += `<div class="context-menu-item" id="ctx-info-chd">ℹ️ Informations CHD</div>`;
+    menu.innerHTML += `<div class="context-menu-item" id="ctx-extract-chd">${t('index.fileMenu.extractChd')}</div>`;
+    menu.innerHTML += `<div class="context-menu-item" id="ctx-verify-chd">${t('index.fileMenu.verifyChd')}</div>`;
+    menu.innerHTML += `<div class="context-menu-item" id="ctx-info-chd">${t('index.fileMenu.infoChd')}</div>`;
   }
 
   // Toujours : retirer de la base + supprimer (corbeille)
-  menu.innerHTML += `<div class="context-menu-item" id="ctx-remove-file">❌ Retirer le fichier de la base</div>`;
-  menu.innerHTML += `<div class="context-menu-item danger" id="ctx-delete-file">🗑️ Supprimer le fichier</div>`;
+  menu.innerHTML += `<div class="context-menu-item" id="ctx-remove-file">${t('index.fileMenu.removeFromDb')}</div>`;
+  menu.innerHTML += `<div class="context-menu-item danger" id="ctx-delete-file">${t('index.fileMenu.deleteFile')}</div>`;
 
   document.body.appendChild(menu);
 
@@ -743,14 +789,14 @@ async function showFileContextMenu(event: MouseEvent, file: any) {
   // Handler "Retirer de la base"
   menu.querySelector('#ctx-remove-file')?.addEventListener('click', async () => {
     menu.remove();
-    const confirmed = confirm(`Retirer "${file.fileName}" de la base de données ?\n\nLe fichier physique ne sera pas supprimé.`);
+    const confirmed = confirm(t('index.confirm.removeFile', { file: file.fileName }));
     if (!confirmed) return;
     try {
       await window.api.removeFile(file.filePath);
-      log(`Fichier retiré de la base : ${file.fileName}`, { context: 'folder', state: 'deleted' });
+      log('logs.folder.fileRemovedFromDb', { params: { file: file.fileName }, context: 'folder', state: 'deleted' });
       if (currentFolderPath) await updateFolderContent(currentFolderPath);
     } catch (error) {
-      log(`Erreur lors du retrait : ${error}`, { severity: 'error', context: 'folder' });
+      log('logs.folder.removeError', { params: { error: String(error) }, severity: 'error', context: 'folder' });
     }
   });
 
@@ -759,10 +805,10 @@ async function showFileContextMenu(event: MouseEvent, file: any) {
     menu.remove();
     const result = await window.api.showMessageBox({
       type: 'warning',
-      title: 'Supprimer le fichier',
-      message: `Êtes-vous sûr de vouloir supprimer "${file.fileName}" ?`,
-      detail: 'Cette action déplacera le fichier vers la corbeille. Vous pourrez le restaurer depuis la corbeille si nécessaire.',
-      buttons: ['Annuler', 'Déplacer vers la corbeille'],
+      title: t('index.confirm.deleteFileTitle'),
+      message: t('index.confirm.deleteFileMessage', { file: file.fileName }),
+      detail: t('index.confirm.deleteFileDetail'),
+      buttons: [t('common.cancel'), t('index.confirm.moveToTrash')],
       defaultId: 0,
       cancelId: 0,
       noLink: true
@@ -770,10 +816,10 @@ async function showFileContextMenu(event: MouseEvent, file: any) {
     if (result.response !== 1) return;
     try {
       await window.api.deleteFile(file.filePath);
-      log(`Fichier supprimé : ${file.fileName}`, { context: 'folder', state: 'deleted' });
+      log('logs.folder.fileDeleted', { params: { file: file.fileName }, context: 'folder', state: 'deleted' });
       if (currentFolderPath) await updateFolderContent(currentFolderPath);
     } catch (error) {
-      log(`Erreur lors de la suppression : ${error}`, { severity: 'error', context: 'folder' });
+      log('logs.folder.deleteError', { params: { error: String(error) }, severity: 'error', context: 'folder' });
     }
   });
 
@@ -874,25 +920,99 @@ function updateBreadcrumb(path: string) {
 async function updateDbInfoBanner() {
   const dbSystem = document.getElementById('db-info-system');
   const dbPath = document.getElementById('db-info-path');
+  const dbModeLabel = document.getElementById('db-info-mode-label');
+  const dbMode = document.getElementById('db-info-mode');
+  const dbSetModeLabel = document.getElementById('db-info-set-mode-label');
+  const dbSetMode = document.getElementById('db-info-set-mode');
+  const dbChdLabel = document.getElementById('db-info-chd-label');
+  const dbChd = document.getElementById('db-info-chd');
 
   if (!dbPath || !dbSystem) return;
+
+  // Helper pour afficher/masquer le mode DAT.
+  // `inferred = true` indique que le mode a été déduit du nom du header
+  // (DAT Pleasuredome strippé de cloneof/romof) : on affiche un ⚠️ pour
+  // signaler que les fonctionnalités arcade avancées ne marcheront pas.
+  const setModeVisibility = (mode: string | null, inferred: boolean = false) => {
+    const display = mode && mode !== 'n/a' ? '' : 'none';
+    if (dbModeLabel) dbModeLabel.style.display = display;
+    if (dbMode) dbMode.style.display = display;
+    if (dbMode && mode && mode !== 'n/a') {
+      const labelMap: Record<string, { txt: string; title: string }> = {
+        'split':      { txt: 'Split',      title: t('index.datMode.splitTitle') },
+        'non-merged': { txt: 'Non-merged', title: t('index.datMode.nonMergedTitle') },
+        'merged':     { txt: 'Merged',     title: t('index.datMode.mergedTitle') },
+        'unknown':    { txt: t('common.unknown'), title: t('index.datMode.unknownTitle') }
+      };
+      const info = labelMap[mode] || { txt: mode, title: t('index.datMode.genericTitle', { mode }) };
+      const inferredSuffix = inferred ? ' ⚠️' : '';
+      const inferredNote = inferred ? '\n\n' + t('index.datMode.inferredNote') : '';
+      dbMode.textContent = info.txt + inferredSuffix;
+      dbMode.title = info.title + inferredNote;
+    }
+  };
+
+  // Helper pour afficher/masquer la présence de CHD.
+  // - `visible = false` : masque (pas de DB ouverte).
+  // - Sinon : affiche "Oui" ou "Non" selon la présence de CHD dans le DAT.
+  const setChdVisibility = (gamesWithDisks: number, totalDisks: number, visible: boolean = true) => {
+    const display = visible ? '' : 'none';
+    if (dbChdLabel) dbChdLabel.style.display = display;
+    if (dbChd) dbChd.style.display = display;
+    if (dbChd && visible) {
+      if (gamesWithDisks > 0) {
+        dbChd.textContent = t('common.yes');
+        dbChd.title = t('index.chdInfo.hasDisksTitle', { disks: totalDisks, games: gamesWithDisks });
+      } else {
+        dbChd.textContent = t('common.no');
+        dbChd.title = t('index.chdInfo.noDisksTitle');
+      }
+    }
+  };
+
+  // Helper pour afficher/masquer le mode du set scanné
+  const setSetModeVisibility = (mode: string | null) => {
+    const display = mode && mode !== 'n/a' ? '' : 'none';
+    if (dbSetModeLabel) dbSetModeLabel.style.display = display;
+    if (dbSetMode) dbSetMode.style.display = display;
+    if (dbSetMode && mode && mode !== 'n/a') {
+      const labelMap: Record<string, { txt: string; title: string }> = {
+        'split':      { txt: 'Split',      title: t('index.setMode.splitTitle') },
+        'non-merged': { txt: 'Non-merged', title: t('index.setMode.nonMergedTitle') },
+        'merged':     { txt: 'Merged',     title: t('index.setMode.mergedTitle') },
+        'unknown':    { txt: t('common.unknown'), title: t('index.setMode.unknownTitle') }
+      };
+      const info = labelMap[mode] || { txt: mode, title: t('index.setMode.genericTitle', { mode }) };
+      dbSetMode.textContent = info.txt;
+      dbSetMode.title = info.title;
+    }
+  };
 
   if (currentDbPath) {
     dbPath.textContent = currentDbPath;
     dbPath.title = currentDbPath;
 
-    // Récupérer le système depuis les metadata
+    // Récupérer le système et le mode DAT depuis les metadata
     try {
       const systemName = await window.api.getDbMetadata('system_name');
       const systemId = await window.api.getDbMetadata('system_id');
+      const datSetMode = await window.api.getDbMetadata('dat_set_mode');
+      const datModeInferred = (await window.api.getDbMetadata('dat_set_mode_inferred')) === 'true';
+      const scannedSetMode = await window.api.getDbMetadata('scanned_set_mode');
+      const gamesWithDisks = parseInt(await window.api.getDbMetadata('dat_games_with_disks') || '0', 10);
+      const totalDisks = parseInt(await window.api.getDbMetadata('dat_total_disks') || '0', 10);
+      setModeVisibility(datSetMode, datModeInferred);
+      setSetModeVisibility(scannedSetMode);
+      setChdVisibility(gamesWithDisks, totalDisks);
+
       if (systemName && systemId) {
         dbSystem.textContent = `${systemName} (${systemId})`;
-        dbSystem.title = `Système : ${systemName}\nID : ${systemId}`;
+        dbSystem.title = t('index.systemInfo.title', { name: systemName, id: systemId });
         (dbSystem as HTMLElement).style.color = '';
         (dbSystem as HTMLElement).style.fontStyle = '';
       } else {
-        dbSystem.textContent = 'À définir';
-        dbSystem.title = 'Aucun système associé — sélection manuelle requise';
+        dbSystem.textContent = t('index.systemInfo.toDefine');
+        dbSystem.title = t('index.systemInfo.noSystemTitle');
         (dbSystem as HTMLElement).style.color = '#e67e22';
         (dbSystem as HTMLElement).style.fontStyle = 'italic';
         // Déclencher la modale de sélection manuelle (bloquante)
@@ -900,6 +1020,9 @@ async function updateDbInfoBanner() {
       }
     } catch {
       dbSystem.textContent = '';
+      setModeVisibility(null);
+      setSetModeVisibility(null);
+      setChdVisibility(0, 0, false);
     }
   } else {
     // Vider les champs quand il n'y a pas de base de données
@@ -907,6 +1030,9 @@ async function updateDbInfoBanner() {
     dbSystem.title = '';
     dbPath.textContent = '';
     dbPath.title = '';
+    setModeVisibility(null);
+    setSetModeVisibility(null);
+    setChdVisibility(0, 0, false);
   }
 }
 
@@ -958,9 +1084,32 @@ async function openSystemSelectionModal(): Promise<void> {
       try {
         await window.api.setDbMetadata('system_id', systemId);
         await window.api.setDbMetadata('system_name', fullname);
-        log(`Système défini manuellement : ${fullname} (${systemId})`, { context: 'dat', state: 'success' });
+        log('logs.dat.systemSetManually', { params: { name: fullname, id: systemId }, context: 'dat', state: 'success' });
+
+        // Si l'option "Dossier multi-système" est active, recalculer le dossier cible
+        // effectif (qui inclut maintenant le sous-dossier du système) et l'ajouter à
+        // la base. Le dossier parent éventuellement ajouté à la création reste tel quel.
+        const settings = await window.api.getSettings();
+        if (settings.validatedRomsMultiSystem) {
+          try {
+            const newEffective = await window.api.getEffectiveValidatedFolder();
+            if (newEffective && newEffective !== targetFolderPath) {
+              targetFolderPath = newEffective;
+              await window.api.setDbMetadata('target_folder', newEffective);
+              log('logs.folder.targetUpdated', { params: { path: newEffective }, context: 'folder', state: 'loading' });
+              const stats = await window.api.addRomsFolder(newEffective);
+              log('logs.folder.targetScanned', { params: { count: stats.length }, context: 'folder', state: 'success' });
+              const rootFolders = await window.api.getRootFolders();
+              loadedFolders = rootFolders;
+              updateLeftSidebar();
+              updateWorkflowButtons();
+            }
+          } catch (folderError: any) {
+            log('logs.folder.targetUpdateError', { params: { error: String(folderError?.message || folderError) }, severity: 'warning', context: 'folder' });
+          }
+        }
       } catch (error: any) {
-        log(`Erreur sauvegarde système : ${error?.message || error}`, { severity: 'error', context: 'dat' });
+        log('logs.dat.systemSaveError', { params: { error: String(error?.message || error) }, severity: 'error', context: 'dat' });
       }
 
       // Fermer la modale et rafraîchir le bandeau
@@ -989,34 +1138,23 @@ async function openSystemSelectionModal(): Promise<void> {
 // Fonction centralisée pour mettre à jour l'état des boutons workflow et des menus
 function updateWorkflowButtons() {
   const elements = {
-    datSelect: document.getElementById('dat-select') as HTMLButtonElement,
-    dbCreate: document.getElementById('db-create') as HTMLButtonElement,
+    datLoad: document.getElementById('dat-load') as HTMLButtonElement,
     romAddFolder: document.getElementById('rom-add-folder') as HTMLButtonElement,
     romAddFolderSidebar: document.getElementById('rom-add-folder-sidebar') as HTMLButtonElement,
-    datQuickLoad: document.getElementById('dat-quick-load') as HTMLButtonElement,
     matchRoms: document.getElementById('match-roms') as HTMLButtonElement,
     consolidateRoms: document.getElementById('consolidate-roms') as HTMLButtonElement
   };
 
   // Logique de mise à jour basée sur l'état de l'application
 
-  // Bouton "Chargement rapide" : toujours disponible
-  if (elements.datQuickLoad) {
-    elements.datQuickLoad.disabled = false;
+  // Bouton "Charger DAT/XML" : toujours disponible.
+  // Sans base → charge un DAT primaire (crée la base). Avec base → DAT complémentaire.
+  if (elements.datLoad) {
+    elements.datLoad.disabled = false;
   }
 
-  // Bouton "Sélectionner DAT/XML" : disponible si aucun DAT n'est sélectionné
-  if (elements.datSelect) {
-    elements.datSelect.disabled = currentDatPath !== null;
-  }
-
-  // Bouton "Créer base de données" : disponible si DAT sélectionné mais pas de DB
-  if (elements.dbCreate) {
-    elements.dbCreate.disabled = !(currentDatPath && !currentDbPath);
-  }
-
-  // Boutons "Ajouter dossier ROMs" : disponibles si currentDatPath existe ET currentDbPath existe ET DAT chargé dans la base
-  const canAddRoms = currentDatPath !== null && currentDbPath !== null && currentDatInfo !== null;
+  // Boutons "Ajouter dossier ROMs" : disponibles si une base est ouverte avec un DAT chargé
+  const canAddRoms = currentDbPath !== null && currentDatInfo !== null;
   if (elements.romAddFolder) {
     elements.romAddFolder.disabled = !canAddRoms;
   }
@@ -1034,8 +1172,10 @@ function updateWorkflowButtons() {
     elements.consolidateRoms.disabled = !matchingComplete;
   }
 
-  // Mettre à jour l'état des entrées du menu principal
-  const canLoadDat = !currentDatInfo; // On peut charger un DAT si pas déjà chargé (workflow rapide toujours disponible)
+  // Mettre à jour l'état des entrées du menu principal.
+  // Charger un DAT est toujours possible : sans base → primaire (création),
+  // avec base → complémentaire (fusion).
+  const canLoadDat = true;
   const canCloseDatabase = currentDbPath !== null; // On peut fermer la DB si une DB est ouverte
 
   window.api.updateMenuState({
@@ -1058,24 +1198,69 @@ function resetInterface() {
   matchingComplete = false;
   targetFolderPath = null;
 
+  // Purger l'état mémoire de la vue DAT — sans ça, la barre de filtres/groupement
+  // restée câblée sur allGames re-affichait la liste des jeux de la base fermée
+  // au moindre clic sur un filtre ou le select de groupement.
+  allGames = [];
+  categoryCounts = new Map();
+  matchStatusCounts = new Map();
+  autoSelectedIds = new Set();
+  autoSelectedReasons = {};
+  collapsedGameGroups.clear();
+  activeFilters.clear();
+  activeMatchFilters.clear();
+  activeSelectionFilters.clear();
+  activeChangeFilters.clear();
+  activeChdFilters.clear();
+  activeDriverFilters.clear();
+  activeMameFilters.clear();
+
+  // Masquer les barres liées à la vue DAT (réaffichées au prochain chargement)
+  const groupFilterBar = document.getElementById('group-filter-bar');
+  if (groupFilterBar) groupFilterBar.style.display = 'none';
+  const selectAllBar = document.getElementById('select-all-bar');
+  if (selectAllBar) selectAllBar.style.display = 'none';
+  const searchBar = document.getElementById('search-bar');
+  if (searchBar) searchBar.style.display = 'none';
+  const activeFiltersBar = document.getElementById('active-filters-bar');
+  if (activeFiltersBar) activeFiltersBar.classList.remove('visible');
+
+  // Vider les dropdowns de filtres (reconstruits au prochain chargement)
+  for (const id of ['category-filters-container', 'match-status-filters-container',
+                    'selection-filters-container', 'change-status-filters-container',
+                    'chd-filters-container', 'driver-status-filters-container',
+                    'mame-filters-container']) {
+    const el = document.getElementById(id);
+    if (el) el.innerHTML = '';
+  }
+
+  // Réinitialiser le compteur global et le volet de détails
+  const counters = document.getElementById('global-counters');
+  if (counters) counters.innerHTML = '';
+  const detailView = document.getElementById('detail-view');
+  if (detailView) {
+    detailView.innerHTML = `
+      <div class="detail-header">${t('index.details.header')}</div>
+      <div style="padding: 10px; color: #7f8c8d;">
+        ${t('index.details.empty')}
+      </div>
+    `;
+  }
+
   // Masquer le bandeau d'info DB
   updateDbInfoBanner();
 
   const elements = {
-    datSelect: document.getElementById('dat-select') as HTMLButtonElement,
-    dbCreate: document.getElementById('db-create') as HTMLButtonElement,
+    datLoad: document.getElementById('dat-load') as HTMLButtonElement,
     romAddFolder: document.getElementById('rom-add-folder') as HTMLButtonElement,
     romAddFolderSidebar: document.getElementById('rom-add-folder-sidebar') as HTMLButtonElement,
-    datQuickLoad: document.getElementById('dat-quick-load') as HTMLButtonElement,
     matchRoms: document.getElementById('match-roms') as HTMLButtonElement,
     consolidateRoms: document.getElementById('consolidate-roms') as HTMLButtonElement
   };
 
-  if (elements.datSelect) elements.datSelect.disabled = false;
-  if (elements.dbCreate) elements.dbCreate.disabled = true;
+  if (elements.datLoad) elements.datLoad.disabled = false;
   if (elements.romAddFolder) elements.romAddFolder.disabled = true;
   if (elements.romAddFolderSidebar) elements.romAddFolderSidebar.disabled = true;
-  if (elements.datQuickLoad) elements.datQuickLoad.disabled = false;
   if (elements.matchRoms) elements.matchRoms.disabled = true;
   if (elements.consolidateRoms) elements.consolidateRoms.disabled = true;
 
@@ -1085,15 +1270,13 @@ function resetInterface() {
   if (gameList) {
     gameList.innerHTML = `
       <div style="padding: 40px; text-align: center; color: #7f8c8d;">
-        <h3>Bienvenue dans RUMCET</h3>
-        <p style="margin-top: 20px;">Pour commencer :</p>
+        <h3>${t('index.welcome.title')}</h3>
+        <p style="margin-top: 20px;">${t('index.welcome.intro')}</p>
         <ol style="text-align: left; display: inline-block; margin-top: 10px;">
-          <li>Sélectionnez un fichier DAT/XML ou ouvrez une base existante</li>
-          <li>Créez une base de données</li>
-          <li>Chargez les données</li>
-          <li>Ajoutez vos dossiers de ROMs</li>
-          <li>Matchez les ROMs pour identifier les manquantes</li>
-          <li>Consolidez les ROMs validées en archives</li>
+          <li>${t('index.welcomeReset.step1')}</li>
+          <li>${t('index.welcomeReset.step2')}</li>
+          <li>${t('index.welcomeReset.step3')}</li>
+          <li>${t('index.welcomeReset.step4')}</li>
         </ol>
       </div>
     `;
@@ -1118,21 +1301,21 @@ function updateLeftSidebar() {
       const div = document.createElement('div');
       div.className = 'sidebar-item';
 
-      const datFileName = currentDatPath.split(/[\\\/]/).pop() || 'Fichier DAT';
+      const datFileName = currentDatPath.split(/[\\\/]/).pop() || t('index.datDetails.fallbackName');
 
       div.innerHTML = `
         <div class="dat-header" style="display: flex; justify-content: space-between; align-items: center; font-weight: 600; margin-bottom: 5px;">
           <span>${datFileName}</span>
-          <button class="dat-toggle-btn collapsed" title="Afficher/Masquer les détails">
+          <button class="dat-toggle-btn collapsed" title="${t('index.datDetails.toggleTitle')}">
             <span class="chevron">▲</span>
           </button>
         </div>
         <div class="dat-details collapsed" style="font-size: 11px; color: #7f8c8d; line-height: 1.4;">
-          ${currentDatInfo.name ? `<div><strong>Nom:</strong> ${currentDatInfo.name}</div>` : ''}
-          ${currentDatInfo.description ? `<div><strong>Description:</strong> ${currentDatInfo.description}</div>` : ''}
-          ${currentDatInfo.version ? `<div><strong>Version:</strong> ${currentDatInfo.version}</div>` : ''}
-          ${currentDatInfo.date ? `<div><strong>Date:</strong> ${currentDatInfo.date}</div>` : ''}
-          ${currentDatInfo.author ? `<div><strong>Auteur:</strong> ${currentDatInfo.author}</div>` : ''}
+          ${currentDatInfo.name ? `<div><strong>${t('index.datDetails.name')}</strong> ${currentDatInfo.name}</div>` : ''}
+          ${currentDatInfo.description ? `<div><strong>${t('index.datDetails.description')}</strong> ${currentDatInfo.description}</div>` : ''}
+          ${currentDatInfo.version ? `<div><strong>${t('index.datDetails.version')}</strong> ${currentDatInfo.version}</div>` : ''}
+          ${currentDatInfo.date ? `<div><strong>${t('index.datDetails.date')}</strong> ${currentDatInfo.date}</div>` : ''}
+          ${currentDatInfo.author ? `<div><strong>${t('index.datDetails.author')}</strong> ${currentDatInfo.author}</div>` : ''}
           ${currentDatInfo.homepage ? `<div><strong>Homepage:</strong> ${currentDatInfo.homepage}</div>` : ''}
           ${currentDatInfo.url ? `<div><strong>URL:</strong> ${currentDatInfo.url}</div>` : ''}
         </div>
@@ -1178,15 +1361,15 @@ function updateLeftSidebar() {
       const parts = folder.path.replace(/\\/g, '/').split('/');
       const name = parts.pop() || folder.path;
       const parentPath = parts.join('/');
-      const badge = isTarget ? '<span class="target-folder-badge">CIBLE</span>' : '';
+      const badge = isTarget ? `<span class="target-folder-badge">${t('index.folders.targetBadge')}</span>` : '';
       div.innerHTML = `
         <div class="folder-header" style="display: flex; justify-content: space-between; align-items: center; gap: 8px;">
           <div style="flex: 1; min-width: 0;">
             <div style="font-size: 11px; color: #7f8c8d; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;" title="${folder.path}">${parentPath}/</div>
             <div style="font-weight: 600; margin-bottom: 2px;">${name}${badge}</div>
-            <div style="font-size: 11px; color: #7f8c8d;">${folder.fileCount} fichiers</div>
+            <div style="font-size: 11px; color: #7f8c8d;">${t('index.folders.filesCount', { count: folder.fileCount })}</div>
           </div>
-          <button class="folder-remove-btn" title="Retirer le dossier de la base de données">×</button>
+          <button class="folder-remove-btn" title="${t('index.folders.removeTitle')}">×</button>
         </div>
       `;
 
@@ -1198,11 +1381,11 @@ function updateLeftSidebar() {
         // Ne pas permettre la suppression du dossier cible
         if (targetFolderPath !== null && folder.path === targetFolderPath) return;
 
-        const confirmed = confirm(`Êtes-vous sûr de vouloir retirer "${folder.path}" de la base de données ?`);
+        const confirmed = confirm(t('index.confirm.removeFolderFromDb', { path: folder.path }));
         if (confirmed) {
           try {
             await window.api.removeFolder(folder.path);
-            log(`Dossier retiré de la base : ${folder.path}`, { context: 'folder', state: 'deleted' });
+            log('logs.folder.removedFromDb', { params: { path: folder.path }, context: 'folder', state: 'deleted' });
 
             // Retirer de la liste
             loadedFolders = loadedFolders.filter(f => f.path !== folder.path);
@@ -1211,7 +1394,7 @@ function updateLeftSidebar() {
             // Mettre à jour l'état des boutons workflow
             updateWorkflowButtons();
           } catch (error) {
-            log(`Erreur lors du retrait du dossier : ${error instanceof Error ? error.message : String(error)}`, { severity: 'error', context: 'folder' });
+            log('logs.folder.removeError', { params: { error: error instanceof Error ? error.message : String(error) }, severity: 'error', context: 'folder' });
           }
         }
       });
@@ -1300,7 +1483,7 @@ async function updateCenterContent(type: 'dat' | 'folder', path: string) {
   const gameList = document.getElementById('game-list');
   if (!gameList) return;
   
-  gameList.innerHTML = '<div style="padding: 20px; text-align: center;">Chargement...</div>';
+  gameList.innerHTML = `<div style="padding: 20px; text-align: center;">${t('common.loading')}</div>`;
 
   try {
     if (type === 'dat') {
@@ -1342,12 +1525,34 @@ async function updateCenterContent(type: 'dat' | 'folder', path: string) {
         }
       }
 
+      // Phase 4 — Masquer les entrées du DAT qui n'ont ni ROM ni disque (devices
+      // logiques type i8085/tms9928a, certains BIOS exotiques). Sans intérêt
+      // dans la liste car non matchables et non consolidables. Elles restent
+      // en DB pour la cascade de dépendances (resolveDependencies les traverse
+      // toujours via game_relationships).
+      // On garde en revanche les jeux avec seulement un CHD (disque orphelin),
+      // qui doivent rester consultables et filtrables.
+      const visibleGames = games.filter((g: GameInfo) => ((g.rom_count ?? 0) + (g.disk_count ?? 0)) > 0);
+      const hiddenCount = games.length - visibleGames.length;
+      if (hiddenCount > 0) {
+        console.log(`[games:list] ${hiddenCount} ROM-less entry(ies) hidden from the list (empty devices, etc.)`);
+      }
+
       // Sauvegarder les jeux et recalculer les compteurs (sans effacer les filtres actifs)
-      allGames = games;
-      categoryCounts = extractCategoryCounts(games);
-      matchStatusCounts = extractMatchStatusCounts(games);
+      allGames = visibleGames;
+      categoryCounts = extractCategoryCounts(visibleGames);
+      matchStatusCounts = extractMatchStatusCounts(visibleGames);
+
+      // Phase 3bis-B : pré-calculer hasParentInDb + cloneCount (utilisés en vue merged)
+      // et rafraîchir le mode cible depuis settings.
+      computeParentCloneRelations(allGames);
+      await refreshTargetSetMode();
+
+      // Résoudre les dépendances arcade (parents/BIOS/devices auto-requis selon le mode cible)
+      await refreshDependencyResolution();
 
       // Nettoyer les filtres qui ne correspondent plus aux données actuelles
+      // (basés sur visibleGames car les entrées sans ROM sont masquées de la liste).
       for (const f of activeFilters) {
         if (!categoryCounts.has(f)) activeFilters.delete(f);
       }
@@ -1355,19 +1560,20 @@ async function updateCenterContent(type: 'dat' | 'folder', path: string) {
         if (!matchStatusCounts.has(f)) activeMatchFilters.delete(f);
       }
       // Nettoyer les filtres d'évolution DAT (invalides si pas de change_status)
-      const hasChangeData = games.some((g: GameInfo) => g.change_status);
+      const hasChangeData = visibleGames.some((g: GameInfo) => g.change_status);
       if (!hasChangeData) {
         activeChangeFilters.clear();
       } else {
-        const validStatuses = new Set(games.map((g: GameInfo) => g.change_status).filter(Boolean) as string[]);
+        const validStatuses = new Set(visibleGames.map((g: GameInfo) => g.change_status).filter(Boolean) as string[]);
         for (const f of activeChangeFilters) {
           if (!validStatuses.has(f)) activeChangeFilters.delete(f);
         }
       }
-      // Nettoyer les filtres de sélection
+      // Nettoyer les filtres de sélection (basés sur visibleGames)
       for (const f of activeSelectionFilters) {
-        if (f === 'selected' && !games.some((g: GameInfo) => g.is_selected !== 0 && !g.is_disappeared)) activeSelectionFilters.delete(f);
-        if (f === 'unselected' && !games.some((g: GameInfo) => g.is_selected === 0 && !g.is_disappeared)) activeSelectionFilters.delete(f);
+        if (f === 'selected' && !visibleGames.some((g: GameInfo) => g.is_selected !== 0 && !g.is_disappeared)) activeSelectionFilters.delete(f);
+        if (f === 'unselected' && !visibleGames.some((g: GameInfo) => g.is_selected === 0 && !g.is_disappeared)) activeSelectionFilters.delete(f);
+        // 'auto' nettoyé après refreshDependencyResolution car dépend de autoSelectedIds
       }
 
       // Générer les filtres (en restaurant l'état actif)
@@ -1375,6 +1581,9 @@ async function updateCenterContent(type: 'dat' | 'folder', path: string) {
       generateMatchStatusFilters();
       generateSelectionFilters();
       generateChangeStatusFilters();
+      generateChdFilter();
+      generateDriverStatusFilter();
+      generateMameFilter();
 
       // Restaurer la valeur du select de groupement
       const groupBySelect = document.getElementById('group-by') as HTMLSelectElement;
@@ -1444,7 +1653,7 @@ async function updateCenterContent(type: 'dat' | 'folder', path: string) {
       originalContent = []; // Réinitialiser le contenu original sauvegardé
     }
   } catch (error) {
-    gameList.innerHTML = `<div style="padding: 20px; color: #e74c3c;">Erreur : ${error}</div>`;
+    gameList.innerHTML = `<div style="padding: 20px; color: #e74c3c;">${t('common.errorWithDetail', { error: String(error) })}</div>`;
   }
 }
 
@@ -1452,7 +1661,7 @@ async function updateCenterContent(type: 'dat' | 'folder', path: string) {
   const gameList = document.getElementById('game-list');
   if (!gameList) return;
   
-  gameList.innerHTML = '<div style="padding: 20px; text-align: center;">Chargement...</div>';
+  gameList.innerHTML = `<div style="padding: 20px; text-align: center;">${t('common.loading')}</div>`;
   
   try {
     if (type === 'dat') {
@@ -1473,7 +1682,7 @@ async function updateCenterContent(type: 'dat' | 'folder', path: string) {
       if (viewControls) viewControls.style.display = 'flex';
     }
   } catch (error) {
-    gameList.innerHTML = `<div style="padding: 20px; color: #e74c3c;">Erreur : ${error}</div>`;
+    gameList.innerHTML = `<div style="padding: 20px; color: #e74c3c;">${t('common.errorWithDetail', { error: String(error) })}</div>`;
   }
 }*/
 
@@ -1491,7 +1700,7 @@ async function updateFolderContent(path: string) {
     gameList.innerHTML = '';
     
     if (content.folders.length === 0 && content.files.length === 0) {
-      gameList.innerHTML = '<div style="padding: 20px; text-align: center; color: #7f8c8d;">Dossier vide</div>';
+      gameList.innerHTML = `<div style="padding: 20px; text-align: center; color: #7f8c8d;">${t('index.folderView.empty')}</div>`;
       return;
     }
     
@@ -1505,7 +1714,7 @@ async function updateFolderContent(path: string) {
         item.innerHTML = `
           <div>
             <div class="list-item-name">📁 ${folder.name}</div>
-            <div class="list-item-info">${folder.fileCount} fichier${folder.fileCount > 1 ? 's' : ''}</div>
+            <div class="list-item-info">${t('index.folders.filesCount', { count: folder.fileCount })}</div>
           </div>
         `;
 
@@ -1534,10 +1743,10 @@ async function updateFolderContent(path: string) {
       displayFiles(content.files, matchInfoMap);
     } else if (viewMode === 'flat') {
       // En vue à plat, si pas de fichiers, afficher un message
-      gameList.innerHTML = '<div style="padding: 20px; text-align: center; color: #7f8c8d;">Aucun fichier trouvé dans ce dossier et ses sous-dossiers</div>';
+      gameList.innerHTML = `<div style="padding: 20px; text-align: center; color: #7f8c8d;">${t('index.folderView.noFilesFlat')}</div>`;
     }
   } catch (error) {
-    gameList.innerHTML = `<div style="padding: 20px; color: #e74c3c;">Erreur : ${error}</div>`;
+    gameList.innerHTML = `<div style="padding: 20px; color: #e74c3c;">${t('common.errorWithDetail', { error: String(error) })}</div>`;
   }
 }
 
@@ -1569,15 +1778,31 @@ function getIconGameCategory(category: string | undefined) {
 }
 
 // Affichage des jeux
+// Ligne d'info « contenu de l'archive » : nombre de ROMs (fichiers) et, pour les
+// DAT MAME, nombre de disques CHD liés. Les CHD ne sont pas comptés comme des ROMs.
+// Le compteur de disques n'est affiché que si le jeu en possède au moins un.
+function getGameContentInfoHtml(game: GameInfo): string {
+  const romCount = game.rom_count ?? 0;
+  const diskCount = game.disk_count ?? 0;
+  const romPart = `📄 ${t('index.gamesView.fileCount', { count: romCount })}`;
+  const diskPart = diskCount > 0
+    ? ` &nbsp;·&nbsp; 💿 ${t('index.gamesView.diskCount', { count: diskCount })}`
+    : '';
+  return `<div class="list-item-info">${romPart}${diskPart}</div>`;
+}
+
 function displayGames(games: GameInfo[]) {
   const gameList = document.getElementById('game-list');
   if (!gameList) return;
+
+  // Préserver la position de scroll à travers les re-renders
+  const savedScrollTop = gameList.scrollTop;
 
   gameList.innerHTML = '';
   gameList.classList.remove('has-groups');
 
   if (games.length === 0) {
-    gameList.innerHTML = '<div style="padding: 20px; text-align: center;">Aucun jeu trouvé</div>';
+    gameList.innerHTML = `<div style="padding: 20px; text-align: center;">${t('index.gamesView.noGames')}</div>`;
     return;
   }
 
@@ -1612,33 +1837,49 @@ function displayGames(games: GameInfo[]) {
     let icon = getIconGameCategory(game.category);
 
     const isDisappeared = !!game.is_disappeared;
-    const isChecked = !isDisappeared && game.is_selected !== 0;
+    const isUserSelected = !isDisappeared && game.is_selected !== 0;
+    const isAuto = autoSelectedIds.has(game.id) && !isUserSelected;
+    const isChecked = isUserSelected || isAuto;
+    const lockBadge = isAuto
+      ? `<span class="auto-lock-badge" title="${formatAutoReasons(game.id).replace(/"/g, '&quot;')}">🔒</span> `
+      : '';
+    // Phase 3bis-B : en vue merged, afficher le nombre de clones fusionnés.
+    const cloneBadge = (currentTargetSetMode === 'merged' && (game.cloneCount || 0) > 0)
+      ? ` <span class="clone-count-badge" title="${t('index.gamesView.cloneBadgeTitle', { count: game.cloneCount! })}">🌀 +${game.cloneCount}</span>`
+      : '';
 
     item.innerHTML = `
-      <input type="checkbox" class="game-checkbox" data-game-id="${game.id}" ${isChecked ? 'checked' : ''} ${isDisappeared ? 'disabled' : ''}>
+      <input type="checkbox" class="game-checkbox" data-game-id="${game.id}" ${isChecked ? 'checked' : ''} ${isDisappeared || isAuto ? 'disabled' : ''}>
       <div style="flex: 1; min-width: 0;">
-        <div class="list-item-name">${icon} ${game.name}${getChangeStatusBadgeHtml(game)}</div>
+        <div class="list-item-name">${lockBadge}${icon} ${game.name}${cloneBadge}${getChangeStatusBadgeHtml(game)}</div>
         ${game.description ? `<div class="list-item-info">${game.description}</div>` : ''}
-        ${game.category ? `<div class="list-item-info"><strong>Categorie :</strong> ${game.category}</div>` : ''}
+        ${game.category ? `<div class="list-item-info"><strong>${t('index.gamesView.categoryLabel')}</strong> ${game.category}</div>` : ''}
+        ${getGameContentInfoHtml(game)}
       </div>
       ${isDisappeared ? '' : getMatchStatusBadgeHtml(game)}
     `;
 
     if (isDisappeared) {
       item.classList.add('disappeared');
+    } else if (isAuto) {
+      item.classList.add('auto-selected');
     } else if (!isChecked) {
       item.classList.add('deselected');
     }
 
-    // Checkbox click handler (pas pour les jeux disparus)
-    if (!isDisappeared) {
+    // Checkbox click handler (pas pour les jeux disparus ni auto-sélectionnés)
+    if (!isDisappeared && !isAuto) {
       const checkbox = item.querySelector('.game-checkbox') as HTMLInputElement;
-      checkbox.addEventListener('click', (e) => {
+      checkbox.addEventListener('click', async (e) => {
         e.stopPropagation();
         const selected = checkbox.checked;
         game.is_selected = selected ? 1 : 0;
         item.classList.toggle('deselected', !selected);
-        window.api.updateGameSelection(game.id, selected);
+        await window.api.updateGameSelection(game.id, selected);
+        // Recalculer la cascade : un changement de sélection peut faire apparaître
+        // ou disparaître des auto-sélections de parents / BIOS / devices.
+        await refreshDependencyResolution();
+        applyFiltersAndGrouping();
         updateSelectAllCheckbox();
         generateSelectionFilters();
       });
@@ -1665,6 +1906,9 @@ function displayGames(games: GameInfo[]) {
     gameList.appendChild(item);
   });
 
+  // Restaurer la position de scroll (préservée en début de fonction)
+  gameList.scrollTop = savedScrollTop;
+
   updateSelectAllCheckbox();
 }
 
@@ -1673,7 +1917,7 @@ function extractCategoryCounts(games: GameInfo[]): Map<string, number> {
   const counts = new Map<string, number>();
 
   games.forEach(game => {
-    const category = game.category || 'Non catégorisé';
+    const category = game.category || t('index.filters.uncategorized');
     counts.set(category, (counts.get(category) || 0) + 1);
   });
 
@@ -1798,13 +2042,11 @@ function generateCategoryFilters() {
   });
 }
 
-// Labels et icônes pour les statuts de matching
-const matchStatusLabels: Record<string, string> = {
-  'unknown': 'Inconnu',
-  'missing': 'Manquant',
-  'partial': 'Partiel',
-  'complete': 'Complet'
-};
+// Labels et icônes pour les statuts de matching.
+// Fonction (et non constante) : les traductions ne sont pas encore chargées à l'import du module.
+function matchStatusLabel(status: string): string {
+  return t(`index.matchStatus.${status}`);
+}
 
 const matchStatusIcons: Record<string, string> = {
   'unknown': '❓',
@@ -1818,13 +2060,17 @@ const matchStatusOrder = ['complete', 'partial', 'missing', 'unknown'];
 function getMatchStatusBadgeHtml(game: GameInfo): string {
   const status = getGameMatchStatus(game);
   const icon = matchStatusIcons[status];
-  const label = matchStatusLabels[status];
+  const label = matchStatusLabel(status);
   return `<span class="match-status-badge status-${status}">${icon} ${label}</span>`;
 }
 
 function getChangeStatusBadgeHtml(game: GameInfo): string {
   if (!game.change_status || game.change_status === 'unchanged') return '';
-  const labels: Record<string, string> = { 'new': 'NOUVEAU', 'modified': 'MODIFIÉ', 'disappeared': 'DISPARU' };
+  const labels: Record<string, string> = {
+    'new': t('index.changeBadge.new'),
+    'modified': t('index.changeBadge.modified'),
+    'disappeared': t('index.changeBadge.disappeared')
+  };
   const label = labels[game.change_status] || '';
   if (!label) return '';
   let html = `<span class="change-status-badge status-${game.change_status}" data-game-name="${game.name.replace(/"/g, '&quot;')}">${label}</span>`;
@@ -1852,11 +2098,11 @@ function extractMatchStatusCounts(games: GameInfo[]): Map<string, number> {
 function generateMatchStatusFilters() {
   const items = matchStatusOrder.map(status => ({
     key: status,
-    displayName: `${matchStatusIcons[status]} ${matchStatusLabels[status]}`,
+    displayName: `${matchStatusIcons[status]} ${matchStatusLabel(status)}`,
     count: matchStatusCounts.get(status) || 0
   }));
 
-  createFilterDropdown('match-status-filters-container', 'Matching', items, activeMatchFilters, () => {
+  createFilterDropdown('match-status-filters-container', t('index.filters.matching'), items, activeMatchFilters, () => {
     applyFiltersAndGrouping();
     updateGroupFilterSummary();
   });
@@ -1864,15 +2110,25 @@ function generateMatchStatusFilters() {
 
 // Génération du dropdown de filtrage par statut de sélection
 function generateSelectionFilters() {
-  const selectedCount = allGames.filter(g => g.is_selected !== 0).length;
-  const unselectedCount = allGames.length - selectedCount;
+  // Trois états distincts :
+  // - 'selected'   : l'utilisateur a coché le jeu (is_selected = 1)
+  // - 'auto'       : auto-coché par cascade arcade (BIOS/parent/device requis)
+  // - 'unselected' : ni l'un ni l'autre
+  const userSelectedCount = allGames.filter(g => g.is_selected !== 0).length;
+  const autoCount = allGames.filter(g => g.is_selected === 0 && autoSelectedIds.has(g.id)).length;
+  const unselectedCount = allGames.length - userSelectedCount - autoCount;
 
-  const items = [
-    { key: 'selected', displayName: '✅ Sélectionné', count: selectedCount },
-    { key: 'unselected', displayName: '⬜ Non sélectionné', count: unselectedCount }
+  const items: Array<{ key: string; displayName: string; count: number }> = [
+    { key: 'selected',   displayName: `✅ ${t('index.selectionStatus.selected')}`, count: userSelectedCount },
   ];
+  // N'afficher l'entrée auto-cascade que si elle est non vide (DAT non-arcade
+  // n'a jamais d'auto-sélection, on évite une entrée toujours à 0).
+  if (autoCount > 0) {
+    items.push({ key: 'auto', displayName: `🔒 ${t('index.selectionStatus.auto')}`, count: autoCount });
+  }
+  items.push({ key: 'unselected', displayName: `⬜ ${t('index.selectionStatus.unselected')}`, count: unselectedCount });
 
-  createFilterDropdown('selection-filters-container', 'Sélection', items, activeSelectionFilters, () => {
+  createFilterDropdown('selection-filters-container', t('index.filters.groupSelection'), items, activeSelectionFilters, () => {
     applyFiltersAndGrouping();
     updateGroupFilterSummary();
   });
@@ -1894,13 +2150,177 @@ function generateChangeStatusFilters() {
   const disappearedCount = allGames.filter(g => g.change_status === 'disappeared').length;
 
   const items = [
-    { key: 'new', displayName: '🆕 Nouveau', count: newCount },
-    { key: 'modified', displayName: '✏️ Modifié', count: modifiedCount },
-    { key: 'unchanged', displayName: '⏸️ Inchangé', count: unchangedCount },
-    { key: 'disappeared', displayName: '❌ Disparu', count: disappearedCount }
+    { key: 'new', displayName: `🆕 ${t('index.changeStatus.new')}`, count: newCount },
+    { key: 'modified', displayName: `✏️ ${t('index.changeStatus.modified')}`, count: modifiedCount },
+    { key: 'unchanged', displayName: `⏸️ ${t('index.changeStatus.unchanged')}`, count: unchangedCount },
+    { key: 'disappeared', displayName: `❌ ${t('index.changeStatus.disappeared')}`, count: disappearedCount }
   ];
 
-  createFilterDropdown('change-status-filters-container', 'Évolution DAT', items, activeChangeFilters, () => {
+  createFilterDropdown('change-status-filters-container', t('index.filters.groupChangeStatus'), items, activeChangeFilters, () => {
+    applyFiltersAndGrouping();
+    updateGroupFilterSummary();
+  });
+}
+
+// Recalcule l'ensemble des jeux auto-sélectionnés (parents/BIOS/devices requis par
+// au moins un jeu user-sélectionné, selon le mode cible des settings).
+// À appeler après chaque chargement de jeux et après chaque modification de sélection.
+// Phase 3bis-B — Rafraîchit le mode cible de visualisation depuis les settings.
+// À appeler après chaque chargement de jeux pour que la vue reflète le réglage courant.
+async function refreshTargetSetMode(): Promise<void> {
+  try {
+    const settings = await window.api.getSettings();
+    const m = (settings && (settings as any).arcadeTargetSetMode) || 'split';
+    currentTargetSetMode = (m === 'merged' || m === 'non-merged' || m === 'split') ? m : 'split';
+  } catch {
+    currentTargetSetMode = 'split';
+  }
+}
+
+// Phase 3bis-B — Calcule les flags dérivés hasParentInDb + cloneCount sur allGames.
+// Indispensable pour le filtrage en vue merged (masquer les clones dont le parent
+// est présent en DB) et l'affichage du badge "+N clones" sur les parents.
+function computeParentCloneRelations(games: GameInfo[]): void {
+  const byName = new Map<string, GameInfo>();
+  for (const g of games) byName.set(g.name, g);
+
+  for (const g of games) {
+    g.hasParentInDb = !!(g.parent_name_ref && byName.has(g.parent_name_ref));
+    g.cloneCount = 0;
+  }
+  for (const g of games) {
+    if (g.hasParentInDb && g.parent_name_ref) {
+      const parent = byName.get(g.parent_name_ref);
+      if (parent) parent.cloneCount = (parent.cloneCount || 0) + 1;
+    }
+  }
+}
+
+async function refreshDependencyResolution() {
+  try {
+    const result = await window.api.resolveDependencies();
+    autoSelectedIds = new Set(result.autoIds || []);
+    autoSelectedReasons = result.reasons || {};
+  } catch (error) {
+    console.error('Error while resolving dependencies:', error);
+    autoSelectedIds = new Set();
+    autoSelectedReasons = {};
+  }
+  // Si plus aucun jeu n'est auto-sélectionné, on retire le filtre 'auto' s'il
+  // était actif (sinon la liste se vide et l'utilisateur ne comprend pas).
+  if (autoSelectedIds.size === 0 && activeSelectionFilters.has('auto')) {
+    activeSelectionFilters.delete('auto');
+  }
+}
+
+// Formate les raisons d'auto-sélection en chaîne de texte pour les tooltips.
+function formatAutoReasons(gameId: number): string {
+  const reasons = autoSelectedReasons[gameId];
+  if (!reasons || reasons.length === 0) return t('index.autoReasons.autoSelected');
+
+  const typeLabel = (type: string): string => {
+    if (type === 'cloneof') return t('index.autoReasons.parentOfClone');
+    if (type === 'romof') return t('index.autoReasons.biosOf');
+    if (type === 'device_ref') return t('index.autoReasons.deviceRequiredBy');
+    return type;
+  };
+
+  // Dé-dupliquer (un BIOS peut être requis par plusieurs clones)
+  const seen = new Set<string>();
+  const lines: string[] = [];
+  for (const r of reasons) {
+    const key = `${r.type}|${r.requiredBy}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    const who = r.requiredByName || t('index.autoReasons.gameNumber', { id: r.requiredBy });
+    lines.push(`• ${typeLabel(r.type)} « ${who} »`);
+    if (lines.length >= 5) {
+      const remaining = reasons.length - lines.length;
+      if (remaining > 0) lines.push(`• ${t('index.autoReasons.andOthers', { count: remaining })}`);
+      break;
+    }
+  }
+  return `${t('index.autoReasons.header')}\n${lines.join('\n')}`;
+}
+
+// Génération du dropdown de filtrage par présence de CHD (DAT arcade uniquement).
+function generateChdFilter() {
+  const container = document.getElementById('chd-filters-container');
+  if (!container) return;
+
+  const withChd = allGames.filter(g => !!g.has_chd).length;
+  const withoutChd = allGames.length - withChd;
+
+  // Si le DAT ne contient aucun CHD, masquer le filtre (pas pertinent).
+  if (withChd === 0) {
+    container.innerHTML = '';
+    return;
+  }
+
+  const items = [
+    { key: 'with-chd', displayName: `💿 ${t('index.filters.withDisk')}`, count: withChd },
+    { key: 'without-chd', displayName: `— ${t('index.filters.withoutDisk')}`, count: withoutChd }
+  ];
+
+  createFilterDropdown('chd-filters-container', t('index.filters.disks'), items, activeChdFilters, () => {
+    applyFiltersAndGrouping();
+    updateGroupFilterSummary();
+  });
+}
+
+// Génération du dropdown de filtres spécifiques MAME :
+//  - BIOS       : le « jeu » est un set BIOS partagé (games.is_bios).
+//  - CHD sans ROM : jeu possédant un CHD mais aucune ROM (disque orphelin, pour
+//                 lequel on peut générer une archive vide). Pertinent surtout avec
+//                 les DAT CHD Pleasuredome ; les DAT Progettosnaps ne listent pas
+//                 ces jeux (disques sans ROM absents du DAT principal).
+function generateMameFilter() {
+  const container = document.getElementById('mame-filters-container');
+  if (!container) return;
+
+  const biosCount = allGames.filter(g => !!g.is_bios).length;
+  const chdNoRomCount = allGames.filter(g => !!g.has_chd && (g.rom_count ?? 0) === 0).length;
+
+  // Si le DAT ne comporte ni BIOS ni disque orphelin (DAT non MAME), masquer.
+  if (biosCount === 0 && chdNoRomCount === 0) {
+    container.innerHTML = '';
+    return;
+  }
+
+  const items = [
+    { key: 'bios',       displayName: `🧠 ${t('index.filters.bios')}`,      count: biosCount },
+    { key: 'chd-no-rom', displayName: `💿 ${t('index.filters.chdNoRom')}`, count: chdNoRomCount }
+  ];
+
+  createFilterDropdown('mame-filters-container', t('index.filters.mame'), items, activeMameFilters, () => {
+    applyFiltersAndGrouping();
+    updateGroupFilterSummary();
+  });
+}
+
+// Génération du dropdown de filtrage par qualité d'émulation (DAT MAMEDev brut + Progettosnaps).
+function generateDriverStatusFilter() {
+  const container = document.getElementById('driver-status-filters-container');
+  if (!container) return;
+
+  const goodCount = allGames.filter(g => g.driver_status === 'good').length;
+  const imperfectCount = allGames.filter(g => g.driver_status === 'imperfect').length;
+  const preliminaryCount = allGames.filter(g => g.driver_status === 'preliminary').length;
+
+  // Si le DAT ne porte pas d'info de driver_status (Pleasuredome / Logiqx classique),
+  // masquer le filtre.
+  if (goodCount + imperfectCount + preliminaryCount === 0) {
+    container.innerHTML = '';
+    return;
+  }
+
+  const items = [
+    { key: 'good',        displayName: '🟢 Good',        count: goodCount },
+    { key: 'imperfect',   displayName: '🟡 Imperfect',   count: imperfectCount },
+    { key: 'preliminary', displayName: '🔴 Preliminary', count: preliminaryCount }
+  ];
+
+  createFilterDropdown('driver-status-filters-container', t('index.filters.emulation'), items, activeDriverFilters, () => {
     applyFiltersAndGrouping();
     updateGroupFilterSummary();
   });
@@ -1915,10 +2335,18 @@ function getGameMatchStatus(game: GameInfo): string {
 function applyFiltersAndGrouping() {
   let filteredGames = allGames;
 
+  // Phase 3bis-B : en vue merged, les clones disparaissent de la liste — ils sont
+  // affichés via leur parent (avec badge +N clones et leurs ROMs spécifiques inlinées
+  // dans la vue ROM du parent). Filtré AVANT les autres filtres pour ne pas fausser
+  // les compteurs des dropdowns (qui dépendent de allGames, pas de filteredGames).
+  if (currentTargetSetMode === 'merged') {
+    filteredGames = filteredGames.filter(g => !g.hasParentInDb);
+  }
+
   // Appliquer les filtres de catégorie
   if (activeFilters.size > 0) {
     filteredGames = filteredGames.filter(game => {
-      const category = game.category || 'Non catégorisé';
+      const category = game.category || t('index.filters.uncategorized');
       return activeFilters.has(category);
     });
   }
@@ -1930,12 +2358,17 @@ function applyFiltersAndGrouping() {
     });
   }
 
-  // Appliquer les filtres de sélection
+  // Appliquer les filtres de sélection (3 valeurs : selected / auto / unselected).
+  // - 'selected'   : l'utilisateur a coché (is_selected = 1)
+  // - 'auto'       : auto-coché par cascade (uniquement si pas user-sélectionné)
+  // - 'unselected' : ni l'un ni l'autre
   if (activeSelectionFilters.size > 0) {
     filteredGames = filteredGames.filter(game => {
-      const isSelected = game.is_selected !== 0;
-      if (activeSelectionFilters.has('selected') && isSelected) return true;
-      if (activeSelectionFilters.has('unselected') && !isSelected) return true;
+      const isUserSelected = game.is_selected !== 0;
+      const isAuto = !isUserSelected && autoSelectedIds.has(game.id);
+      if (activeSelectionFilters.has('selected') && isUserSelected) return true;
+      if (activeSelectionFilters.has('auto') && isAuto) return true;
+      if (activeSelectionFilters.has('unselected') && !isUserSelected && !isAuto) return true;
       return false;
     });
   }
@@ -1948,6 +2381,33 @@ function applyFiltersAndGrouping() {
     });
   } else {
     filteredGames = filteredGames.filter(game => game.change_status !== 'disappeared');
+  }
+
+  // Appliquer les filtres de présence de CHD
+  if (activeChdFilters.size > 0) {
+    filteredGames = filteredGames.filter(game => {
+      const hasChd = !!game.has_chd;
+      if (activeChdFilters.has('with-chd') && hasChd) return true;
+      if (activeChdFilters.has('without-chd') && !hasChd) return true;
+      return false;
+    });
+  }
+
+  // Appliquer les filtres de qualité d'émulation (driver_status)
+  if (activeDriverFilters.size > 0) {
+    filteredGames = filteredGames.filter(game => {
+      return game.driver_status ? activeDriverFilters.has(game.driver_status) : false;
+    });
+  }
+
+  // Appliquer les filtres spécifiques MAME (BIOS, CHD sans ROM). Logique OR
+  // au sein du dropdown : un jeu passe s'il satisfait l'un des critères actifs.
+  if (activeMameFilters.size > 0) {
+    filteredGames = filteredGames.filter(game => {
+      if (activeMameFilters.has('bios') && !!game.is_bios) return true;
+      if (activeMameFilters.has('chd-no-rom') && !!game.has_chd && (game.rom_count ?? 0) === 0) return true;
+      return false;
+    });
   }
 
   // Mettre à jour les compteurs globaux
@@ -1975,11 +2435,15 @@ function displayGroupedGames(games: GameInfo[]) {
   const gameList = document.getElementById('game-list');
   if (!gameList) return;
 
+  // Préserver la position de scroll (les re-renders déclenchés par les toggles
+  // de sélection ne doivent pas ramener la liste en haut)
+  const savedScrollTop = gameList.scrollTop;
+
   gameList.innerHTML = '';
   gameList.classList.add('has-groups');
 
   if (games.length === 0) {
-    gameList.innerHTML = '<div style="padding: 20px; text-align: center;">Aucun jeu trouvé</div>';
+    gameList.innerHTML = `<div style="padding: 20px; text-align: center;">${t('index.gamesView.noGames')}</div>`;
     gameList.classList.remove('has-groups');
     return;
   }
@@ -1991,7 +2455,7 @@ function displayGroupedGames(games: GameInfo[]) {
     let groupKey: string;
 
     if (currentGroupBy === 'category') {
-      groupKey = game.category || 'Non catégorisé';
+      groupKey = game.category || t('index.filters.uncategorized');
     } else if (currentGroupBy === 'letter') {
       groupKey = game.name.charAt(0).toUpperCase();
       if (!/[A-Z]/.test(groupKey)) {
@@ -2036,10 +2500,18 @@ function displayGroupedGames(games: GameInfo[]) {
   // Afficher chaque groupe
   sortedGroups.forEach(([groupKey, groupGames]) => {
     // Nom d'affichage du groupe
-    const selectionLabelsMap: Record<string, string> = { 'selected': '✅ Sélectionné', 'unselected': '⬜ Non sélectionné' };
-    const changeStatusLabelsMap: Record<string, string> = { 'new': '🆕 Nouveau', 'modified': '✏️ Modifié', 'unchanged': '⏸️ Inchangé', 'disappeared': '❌ Disparu' };
+    const selectionLabelsMap: Record<string, string> = {
+      'selected': `✅ ${t('index.selectionStatus.selected')}`,
+      'unselected': `⬜ ${t('index.selectionStatus.unselected')}`
+    };
+    const changeStatusLabelsMap: Record<string, string> = {
+      'new': `🆕 ${t('index.changeStatus.new')}`,
+      'modified': `✏️ ${t('index.changeStatus.modified')}`,
+      'unchanged': `⏸️ ${t('index.changeStatus.unchanged')}`,
+      'disappeared': `❌ ${t('index.changeStatus.disappeared')}`
+    };
     const groupName = currentGroupBy === 'match-status'
-      ? `${matchStatusIcons[groupKey]} ${matchStatusLabels[groupKey]}`
+      ? `${matchStatusIcons[groupKey]} ${matchStatusLabel(groupKey)}`
       : currentGroupBy === 'selection'
       ? selectionLabelsMap[groupKey]
       : currentGroupBy === 'change-status'
@@ -2050,6 +2522,10 @@ function displayGroupedGames(games: GameInfo[]) {
 
     const groupDiv = document.createElement('div');
     groupDiv.className = 'game-group';
+    // Restaurer l'état replié persistant (survit aux re-renders)
+    if (collapsedGameGroups.has(groupKey)) {
+      groupDiv.classList.add('collapsed');
+    }
 
     const headerDiv = document.createElement('div');
     headerDiv.className = 'game-group-header';
@@ -2069,11 +2545,18 @@ function displayGroupedGames(games: GameInfo[]) {
     const groupCheckbox = headerDiv.querySelector('.group-checkbox') as HTMLInputElement;
     if (groupSomeSelected) groupCheckbox.indeterminate = true;
 
+    // Toggle replier/déplier avec persistance dans collapsedGameGroups
+    const toggleCollapse = () => {
+      const nowCollapsed = groupDiv.classList.toggle('collapsed');
+      if (nowCollapsed) collapsedGameGroups.add(groupKey);
+      else collapsedGameGroups.delete(groupKey);
+    };
+
     // Clic sur le chevron → replier/déplier le groupe
     const chevron = headerDiv.querySelector('.group-chevron') as HTMLElement;
     chevron.addEventListener('click', (e) => {
       e.stopPropagation();
-      groupDiv.classList.toggle('collapsed');
+      toggleCollapse();
     });
 
     // Fonction commune pour toggler la sélection du groupe (exclut les jeux disparus)
@@ -2088,22 +2571,10 @@ function displayGroupedGames(games: GameInfo[]) {
       }
       selectableGames.forEach(g => g.is_selected = isSelected ? 1 : 0);
 
-      // Mettre à jour les checkboxes des jeux du groupe (hors disabled)
-      const groupContent = groupDiv.querySelector('.game-group-content');
-      if (groupContent) {
-        const checkboxes = groupContent.querySelectorAll('.game-checkbox:not(:disabled)') as NodeListOf<HTMLInputElement>;
-        checkboxes.forEach(cb => {
-          cb.checked = isSelected;
-          const listItem = cb.closest('.list-item');
-          if (listItem) listItem.classList.toggle('deselected', !isSelected);
-        });
-      }
-
-      // Mettre à jour le compteur du groupe
-      const countSpan = headerDiv.querySelector('.group-count');
-      if (countSpan) {
-        countSpan.textContent = `✔️ ${isSelected ? selectableGames.length : 0} / ${groupGames.length}`;
-      }
+      // Recalculer la cascade puis re-rendre. Indispensable pour libérer les
+      // BIOS/parents auto-sélectionnés quand le groupe est entièrement déselectionné.
+      await refreshDependencyResolution();
+      applyFiltersAndGrouping();
 
       updateSelectAllCheckbox();
       updateSelectionCounter();
@@ -2119,7 +2590,7 @@ function displayGroupedGames(games: GameInfo[]) {
     headerDiv.addEventListener('click', (e) => {
       const target = e.target as HTMLElement;
       if (target.tagName === 'INPUT') return; // déjà géré par le checkbox
-      groupDiv.classList.toggle('collapsed');
+      toggleCollapse();
     });
 
     groupDiv.appendChild(headerDiv);
@@ -2135,32 +2606,47 @@ function displayGroupedGames(games: GameInfo[]) {
       const icon = getIconGameCategory(game.category);
 
       const isDisappeared = !!game.is_disappeared;
-      const isChecked = !isDisappeared && game.is_selected !== 0;
+      const isUserSelected = !isDisappeared && game.is_selected !== 0;
+      const isAuto = autoSelectedIds.has(game.id) && !isUserSelected;
+      const isChecked = isUserSelected || isAuto;
+      const lockBadge = isAuto
+        ? `<span class="auto-lock-badge" title="${formatAutoReasons(game.id).replace(/"/g, '&quot;')}">🔒</span> `
+        : '';
+      const cloneBadge = (currentTargetSetMode === 'merged' && (game.cloneCount || 0) > 0)
+        ? ` <span class="clone-count-badge" title="${t('index.gamesView.cloneBadgeTitle', { count: game.cloneCount! })}">🌀 +${game.cloneCount}</span>`
+        : '';
 
       item.innerHTML = `
-        <input type="checkbox" class="game-checkbox" data-game-id="${game.id}" ${isChecked ? 'checked' : ''} ${isDisappeared ? 'disabled' : ''}>
+        <input type="checkbox" class="game-checkbox" data-game-id="${game.id}" ${isChecked ? 'checked' : ''} ${isDisappeared || isAuto ? 'disabled' : ''}>
         <div style="flex: 1; min-width: 0;">
-          <div class="list-item-name">${icon} ${game.name}${getChangeStatusBadgeHtml(game)}</div>
+          <div class="list-item-name">${lockBadge}${icon} ${game.name}${cloneBadge}${getChangeStatusBadgeHtml(game)}</div>
           ${game.description ? `<div class="list-item-info">${game.description}</div>` : ''}
-          ${game.category ? `<div class="list-item-info"><strong>Categorie :</strong> ${game.category}</div>` : ''}
+          ${game.category ? `<div class="list-item-info"><strong>${t('index.gamesView.categoryLabel')}</strong> ${game.category}</div>` : ''}
+          ${getGameContentInfoHtml(game)}
         </div>
         ${isDisappeared ? '' : getMatchStatusBadgeHtml(game)}
       `;
 
       if (isDisappeared) {
         item.classList.add('disappeared');
+      } else if (isAuto) {
+        item.classList.add('auto-selected');
       } else if (!isChecked) {
         item.classList.add('deselected');
       }
 
-      if (!isDisappeared) {
+      if (!isDisappeared && !isAuto) {
         const checkbox = item.querySelector('.game-checkbox') as HTMLInputElement;
-        checkbox.addEventListener('click', (e) => {
+        checkbox.addEventListener('click', async (e) => {
           e.stopPropagation();
           const selected = checkbox.checked;
           game.is_selected = selected ? 1 : 0;
           item.classList.toggle('deselected', !selected);
-          window.api.updateGameSelection(game.id, selected);
+          await window.api.updateGameSelection(game.id, selected);
+          // Recalculer la cascade : un changement de sélection peut faire apparaître
+          // ou disparaître des auto-sélections.
+          await refreshDependencyResolution();
+          applyFiltersAndGrouping();
           updateGroupCheckboxes();
           updateSelectAllCheckbox();
           generateSelectionFilters();
@@ -2192,6 +2678,9 @@ function displayGroupedGames(games: GameInfo[]) {
     gameList.appendChild(groupDiv);
   });
 
+  // Restaurer la position de scroll (préservée en début de fonction)
+  gameList.scrollTop = savedScrollTop;
+
   updateSelectAllCheckbox();
 }
 
@@ -2200,7 +2689,7 @@ function getDisplayedGames(): GameInfo[] {
   let result = allGames;
   if (activeFilters.size > 0) {
     result = result.filter(game => {
-      const category = game.category || 'Non catégorisé';
+      const category = game.category || t('index.filters.uncategorized');
       return activeFilters.has(category);
     });
   }
@@ -2220,6 +2709,26 @@ function getDisplayedGames(): GameInfo[] {
     result = result.filter(game => activeChangeFilters.has(game.change_status || ''));
   } else {
     result = result.filter(game => game.change_status !== 'disappeared');
+  }
+  // Filtres arcade (CHD, qualité d'émulation, MAME) — doivent être reflétés ici
+  // pour que « Tout sélectionner » n'agisse que sur les jeux réellement affichés.
+  if (activeChdFilters.size > 0) {
+    result = result.filter(game => {
+      const hasChd = !!game.has_chd;
+      if (activeChdFilters.has('with-chd') && hasChd) return true;
+      if (activeChdFilters.has('without-chd') && !hasChd) return true;
+      return false;
+    });
+  }
+  if (activeDriverFilters.size > 0) {
+    result = result.filter(game => game.driver_status ? activeDriverFilters.has(game.driver_status) : false);
+  }
+  if (activeMameFilters.size > 0) {
+    result = result.filter(game => {
+      if (activeMameFilters.has('bios') && !!game.is_bios) return true;
+      if (activeMameFilters.has('chd-no-rom') && !!game.has_chd && (game.rom_count ?? 0) === 0) return true;
+      return false;
+    });
   }
   return result;
 }
@@ -2296,7 +2805,7 @@ function displayFiles(files: any[], matchInfoMap: Record<number, any> = {}) {
   if (!gameList) return;
 
   if (files.length === 0 && gameList.children.length === 0) {
-    gameList.innerHTML = '<div style="padding: 20px; text-align: center; color: #7f8c8d;">Aucun fichier trouvé</div>';
+    gameList.innerHTML = `<div style="padding: 20px; text-align: center; color: #7f8c8d;">${t('index.folderView.noFiles')}</div>`;
     return;
   }
 
@@ -2344,26 +2853,26 @@ function displayFiles(files: any[], matchInfoMap: Record<number, any> = {}) {
         const matchedContentCount = Object.keys(matchedContents).length;
         const totalContentCount = file.contents?.length || 0;
         if (matchedContentCount > 0 && matchedContentCount >= totalContentCount && totalContentCount > 0) {
-          matchBadge = `<span class="match-status-badge status-complete">✅ Matché</span>`;
+          matchBadge = `<span class="match-status-badge status-complete">✅ ${t('index.fileBadges.matched')}</span>`;
         } else if (matchedContentCount > 0) {
-          matchBadge = `<span class="match-status-badge status-partial">⚠️ Partiel</span>`;
+          matchBadge = `<span class="match-status-badge status-partial">⚠️ ${t('index.matchStatus.partial')}</span>`;
         } else {
-          matchBadge = `<span class="match-status-badge status-missing">❌ Non matché</span>`;
+          matchBadge = `<span class="match-status-badge status-missing">❌ ${t('index.fileBadges.notMatched')}</span>`;
         }
         // Multi-jeux : au moins un fichier de l'archive sert à plusieurs jeux
         const hasMultiGame = Object.values(matchedContents).some((games: any[]) => games.length > 1);
         if (hasMultiGame) {
-          multiBadge = `<span class="match-status-badge" style="background-color: rgba(52,152,219,0.1); color: #2980b9;">🔀 Multi-jeux</span>`;
+          multiBadge = `<span class="match-status-badge" style="background-color: rgba(52,152,219,0.1); color: #2980b9;">🔀 ${t('index.fileBadges.multiGame')}</span>`;
         }
       } else if (matchInfo.looseMatches.length > 0) {
-        matchBadge = `<span class="match-status-badge status-complete">✅ Matché</span>`;
+        matchBadge = `<span class="match-status-badge status-complete">✅ ${t('index.fileBadges.matched')}</span>`;
         // Multi-jeux : le fichier loose sert à plusieurs jeux
         const distinctGames = new Set(matchInfo.looseMatches.map((m: any) => m.gameId));
         if (distinctGames.size > 1) {
-          multiBadge = `<span class="match-status-badge" style="background-color: rgba(52,152,219,0.1); color: #2980b9;">🔀 Multi-jeux</span>`;
+          multiBadge = `<span class="match-status-badge" style="background-color: rgba(52,152,219,0.1); color: #2980b9;">🔀 ${t('index.fileBadges.multiGame')}</span>`;
         }
       } else {
-        matchBadge = `<span class="match-status-badge status-missing">❌ Non matché</span>`;
+        matchBadge = `<span class="match-status-badge status-missing">❌ ${t('index.fileBadges.notMatched')}</span>`;
       }
     }
 
@@ -2399,8 +2908,7 @@ async function selectGame(element: HTMLElement, game: GameInfo) {
 
   detailView.innerHTML = `
     <div class="detail-header">${icon} ${game.name}</div>
-    <div style="padding: 10px;">Chargement des ROMs...</div>
-    <div style="padding: 10px;">Chargement des ROMs...</div>
+    <div style="padding: 10px;">${t('index.details.loadingRoms')}</div>
   `;
   
   try {
@@ -2408,9 +2916,38 @@ async function selectGame(element: HTMLElement, game: GameInfo) {
       window.api.listRomsByGame(game.id),
       window.api.getMatchesForGame(game.id).catch(() => [])
     ]);
-    displayRomDetails(game, roms, matches);
+
+    // Phase 3bis-B : en vue merged, étendre la liste des ROMs du parent avec
+    // les ROMs SPÉCIFIQUES de ses clones (celles sans merge_name, car les
+    // ROMs partagées sont déjà dans le parent). Chaque ROM ajoutée est annotée
+    // avec le nom du clone d'origine pour affichage du badge "🌀 Clone (X)".
+    let romsForView: RomInfo[] = roms;
+    let matchesForView: any[] = matches;
+    if (currentTargetSetMode === 'merged' && (game.cloneCount || 0) > 0) {
+      const clones = allGames.filter(g => g.parent_name_ref === game.name);
+      const [clonesRomsArrays, clonesMatchesArrays] = await Promise.all([
+        Promise.all(clones.map(c => window.api.listRomsByGame(c.id))),
+        // Bug fix : fetch les matches de chaque clone pour que le badge de match
+        // s'affiche correctement en vue merged (sans ça, les ROMs des clones
+        // apparaissaient ❌ Non matché même quand leur .zip clone existe).
+        Promise.all(clones.map(c => window.api.getMatchesForGame(c.id).catch(() => [])))
+      ]);
+
+      const extras: RomInfo[] = [];
+      for (let i = 0; i < clones.length; i++) {
+        const cloneName = clones[i].name;
+        for (const r of clonesRomsArrays[i] as RomInfo[]) {
+          if (r.merge_name) continue; // déjà incluse comme ROM partagée du parent
+          extras.push({ ...r, _sourceCloneName: cloneName });
+        }
+      }
+      romsForView = [...roms, ...extras];
+      matchesForView = [...matches, ...clonesMatchesArrays.flat()];
+    }
+
+    displayRomDetails(game, romsForView, matchesForView);
   } catch (error) {
-    detailView.innerHTML += `<div style="color: #e74c3c;">Erreur : ${error}</div>`;
+    detailView.innerHTML += `<div style="color: #e74c3c;">${t('common.errorWithDetail', { error: String(error) })}</div>`;
   }
 }
 
@@ -2429,6 +2966,53 @@ function selectFile(element: HTMLElement, file: any, matchInfo?: any) {
   } else {
     displayFileDetails(file, matchInfo);
   }
+}
+
+// Phase 3bis — Calcule le badge d'ORIGINE d'une ROM (indépendant du fait que
+// ce soit un disque ou un fichier). Catégorise selon la provenance arcade :
+//   - 🌀 Clone    : ROM spécifique à un clone fusionné dans le parent (vue merged)
+//   - 🧠 BIOS     : ROM d'un set BIOS (le jeu lui-même est is_bios)
+//   - ⚙️ Device   : ROM d'un device (le jeu lui-même est is_device)
+//   - 🔗 Héritée / 📎 Inlinée : ROM partagée avec le parent (merge_name), selon la vue
+//   - 📦 Propre   : ROM spécifique au jeu
+function getRomOriginBadge(rom: RomInfo, game: GameInfo): string {
+  // Phase 3bis-B : vue merged — ROM inlinée depuis un clone du parent affiché.
+  if (rom._sourceCloneName && currentTargetSetMode === 'merged') {
+    const cn = rom._sourceCloneName;
+    return `<span class="rom-type-badge type-clone" title="ROM spécifique au clone « ${cn} », fusionnée dans l'archive du parent en vue merged">🌀 Clone (${cn})</span>`;
+  }
+  if (game.is_bios) {
+    return `<span class="rom-type-badge type-bios" title="${t('index.romBadges.biosTitle')}">🧠 BIOS</span>`;
+  }
+  if (game.is_device) {
+    return `<span class="rom-type-badge type-device" title="${t('index.romBadges.deviceTitle')}">⚙️ Device</span>`;
+  }
+  if (rom.merge_name) {
+    const parentName = game.parent_name_ref || 'parent';
+    // Phase 3bis-B : en vue non-merged la ROM partagée est considérée comme
+    // "auto-incluse" dans le clone (chaque clone est autonome). Label différent
+    // pour refléter la sémantique de la vue.
+    if (currentTargetSetMode === 'non-merged') {
+      const title = t('index.romBadges.inlinedTitle', { parent: parentName });
+      return `<span class="rom-type-badge type-inlined" title="${title.replace(/"/g, '&quot;')}">📎 ${t('index.romBadges.inlined')}</span>`;
+    }
+    // Vue split (par défaut) : badge "Héritée"
+    const title = t('index.romBadges.inheritedTitle', { parent: parentName, mergeName: rom.merge_name });
+    return `<span class="rom-type-badge type-inherited" title="${title.replace(/"/g, '&quot;')}">🔗 ${t('index.romBadges.inherited')}</span>`;
+  }
+  return `<span class="rom-type-badge type-own" title="${t('index.romBadges.ownTitle')}">📦 ${t('index.romBadges.own')}</span>`;
+}
+
+// Phase 3bis — Badge(s) de type d'une ROM : l'origine (toujours) + le marqueur
+// disque 💿 en supplément si l'entrée vient d'une balise <disk> (CHD). Un disque
+// affiche donc DEUX badges, ex : « 📦 Propre 💿 Disque » ou « 🔗 Héritée 💿 Disque ».
+function getRomTypeBadge(rom: RomInfo, game: GameInfo): string {
+  const origin = getRomOriginBadge(rom, game);
+  if (rom.is_disk) {
+    const disk = `<span class="rom-type-badge type-disk" title="${t('index.romBadges.diskTitle')}">💿 ${t('index.romBadges.disk')}</span>`;
+    return `${origin} ${disk}`;
+  }
+  return origin;
 }
 
 // Affichage des détails d'une ROM
@@ -2452,18 +3036,18 @@ function displayRomDetails(game: GameInfo, roms: RomInfo[], matches: any[] = [])
   html += `
     <div style="padding: 10px; font-size: 12px;">
       <div style="margin-bottom: 10px;">
-        <strong>Catégorie :</strong> ${icon} ${game.category || 'Non catégorisé'}
+        <strong>${t('index.romDetails.category')}</strong> ${icon} ${game.category || t('index.filters.uncategorized')}
       </div>
       <div style="margin-bottom: 10px;">
-        <strong>Matching :</strong> ${statusBadge}
+        <strong>${t('index.romDetails.matching')}</strong> ${statusBadge}
       </div>
       <div style="margin-top: 15px;">
-        <strong>Fichier(s) de ROM :</strong> (${roms.length})
+        <strong>${t('index.romDetails.romFiles')}</strong> (${roms.length})
       </div>
     </div>`;
 
   if (roms.length === 0) {
-    html += '<div style="padding: 10px;">Aucune ROM définie</div>';
+    html += `<div style="padding: 10px;">${t('index.romDetails.noRoms')}</div>`;
   } else {
     const matchingDone = game.match_status !== undefined;
 
@@ -2475,15 +3059,15 @@ function displayRomDetails(game: GameInfo, roms: RomInfo[], matches: any[] = [])
       if (!matchingDone) {
         statusIcon = '❓';
         statusClass = 'rom-unknown';
-        statusLabel = 'Inconnu';
+        statusLabel = t('index.romStatus.unknown');
       } else if (isFound) {
         statusIcon = '✅';
         statusClass = 'rom-found';
-        statusLabel = 'Trouvé';
+        statusLabel = t('index.romStatus.found');
       } else {
         statusIcon = '❌';
         statusClass = 'rom-missing';
-        statusLabel = 'Manquant';
+        statusLabel = t('index.romStatus.missing');
       }
 
       // Compter les fichiers loose et les archives distinctes
@@ -2494,23 +3078,41 @@ function displayRomDetails(game: GameInfo, roms: RomInfo[], matches: any[] = [])
         const archiveCount = archiveIds.size;
 
         const parts: string[] = [];
-        if (looseCount > 0) parts.push(`${looseCount} fichier${looseCount > 1 ? 's' : ''} loose`);
-        if (archiveCount > 0) parts.push(`${archiveCount} archive${archiveCount > 1 ? 's' : ''}`);
+        if (looseCount > 0) parts.push(t('index.romDetails.looseFiles', { count: looseCount }));
+        if (archiveCount > 0) parts.push(t('index.romDetails.archives', { count: archiveCount }));
         if (parts.length > 0) {
-          matchSummary = `<div class="file-hash"><strong>Sources :</strong> ${parts.join(', ')}</div>`;
+          matchSummary = `<div class="file-hash"><strong>${t('index.romDetails.sources')}</strong> ${parts.join(', ')}</div>`;
+        }
+      }
+
+      const typeBadge = getRomTypeBadge(rom, game);
+
+      // Affichage de l'origine de la ROM en détail, selon le mode de vue :
+      //  - Vue merged + ROM venant d'un clone   → 🌀 Clone : <clone_name>
+      //  - Vue non-merged + ROM avec merge_name → 📎 Inlinée depuis : <parent> → <merge_name>
+      //  - Vue split + ROM avec merge_name      → 🔗 Hérité de : <parent> → <merge_name>
+      let inheritedFrom = '';
+      if (rom._sourceCloneName && currentTargetSetMode === 'merged') {
+        inheritedFrom = `<div class="file-hash"><strong>🌀 ${t('index.romDetails.cloneLabel')}</strong> ${rom._sourceCloneName}</div>`;
+      } else if (rom.merge_name && game.parent_name_ref) {
+        if (currentTargetSetMode === 'non-merged') {
+          inheritedFrom = `<div class="file-hash"><strong>📎 ${t('index.romDetails.inlinedFrom')}</strong> ${game.parent_name_ref} → ${rom.merge_name}</div>`;
+        } else {
+          inheritedFrom = `<div class="file-hash"><strong>🔗 ${t('index.romDetails.inheritedFrom')}</strong> ${game.parent_name_ref} → ${rom.merge_name}</div>`;
         }
       }
 
       html += `
         <div class="file-item ${statusClass}">
-          <div style="display: flex; justify-content: space-between; align-items: center;">
-            <div>${rom.name}</div>
+          <div style="display: flex; justify-content: space-between; align-items: center; gap: 8px;">
+            <div style="flex: 1; min-width: 0;">${rom.name} ${typeBadge}</div>
             <span class="rom-status-badge ${statusClass}">${statusIcon} ${statusLabel}</span>
           </div>
-          ${rom.size ? `<div style="font-size: 12px; color: #7f8c8d;"><strong>Taille :</strong> ${formatFileSize(rom.size)}</div>` : ''}
+          ${rom.size ? `<div style="font-size: 12px; color: #7f8c8d;"><strong>${t('index.romDetails.size')}</strong> ${formatFileSize(rom.size)}</div>` : ''}
           ${rom.crc32 ? `<div class="file-hash"><strong>CRC32 :</strong> ${rom.crc32.toUpperCase()}</div>` : ''}
           ${rom.md5 ? `<div class="file-hash"><strong>MD5 :</strong> ${rom.md5.toUpperCase()}</div>` : ''}
           ${rom.sha1 ? `<div class="file-hash"><strong>SHA1 :</strong> ${rom.sha1.toUpperCase()}</div>` : ''}
+          ${inheritedFrom}
           ${matchSummary}
         </div>
       `;
@@ -2534,11 +3136,11 @@ function displayArchiveContents(file: any, matchInfo?: any) {
   let archiveBadge = '';
   if (hasMatchData) {
     if (matchedContentCount > 0 && matchedContentCount >= totalContentCount && totalContentCount > 0) {
-      archiveBadge = `<span class="match-status-badge status-complete">✅ Matché</span>`;
+      archiveBadge = `<span class="match-status-badge status-complete">✅ ${t('index.fileBadges.matched')}</span>`;
     } else if (matchedContentCount > 0) {
-      archiveBadge = `<span class="match-status-badge status-partial">⚠️ Partiel</span>`;
+      archiveBadge = `<span class="match-status-badge status-partial">⚠️ ${t('index.matchStatus.partial')}</span>`;
     } else {
-      archiveBadge = `<span class="match-status-badge status-missing">❌ Non matché</span>`;
+      archiveBadge = `<span class="match-status-badge status-missing">❌ ${t('index.fileBadges.notMatched')}</span>`;
     }
   }
 
@@ -2546,18 +3148,18 @@ function displayArchiveContents(file: any, matchInfo?: any) {
   html += `
     <div style="padding: 10px; font-size: 12px;">
       <div style="margin-bottom: 10px;">
-        <strong>Taille :</strong> ${formatFileSize(file.size)}
+        <strong>${t('index.romDetails.size')}</strong> ${formatFileSize(file.size)}
       </div>
       <div style="margin-bottom: 10px;">
-        <strong>Chemin :</strong><br>
+        <strong>${t('index.romDetails.path')}</strong><br>
         <span>${file.filePath}</span>
       </div>
       <div style="margin-bottom: 10px;">
-        <strong>Type :</strong> ${file.archiveType?.toUpperCase()}
+        <strong>${t('index.romDetails.type')}</strong> ${file.archiveType?.toUpperCase()}
       </div>
-      ${archiveBadge ? `<div style="margin-bottom: 10px;"><strong>Matching :</strong> ${archiveBadge}</div>` : ''}
+      ${archiveBadge ? `<div style="margin-bottom: 10px;"><strong>${t('index.romDetails.matching')}</strong> ${archiveBadge}</div>` : ''}
       <div style="margin-top: 15px;">
-        <strong>Contenu de l'archive :</strong> (${totalContentCount} fichier${totalContentCount > 1 ? 's' : ''})
+        <strong>${t('index.romDetails.archiveContents')}</strong> (${t('matching.filesCount', { count: totalContentCount })})
       </div>
     </div>`;
 
@@ -2573,14 +3175,14 @@ function displayArchiveContents(file: any, matchInfo?: any) {
       if (hasMatchData) {
         statusClass = isMatched ? 'rom-found' : 'rom-missing';
         const statusIcon = isMatched ? '✅' : '❌';
-        const statusLabel = isMatched ? 'Matché' : 'Non matché';
+        const statusLabel = isMatched ? t('index.fileBadges.matched') : t('index.fileBadges.notMatched');
         statusBadge = `<span class="rom-status-badge ${statusClass}">${statusIcon} ${statusLabel}</span>`;
 
         if (isMatched) {
           const gameNames = contentGames.map((g: any) => g.gameName);
-          gameInfo = `<div class="file-hash"><strong>Jeu${gameNames.length > 1 ? 'x' : ''} :</strong> ${gameNames.join(', ')}</div>`;
+          gameInfo = `<div class="file-hash"><strong>${t('index.romDetails.games')}</strong> ${gameNames.join(', ')}</div>`;
           if (gameNames.length > 1) {
-            multiGameBadge = `<span class="rom-status-badge" style="background-color: rgba(52,152,219,0.1); color: #2980b9;">🔀 Multi-jeux</span>`;
+            multiGameBadge = `<span class="rom-status-badge" style="background-color: rgba(52,152,219,0.1); color: #2980b9;">🔀 ${t('index.fileBadges.multiGame')}</span>`;
           }
         }
       }
@@ -2591,7 +3193,7 @@ function displayArchiveContents(file: any, matchInfo?: any) {
             <div>${content.fileName}</div>
             <div style="display: flex; gap: 4px;">${multiGameBadge}${statusBadge}</div>
           </div>
-          ${content.size ? `<div style="font-size: 12px; color: #7f8c8d;"><strong>Taille :</strong> ${formatFileSize(content.size)}</div>` : ''}
+          ${content.size ? `<div style="font-size: 12px; color: #7f8c8d;"><strong>${t('index.romDetails.size')}</strong> ${formatFileSize(content.size)}</div>` : ''}
           ${content.hashes?.crc32 ? `<div class="file-hash"><strong>CRC32 :</strong> ${content.hashes.crc32}</div>` : ''}
           ${content.hashes?.md5 ? `<div class="file-hash"><strong>MD5 :</strong> ${content.hashes.md5}</div>` : ''}
           ${content.hashes?.sha1 ? `<div class="file-hash"><strong>SHA1 :</strong> ${content.hashes.sha1}</div>` : ''}
@@ -2600,7 +3202,7 @@ function displayArchiveContents(file: any, matchInfo?: any) {
       `;
     });
   } else {
-    html += '<div style="padding: 10px;">Archive vide ou non lisible</div>';
+    html += `<div style="padding: 10px;">${t('index.romDetails.emptyArchive')}</div>`;
   }
 
   detailView.innerHTML = html;
@@ -2622,33 +3224,33 @@ function displayFileDetails(file: any, matchInfo?: any) {
   let matchBadge = '';
   if (hasMatchData) {
     matchBadge = isMatched
-      ? `<span class="match-status-badge status-complete">✅ Matché</span>`
-      : `<span class="match-status-badge status-missing">❌ Non matché</span>`;
+      ? `<span class="match-status-badge status-complete">✅ ${t('index.fileBadges.matched')}</span>`
+      : `<span class="match-status-badge status-missing">❌ ${t('index.fileBadges.notMatched')}</span>`;
   }
 
   let html = `<div class="detail-header">💾 ${file.fileName}</div>`;
   html += `
     <div style="padding: 10px; font-size: 12px;">
       <div style="margin-bottom: 10px;">
-        <strong>Taille :</strong> ${formatFileSize(file.size)}
+        <strong>${t('index.romDetails.size')}</strong> ${formatFileSize(file.size)}
       </div>
       <div style="margin-bottom: 10px;">
-        <strong>Chemin :</strong><br>
+        <strong>${t('index.romDetails.path')}</strong><br>
         <span>${file.filePath}</span>
       </div>
       <div style="margin-bottom: 10px;">
-        <strong>Type :</strong> ${fileExtension.toUpperCase()}
+        <strong>${t('index.romDetails.type')}</strong> ${fileExtension.toUpperCase()}
       </div>
-      ${matchBadge ? `<div style="margin-bottom: 10px;"><strong>Matching :</strong> ${matchBadge}</div>` : ''}
+      ${matchBadge ? `<div style="margin-bottom: 10px;"><strong>${t('index.romDetails.matching')}</strong> ${matchBadge}</div>` : ''}
       <div style="margin-top: 15px;">
-        <strong>Empreintes :</strong>
+        <strong>${t('index.romDetails.hashes')}</strong>
       </div>
     </div>`;
 
   if (file.hashes) {
     const statusClass = hasMatchData ? (isMatched ? 'rom-found' : 'rom-missing') : '';
     const statusBadge = hasMatchData
-      ? `<span class="rom-status-badge ${statusClass}">${isMatched ? '✅ Matché' : '❌ Non matché'}</span>`
+      ? `<span class="rom-status-badge ${statusClass}">${isMatched ? `✅ ${t('index.fileBadges.matched')}` : `❌ ${t('index.fileBadges.notMatched')}`}</span>`
       : '';
 
     // Noms des jeux pour lesquels ce fichier sert
@@ -2656,9 +3258,9 @@ function displayFileDetails(file: any, matchInfo?: any) {
     let multiGameBadge = '';
     if (hasMatchData && isMatched) {
       const gameNames = [...new Set(looseMatches.map(m => m.gameName))];
-      gameInfo = `<div class="file-hash"><strong>Jeu${gameNames.length > 1 ? 'x' : ''} :</strong> ${gameNames.join(', ')}</div>`;
+      gameInfo = `<div class="file-hash"><strong>${t('index.romDetails.games')}</strong> ${gameNames.join(', ')}</div>`;
       if (gameNames.length > 1) {
-        multiGameBadge = `<span class="rom-status-badge" style="background-color: rgba(52,152,219,0.1); color: #2980b9;">🔀 Multi-jeux</span>`;
+        multiGameBadge = `<span class="rom-status-badge" style="background-color: rgba(52,152,219,0.1); color: #2980b9;">🔀 ${t('index.fileBadges.multiGame')}</span>`;
       }
     }
 
@@ -2668,7 +3270,7 @@ function displayFileDetails(file: any, matchInfo?: any) {
           <div>${file.fileName}</div>
           <div style="display: flex; gap: 4px;">${multiGameBadge}${statusBadge}</div>
         </div>
-        <div style="font-size: 12px; color: #7f8c8d;"><strong>Taille :</strong> ${formatFileSize(file.size)}</div>
+        <div style="font-size: 12px; color: #7f8c8d;"><strong>${t('index.romDetails.size')}</strong> ${formatFileSize(file.size)}</div>
         <div class="file-hash"><strong>CRC32 :</strong> ${file.hashes.crc32}</div>
         <div class="file-hash"><strong>MD5 :</strong> ${file.hashes.md5}</div>
         <div class="file-hash"><strong>SHA1 :</strong> ${file.hashes.sha1}</div>
@@ -2749,23 +3351,23 @@ function initSplitters() {
 
 async function convertToChd(filePath: string) {
   try {
-    log(`Conversion CHD : ${getBasename(filePath)}`, { context: 'chd', state: 'loading' });
+    log('logs.chd.converting', { params: { file: getBasename(filePath) }, context: 'chd', state: 'loading' });
     const results = await window.api.convertToChd([filePath]);
     
     if (results[0]?.success) {
-      log(`Conversion réussie : ${results[0].message}`, { context: 'chd', state: 'success' });
+      log('logs.chd.convertDone', { params: { message: results[0].message }, context: 'chd', state: 'success' });
       if (currentFolderPath) await updateFolderContent(currentFolderPath);
     } else {
-      log(`Échec : ${results[0]?.message || 'Erreur inconnue'}`, { severity: 'error', context: 'chd' });
+      log('logs.chd.convertFailed', { params: { error: results[0]?.message || t('common.unknownError') }, severity: 'error', context: 'chd' });
     }
   } catch (error) {
-    log(`Erreur : ${error}`, { severity: 'error', context: 'chd' });
+    log('common.errorWithDetail', { params: { error: String(error) }, severity: 'error', context: 'chd' });
   }
 }
 
 async function extractChd(filePath: string) {
   try {
-    log(`Extraction CHD : ${getBasename(filePath)}`, { context: 'archive', state: 'loading' });
+    log('logs.chd.extracting', { params: { file: getBasename(filePath) }, context: 'archive', state: 'loading' });
     const result = await window.api.extractChd(filePath);
     
     if (result?.success) {
@@ -2773,13 +3375,13 @@ async function extractChd(filePath: string) {
       if (currentFolderPath) await updateFolderContent(currentFolderPath);
     }
   } catch (error) {
-    log(`Erreur : ${error}`, { severity: 'error', context: 'archive' });
+    log('common.errorWithDetail', { params: { error: String(error) }, severity: 'error', context: 'archive' });
   }
 }
 
 async function verifyChdFile(filePath: string) {
   try {
-    log(`Vérification CHD : ${getBasename(filePath)}`, { context: 'romfile', state: 'loading' });
+    log('logs.chd.verifying', { params: { file: getBasename(filePath) }, context: 'romfile', state: 'loading' });
     const result = await window.api.verifyChd(filePath);
     
     log(result.message, { 
@@ -2788,7 +3390,7 @@ async function verifyChdFile(filePath: string) {
       state: result.valid ? 'success' : 'missing'
     });
   } catch (error) {
-    log(`Erreur : ${error}`, { severity: 'error', context: 'romfile' });
+    log('common.errorWithDetail', { params: { error: String(error) }, severity: 'error', context: 'romfile' });
   }
 }
 
@@ -2796,18 +3398,18 @@ async function showChdInfo(filePath: string) {
   try {
     const info = await window.api.getChdInfo(filePath);
     
-    showModal('Informations CHD', `
+    showModal(t('index.chdModal.title'), `
       <div style="padding: 20px;">
-        <p><strong>Fichier :</strong> ${getBasename(filePath)}</p>
-        <p><strong>Version :</strong> ${info.version || 'N/A'}</p>
-        <p><strong>Taille logique :</strong> ${info.logicalSize ? formatFileSize(info.logicalSize) : 'N/A'}</p>
-        <p><strong>Compression :</strong> ${info.compression || 'N/A'}</p>
+        <p><strong>${t('index.chdModal.file')}</strong> ${getBasename(filePath)}</p>
+        <p><strong>${t('index.chdModal.version')}</strong> ${info.version || 'N/A'}</p>
+        <p><strong>${t('index.chdModal.logicalSize')}</strong> ${info.logicalSize ? formatFileSize(info.logicalSize) : 'N/A'}</p>
+        <p><strong>${t('index.chdModal.compression')}</strong> ${info.compression || 'N/A'}</p>
         <p><strong>SHA1 :</strong> ${info.sha1 || 'N/A'}</p>
         <p><strong>MD5 :</strong> ${info.md5 || 'N/A'}</p>
       </div>
     `);
   } catch (error) {
-    log(`Erreur : ${error}`, { severity: 'error', context: 'romfile' });
+    log('common.errorWithDetail', { params: { error: String(error) }, severity: 'error', context: 'romfile' });
   }
 }
 
@@ -2823,39 +3425,45 @@ async function runMatching() {
   try {
     // Désactiver le bouton pendant le matching
     btn.disabled = true;
-    btn.textContent = '⏳ Matching en cours...';
-    
-    log('Lancement du matching des ROMs...', { context: 'match', state: 'loading' });
-    
+    btn.textContent = t('index.matchingRun.inProgress');
+
+    log('logs.match.launching', { context: 'match', state: 'loading' });
+
     const result = await window.api.runMatching();
-    
+
     // Mettre à jour le rapport dans le volet gauche
     if (typeof displayMatchingReport === 'function') {
       await displayMatchingReport('matching-report');
     }
-    
+
     // Afficher une popup de succès
-    alert(`✅ Matching terminé !\n\n` +
-          `Jeux complets : ${result.stats.completeGames}/${result.stats.totalGames} ✅\n` +
-          `Jeux partiels : ${result.stats.partialGames}/${result.stats.totalGames} ⚠️\n` +
-          `Jeux manquants : ${result.stats.missingGames}/${result.stats.totalGames} ❌\n\n` +
-          `ROMs matchées : ${result.stats.matchedRoms}/${result.stats.totalDatRoms}`);
+    alert(t('index.matchingRun.doneAlert', {
+      complete: result.stats.completeGames,
+      partial: result.stats.partialGames,
+      missing: result.stats.missingGames,
+      total: result.stats.totalGames,
+      matchedRoms: result.stats.matchedRoms,
+      totalRoms: result.stats.totalDatRoms
+    }));
     
     matchingComplete = true;
     updateWorkflowButtons();
-    log(`Matching terminé avec succès !`, { context: 'match', state: 'success' });
+    log('logs.match.success', { context: 'match', state: 'success' });
+
+    // Le matching a calculé le mode du set scanné → rafraîchir le bandeau
+    await updateDbInfoBanner();
 
     // Rafraîchir le volet central si un contenu est affiché
     if (selectedElement) {
       await updateCenterContent(selectedElement.type, selectedElement.value);
     }
   } catch (error) {
-    log(`Erreur lors du matching : ${error}`, { severity: 'error', context: 'match' });
-    alert('❌ Erreur lors du matching. Consultez les logs pour plus de détails.');
+    log('logs.match.error', { params: { error: String(error) }, severity: 'error', context: 'match' });
+    alert(t('index.matchingRun.errorAlert'));
   } finally {
     // Réactiver le bouton
     btn.disabled = false;
-    btn.textContent = '🎯 4. Matcher les ROMs';
+    btn.textContent = t('index.workflow.match');
   }
 }
 
@@ -2868,64 +3476,64 @@ async function runConsolidation() {
 
   // Construire le récapitulatif des options
   const compressionLabels: Record<string, string> = {
-    'fastest': 'Rapide',
-    'normal': 'Normal',
-    'maximum': 'Maximum'
+    'fastest': t('index.consolidation.compressionFastest'),
+    'normal': t('index.consolidation.compressionNormal'),
+    'maximum': t('index.consolidation.compressionMaximum')
   };
   const cleanupScopeLabels: Record<string, string> = {
-    'used-only': 'Fichiers utilisés uniquement',
-    'all-matched': 'Tous les fichiers matchés'
+    'used-only': t('settings.cleanup.scopeUsedOnly'),
+    'all-matched': t('settings.cleanup.scopeAllMatched')
   };
 
   const lines: string[] = [];
 
   // --- Archives ---
-  lines.push('📦 ARCHIVES');
+  lines.push(t('index.consolidation.sectionArchives'));
   if (settings.useBestCompression) {
-    lines.push(`  • Mode : Tester tous les formats compatibles et conserver le plus léger`);
+    lines.push(`  • ${t('index.consolidation.bestCompressionMode')}`);
   } else {
     const formats = settings.archiveFormatPriority?.join(' > ') || '7z > zip';
-    lines.push(`  • Priorité des formats : ${formats}`);
+    lines.push(`  • ${t('index.consolidation.formatPriority', { formats })}`);
   }
-  lines.push(`  • Compression : ${compressionLabels[settings.compressionLevel] || settings.compressionLevel}`);
+  lines.push(`  • ${t('index.consolidation.compression', { level: compressionLabels[settings.compressionLevel] || settings.compressionLevel })}`);
   if (settings.recreateArchivesIfNeeded) {
-    lines.push(`  • Recréer les archives si nécessaire : Oui`);
+    lines.push(`  • ${t('index.consolidation.recreateArchives')}`);
   } else {
-    lines.push(`  • Copie directe des archives sources quand possible`);
+    lines.push(`  • ${t('index.consolidation.directCopy')}`);
   }
-  if (settings.solidArchive) lines.push(`  • Archive solide : Oui`);
-  if (settings.multithreading) lines.push(`  • Multithreading : Oui`);
+  if (settings.solidArchive) lines.push(`  • ${t('index.consolidation.solidArchive')}`);
+  if (settings.multithreading) lines.push(`  • ${t('index.consolidation.multithreading')}`);
 
   // --- Dossiers ---
   lines.push('');
-  lines.push('📁 DOSSIERS');
-  lines.push(`  • Dossier cible : ${settings.validatedRomsFolder || '(non configuré)'}`);
+  lines.push(t('index.consolidation.sectionFolders'));
+  lines.push(`  • ${t('index.consolidation.targetFolder', { folder: settings.validatedRomsFolder || t('index.consolidation.notConfigured') })}`);
   if (settings.cleanSourceAfterConsolidation && settings.unmatchedRomsFolder) {
-    lines.push(`  • Fichiers non matchés : ${settings.unmatchedRomsFolder}`);
+    lines.push(`  • ${t('index.consolidation.unmatchedFolder', { folder: settings.unmatchedRomsFolder })}`);
   }
 
   // --- Nettoyage ---
   lines.push('');
-  lines.push('🧹 NETTOYAGE');
+  lines.push(t('index.consolidation.sectionCleanup'));
   if (settings.cleanSourceAfterConsolidation) {
-    lines.push(`  • Nettoyage activé`);
-    lines.push(`  • Portée : ${cleanupScopeLabels[settings.cleanupScope] || settings.cleanupScope}`);
+    lines.push(`  • ${t('index.consolidation.cleanupEnabled')}`);
+    lines.push(`  • ${t('index.consolidation.cleanupScope', { scope: cleanupScopeLabels[settings.cleanupScope] || settings.cleanupScope })}`);
     if (settings.protectFilesForUnselectedGames) {
-      lines.push(`  • Protection des fichiers utilisés par des jeux non sélectionnés`);
+      lines.push(`  • ${t('index.consolidation.protectionOn')}`);
     } else {
-      lines.push(`  • Pas de protection pour les jeux non sélectionnés`);
+      lines.push(`  • ${t('index.consolidation.protectionOff')}`);
     }
   } else {
-    lines.push(`  • Nettoyage désactivé (les sources restent intactes)`);
+    lines.push(`  • ${t('index.consolidation.cleanupDisabled')}`);
   }
 
   // Boîte de dialogue de confirmation
   const confirmResult = await window.api.showMessageBox({
     type: 'question',
-    title: 'Consolider les ROMs',
-    message: 'Voulez-vous lancer la consolidation avec ces paramètres ?',
+    title: t('index.consolidation.confirmTitle'),
+    message: t('index.consolidation.confirmMessage'),
     detail: lines.join('\n'),
-    buttons: ['Consolider', 'Annuler'],
+    buttons: [t('index.consolidation.confirmButton'), t('common.cancel')],
     defaultId: 0,
     cancelId: 1
   });
@@ -2934,27 +3542,28 @@ async function runConsolidation() {
 
   try {
     btn.disabled = true;
-    btn.textContent = '⏳ Consolidation...';
+    btn.textContent = t('index.consolidation.inProgress');
 
-    log('Lancement de la consolidation des ROMs...', { context: 'match', state: 'loading' });
+    log('logs.consolidation.launching', { context: 'match', state: 'loading' });
 
     const removeListener = window.api.onConsolidationProgress((progress) => {
       if (progress.phase === 'complete') {
-        log(progress.message, { context: 'match', state: 'success' });
+        log(progress.key, { params: progress.params, context: 'match', state: 'success' });
       } else {
-        log(progress.message, { context: 'match', state: 'loading' });
+        log(progress.key, { params: progress.params, context: 'match', state: 'loading' });
       }
     });
 
     const result = await window.api.runConsolidation();
 
-    alert(`🧹 Consolidation terminée !\n\n` +
-          `Jeux consolidés : ${result.stats.gamesConsolidated}\n` +
-          `Archives créées : ${result.stats.archivesCreated}\n` +
-          `Fichiers non matchés déplacés : ${result.stats.unmatchedFilesMoved}\n` +
-          `Erreurs : ${result.stats.gamesErrored}`);
+    alert(t('index.consolidation.doneAlert', {
+      games: result.stats.gamesConsolidated,
+      archives: result.stats.archivesCreated,
+      unmatched: result.stats.unmatchedFilesMoved,
+      errors: result.stats.gamesErrored
+    }));
 
-    log('Consolidation terminée !', { context: 'match', state: 'success' });
+    log('logs.consolidation.finished', { context: 'match', state: 'success' });
     removeListener();
 
     // Rafraîchissement automatique du dossier cible + rematching
@@ -2962,11 +3571,11 @@ async function runConsolidation() {
       await refreshTargetAndMatching();
     }
   } catch (error) {
-    log(`Erreur lors de la consolidation : ${error}`, { severity: 'error', context: 'match' });
-    alert('❌ Erreur lors de la consolidation. Consultez les logs.');
+    log('logs.consolidation.runError', { params: { error: String(error) }, severity: 'error', context: 'match' });
+    alert(t('index.consolidation.errorAlert'));
   } finally {
     btn.disabled = false;
-    btn.textContent = '🧹 5. Consolider';
+    btn.textContent = t('index.workflow.consolidate');
   }
 }
 
@@ -2975,7 +3584,7 @@ async function showMissingRoms() {
     const missing = await window.api.getMissingRoms();
     
     if (missing.length === 0) {
-      showModal('ROMs manquantes', '<div style="padding: 20px; text-align: center;">Aucune ROM manquante !</div>');
+      showModal(t('matching.missingRoms'), `<div style="padding: 20px; text-align: center;">${t('index.missingModal.none')}</div>`);
       return;
     }
     
@@ -2986,9 +3595,9 @@ async function showMissingRoms() {
       </div>`
     ).join('');
     
-    showModal(`ROMs manquantes (${missing.length})`, content);
+    showModal(t('index.missingModal.title', { count: missing.length }), content);
   } catch (error) {
-    log(`Erreur lors de la récupération des ROMs manquantes : ${error}`, { severity: 'error', context: 'match' });
+    log('logs.match.missingRomsError', { params: { error: String(error) }, severity: 'error', context: 'match' });
   }
 }
 
@@ -2997,7 +3606,7 @@ async function showExtraFiles() {
     const extras = await window.api.getExtraFiles();
     
     if (extras.length === 0) {
-      showModal('Fichiers non matchés', '<div style="padding: 20px; text-align: center;">Aucun fichier non matché !</div>');
+      showModal(t('index.extrasModal.header'), `<div style="padding: 20px; text-align: center;">${t('index.extrasModal.none')}</div>`);
       return;
     }
     
@@ -3008,9 +3617,9 @@ async function showExtraFiles() {
       </div>`
     ).join('');
     
-    showModal(`Fichiers non matchés (${extras.length})`, content);
+    showModal(t('index.extrasModal.title', { count: extras.length }), content);
   } catch (error) {
-    log(`Erreur lors de la récupération des fichiers extras : ${error}`, { severity: 'error', context: 'match' });
+    log('logs.match.extrasError', { params: { error: String(error) }, severity: 'error', context: 'match' });
   }
 }
 
@@ -3018,10 +3627,10 @@ async function exportReport() {
   try {
     const result = await window.api.exportMatchingReport();
     if (result && result.success) {
-      log(`Rapport exporté avec succès : ${result.filePath}`, { context: 'match', state: 'success' });
-      showModal('Export réussi', `
+      log('logs.match.reportExported', { params: { path: result.filePath }, context: 'match', state: 'success' });
+      showModal(t('index.exportModal.title'), `
         <div style="padding: 20px; text-align: center;">
-          <p>Le rapport a été exporté avec succès !</p>
+          <p>${t('index.exportModal.success')}</p>
           <p style="margin-top: 10px; font-size: 13px; color: #7f8c8d;">
             ${result.filePath}
           </p>
@@ -3029,7 +3638,7 @@ async function exportReport() {
       `);
     }
   } catch (error) {
-    log(`Erreur lors de l'export : ${error}`, { severity: 'error', context: 'match' });
+    log('logs.match.exportError', { params: { error: String(error) }, severity: 'error', context: 'match' });
   }
 }
 
@@ -3048,7 +3657,7 @@ function showModal(title: string, content: string) {
 // Handlers d'ouverture/fermeture de DB
 async function openExistingDatabase() {
   try {
-    log('Ouverture d\'une base de données...', { context: 'database', state: 'question' });
+    log('logs.database.opening', { context: 'database', state: 'question' });
 
     const result = await window.api.openDatabase();
 
@@ -3062,13 +3671,13 @@ async function openExistingDatabase() {
       // Mettre à jour le bandeau d'info DB
       updateDbInfoBanner();
 
-      log(`Base de données ouverte : ${result.dbPath}`, { context: 'database', state: 'success' });
-      log(`Jeux trouvés : ${result.gamesCount}`, { context: 'game', state: 'count' });
-      log(`ROMs référencées : ${result.romsCount}`, { context: 'romfile', state: 'count' });
+      log('logs.database.opened', { params: { path: result.dbPath }, context: 'database', state: 'success' });
+      log('logs.database.gamesFound', { params: { count: result.gamesCount }, context: 'game', state: 'count' });
+      log('logs.database.romsReferenced', { params: { count: result.romsCount }, context: 'romfile', state: 'count' });
 
       if (result.folders && result.folders.length > 0) {
         loadedFolders = result.folders;
-        log(`Dossiers de ROMs trouvés : ${result.folders.length}`, { context: 'folder', state: 'count' });
+        log('logs.database.foldersFound', { params: { count: result.folders.length }, context: 'folder', state: 'count' });
       }
 
       // Restaurer le dossier cible depuis la métadonnée de la base
@@ -3088,11 +3697,11 @@ async function openExistingDatabase() {
         updateWorkflowButtons();
         // Afficher le rapport complet depuis la base
         await displayMatchingReport();
-        log('✅ Rapport de matching chargé depuis la base de données', { context: 'match', state: 'success' });
+        log('logs.match.reportLoaded', { context: 'match', state: 'success' });
       } else if (result.gamesCount > 0) {
         // Afficher le rapport initial (tous manquants)
         await displayInitialReport(result.gamesCount, result.romsCount);
-        log('📊 Rapport initial affiché (matching non effectué)', { context: 'match', state: 'waiting' });
+        log('logs.match.initialReport', { context: 'match', state: 'waiting' });
       }
 
       const datList = document.getElementById('dat-list');
@@ -3100,10 +3709,10 @@ async function openExistingDatabase() {
         (datList.firstElementChild as HTMLElement).click();
       }
     } else {
-      log('Ouverture annulée.', { context: 'database', state: 'cancel' });
+      log('logs.database.openCancelled', { context: 'database', state: 'cancel' });
     }
   } catch (error) {
-    log(`Erreur : ${error instanceof Error ? error.message : String(error)}`, { severity: 'error', context: 'database' });
+    log('common.errorWithDetail', { params: { error: error instanceof Error ? error.message : String(error) }, severity: 'error', context: 'database' });
   }
 }
 
@@ -3111,14 +3720,14 @@ async function closeDatabase() {
   try {
     const closed = await window.api.closeDatabase();
     if (closed) {
-      log('Base de données fermée.', { context: 'database', state: 'complete' });
+      log('logs.database.closed', { context: 'database', state: 'complete' });
       resetInterface();
 
       // Mettre à jour l'état des boutons workflow et des menus après fermeture
       updateWorkflowButtons();
     }
   } catch (error) {
-    log(`Erreur lors de la fermeture : ${error instanceof Error ? error.message : String(error)}`, { severity: 'error', context: 'database' });
+    log('logs.database.closeError', { params: { error: error instanceof Error ? error.message : String(error) }, severity: 'error', context: 'database' });
   }
 }
 
@@ -3177,14 +3786,14 @@ async function performSearch(query: string, scope: 'all' | 'games' | 'files' | '
   
   try {
     // Afficher un indicateur de chargement
-    gameList.innerHTML = '<div style="padding: 20px; text-align: center;">Recherche en cours...</div>';
-    
+    gameList.innerHTML = `<div style="padding: 20px; text-align: center;">${t('index.searchView.inProgress')}</div>`;
+
     const results = await window.api.searchGlobal(query, scope);
-    
+
     // Afficher les résultats
     displaySearchResults(results, query);
   } catch (error) {
-    gameList.innerHTML = `<div style="padding: 20px; color: #e74c3c;">Erreur lors de la recherche : ${error}</div>`;
+    gameList.innerHTML = `<div style="padding: 20px; color: #e74c3c;">${t('index.searchView.error', { error: String(error) })}</div>`;
   }
 }
 
@@ -3200,7 +3809,7 @@ function displaySearchResults(results: any, query: string) {
   if (totalResults === 0) {
     gameList.innerHTML = `
       <div style="padding: 20px; text-align: center; color: #7f8c8d;">
-        Aucun résultat trouvé pour "<strong>${escapeHtml(query)}</strong>"
+        ${t('index.searchView.noResults', { query: `<strong>${escapeHtml(query)}</strong>` })}
       </div>
     `;
     return;
@@ -3215,7 +3824,7 @@ function displaySearchResults(results: any, query: string) {
     const gamesSection = document.createElement('div');
     gamesSection.innerHTML = `
       <h4 style="color: #2c3e50; margin: 10px 0; padding: 5px; border-bottom: 2px solid #3498db;">
-        🎮 Jeux DAT (${results.games.length})
+        🎮 ${t('index.searchView.gamesSection', { count: results.games.length })}
       </h4>
     `;
     
@@ -3226,7 +3835,7 @@ function displaySearchResults(results: any, query: string) {
         <div>
           <div class="list-item-name">${highlightText(game.name, query)}</div>
           ${game.description ? `<div class="list-item-info">${highlightText(game.description, query)}</div>` : ''}
-          <div class="list-item-info">${game.rom_count} ROM${game.rom_count > 1 ? 's' : ''}</div>
+          <div class="list-item-info">${t('index.searchView.romCount', { count: game.rom_count })}</div>
         </div>
       `;
       item.addEventListener('click', () => selectGame(item, game));
@@ -3241,7 +3850,7 @@ function displaySearchResults(results: any, query: string) {
     const filesSection = document.createElement('div');
     filesSection.innerHTML = `
       <h4 style="color: #2c3e50; margin: 20px 0 10px 0; padding: 5px; border-bottom: 2px solid #27ae60;">
-        💾 Fichiers ROMs (${results.files.length})
+        💾 ${t('index.searchView.filesSection', { count: results.files.length })}
       </h4>
     `;
     
@@ -3273,7 +3882,7 @@ function displaySearchResults(results: any, query: string) {
     const archivesSection = document.createElement('div');
     archivesSection.innerHTML = `
       <h4 style="color: #2c3e50; margin: 20px 0 10px 0; padding: 5px; border-bottom: 2px solid #e67e22;">
-        📦 Contenu d'archives (${results.archives.length})
+        📦 ${t('index.searchView.archivesSection', { count: results.archives.length })}
       </h4>
     `;
     
@@ -3284,7 +3893,7 @@ function displaySearchResults(results: any, query: string) {
         <div>
           <div class="list-item-name">📄 ${highlightText(archive.file_name, query)}</div>
           <div class="list-item-info" style="font-size: 11px;">
-            Dans : ${archive.archive_name}
+            ${t('index.searchView.inArchive', { archive: archive.archive_name })}
           </div>
           <div class="list-item-info" style="font-size: 11px; color: #95a5a6;">
             ${archive.archive_path}
@@ -3373,10 +3982,10 @@ async function handleDeleteFolder(folderPath: string): Promise<void> {
   const folderName = getBasename(folderPath);
   const result = await window.api.showMessageBox({
     type: 'warning',
-    title: 'Supprimer le dossier',
-    message: `Êtes-vous sûr de vouloir supprimer le dossier "${folderName}" ?`,
-    detail: 'Cette action déplacera le dossier et tout son contenu vers la corbeille. Vous pourrez le restaurer depuis la corbeille si nécessaire.',
-    buttons: ['Annuler', 'Déplacer vers la corbeille'],
+    title: t('index.confirm.deleteFolderTitle'),
+    message: t('index.confirm.deleteFolderMessage', { folder: folderName }),
+    detail: t('index.confirm.deleteFolderDetail'),
+    buttons: [t('common.cancel'), t('index.confirm.moveToTrash')],
     defaultId: 0,
     cancelId: 0,
     noLink: true
@@ -3397,14 +4006,14 @@ async function handleDeleteFolder(folderPath: string): Promise<void> {
         updateLeftSidebar();
         
         // Afficher un message de succès
-        log(`Dossier "${folderName}" déplacé vers la corbeille`, { context: 'folder', state: 'deleted' });
+        log('logs.folder.folderTrashedNamed', { params: { folder: folderName }, context: 'folder', state: 'deleted' });
       }
     } catch (error) {
-      console.error('Erreur lors de la suppression:', error);
+      console.error('Error while deleting:', error);
       await window.api.showMessageBox({
         type: 'error',
-        title: 'Erreur',
-        message: 'Impossible de supprimer le dossier',
+        title: t('common.error'),
+        message: t('index.confirm.deleteFolderError'),
         detail: error instanceof Error ? error.message : String(error)
       });
     }
@@ -3412,139 +4021,131 @@ async function handleDeleteFolder(folderPath: string): Promise<void> {
 }
 
 // Récupération des éléments du DOM
-const datSelectButton = document.getElementById('dat-select') as HTMLButtonElement;
-const dbCreateButton = document.getElementById('db-create') as HTMLButtonElement;
+const datLoadButton = document.getElementById('dat-load') as HTMLButtonElement;
 const romAddFolderButton = document.getElementById('rom-add-folder') as HTMLButtonElement;
 const romAddFolderButtonSidebar = document.getElementById('rom-add-folder-sidebar') as HTMLButtonElement;
-const datQuickLoadButton = document.getElementById('dat-quick-load') as HTMLButtonElement;
 const matchRomsButton = document.getElementById('match-roms') as HTMLButtonElement;
 const consolidateRomsButton = document.getElementById('consolidate-roms') as HTMLButtonElement;
 
-// Étape 1 : Sélection du fichier DAT/XML
-datSelectButton?.addEventListener('click', async () => {
-  try {
-    datQuickLoadButton.disabled = true;
-    datSelectButton.disabled = true;
-    log('Ouverture de la boîte de dialogue...', { context: 'dat', state: 'question' });
-
-    const filePath = await window.api.selectDatFile();
-
-    if (filePath) {
-      log(`Fichier DAT/XML sélectionné : ${filePath}`, { context: 'dat', state: 'select' });
-      currentDatPath = filePath;
-      updateWorkflowButtons();
-    } else {
-      log('Sélection annulée.', { context: 'dat', state: 'cancel' });
-      datQuickLoadButton.disabled = false;
-      datSelectButton.disabled = false;
-    }
-  } catch (error) {
-    log(`Erreur : ${error instanceof Error ? error.message : String(error)}`, { severity: 'error', context: 'dat' });
-  }
+// Étape 1 — « Charger DAT/XML » : ouvre l'écran unifié de chargement.
+// L'écran gère : fichier local ou téléchargement, création automatique de la
+// base (mode primaire) ou fusion (mode complémentaire si une base est ouverte).
+datLoadButton?.addEventListener('click', () => {
+  window.api.openDatDownloadWindow();
 });
 
-// Étape 2 : Création de la base de données + chargement des données DAT
-dbCreateButton?.addEventListener('click', async () => {
-  if (!currentDatPath) {
-    log('Aucun fichier DAT sélectionné !', { severity: 'warning', context: 'database' });
-    return;
+/**
+ * Post-traitement après un chargement PRIMAIRE réussi depuis l'écran unifié :
+ * même logique que l'ancien flux « Créer base de données » (bandeau, sidebar,
+ * rapport initial, auto-ajout du dossier de ROMs validées).
+ */
+async function handlePrimaryDatLoaded(payload: {
+  dbPath: string;
+  datPath?: string;
+  gamesCount: number;
+  romsCount: number;
+  datInfo?: any;
+}) {
+  log('logs.database.created', { params: { path: payload.dbPath }, context: 'database', state: 'success' });
+  log('logs.database.gamesImported', { params: { count: payload.gamesCount }, context: 'game', state: 'count' });
+  log('logs.database.romsReferenced', { params: { count: payload.romsCount }, context: 'romfile', state: 'count' });
+
+  currentDatPath = payload.datPath || null;
+  currentDbPath = payload.dbPath;
+  currentDatInfo = payload.datInfo || null;
+
+  // Mettre à jour le bandeau d'info DB
+  updateDbInfoBanner();
+  updateLeftSidebar();
+  updateWorkflowButtons();
+
+  // Afficher le rapport initial
+  if (payload.gamesCount > 0) {
+    await displayInitialReport(payload.gamesCount, payload.romsCount);
+    log('logs.match.reportInitialized', { context: 'match', state: 'waiting' });
   }
 
-  try {
-    datQuickLoadButton.disabled = true;
-    dbCreateButton.disabled = true;
-    log('Création de la base de données...', { context: 'database', state: 'question' });
+  // Auto-ajouter le dossier de ROMs validées s'il est configuré
+  // (avec sous-dossier système si l'option multi-système est activée)
+  const settings = await window.api.getSettings();
+  if (settings.validatedRomsFolder) {
+    const effectiveFolder = await window.api.getEffectiveValidatedFolder();
+    targetFolderPath = effectiveFolder;
+    await window.api.setDbMetadata('target_folder', effectiveFolder);
+    try {
+      log('logs.folder.targetChecking', { params: { path: effectiveFolder }, context: 'folder', state: 'loading' });
 
-    const result = await window.api.createDatabase(currentDatPath, true);
-    if (result) {
-      log(`Base de données créée : ${result.dbPath}`, { context: 'database', state: 'success' });
-      log(`Jeux importés : ${result.gamesCount}`, { context: 'game', state: 'count' });
-      log(`ROMs référencées : ${result.romsCount}`, { context: 'romfile', state: 'count' });
+      const progressHandler = (data: any) => {
+        if (data.fileName) {
+          const icon = data.isArchive ? '📦' : '💾';
+          log('logs.romfile.scanningIcon', { params: { icon, file: data.fileName }, context: 'romfile', state: 'loading' });
+        }
+      };
+      window.api.onScanProgress(progressHandler);
 
-      currentDbPath = result.dbPath;
-      currentDatInfo = result.datInfo || null;
+      const stats = await window.api.addRomsFolder(effectiveFolder);
 
-      // Mettre à jour le bandeau d'info DB
-      updateDbInfoBanner();
+      if (stats.length > 0) {
+        log('logs.folder.targetAdded', { params: { count: stats.length }, context: 'folder', state: 'success' });
+      } else {
+        log('logs.folder.targetAddedEmpty', { context: 'folder', state: 'success' });
+      }
+
+      // Rafraîchir la liste des dossiers
+      const rootFolders = await window.api.getRootFolders();
+      loadedFolders = rootFolders;
       updateLeftSidebar();
       updateWorkflowButtons();
+    } catch (folderError) {
+      log('logs.folder.targetAddError', { params: { error: folderError instanceof Error ? folderError.message : String(folderError) }, severity: 'warning', context: 'folder' });
+    }
+  }
 
-      // Afficher le rapport initial
-      if (result.gamesCount > 0) {
-        await displayInitialReport(result.gamesCount, result.romsCount);
-        log('📊 Rapport de matching initialisé', { context: 'match', state: 'waiting' });
+  log('logs.folder.readyForFolders', { context: 'folder', state: 'waiting' });
+}
+
+// Notification depuis l'écran unifié : un DAT a été chargé (primaire ou complémentaire)
+window.api.onDatDownloadLoaded(async (payload: any) => {
+  try {
+    if (payload?.mode === 'complementary') {
+      log('logs.dat.complementaryLoaded', { params: { name: payload.datName, version: payload.datVersion || t('logs.dat.noVersion') }, context: 'dat', state: 'success' });
+      log('logs.dat.complementaryStats', { params: { games: payload.gamesCount, roms: payload.romsCount, disks: payload.disksCount, relationships: payload.relationshipsCount }, context: 'dat', state: 'count' });
+      // Rafraîchir bandeau (compteurs CHD peuvent avoir bougé) + volet central
+      await updateDbInfoBanner();
+      if (selectedElement) {
+        await updateCenterContent(selectedElement.type, selectedElement.value);
       }
-
-      // Auto-ajouter le dossier de ROMs validées s'il est configuré
-      // (avec sous-dossier système si l'option multi-système est activée)
-      const settings = await window.api.getSettings();
-      if (settings.validatedRomsFolder) {
-        const effectiveFolder = await window.api.getEffectiveValidatedFolder();
-        targetFolderPath = effectiveFolder;
-        await window.api.setDbMetadata('target_folder', effectiveFolder);
-        try {
-          log(`Vérification du dossier cible : ${effectiveFolder}`, { context: 'folder', state: 'loading' });
-
-          const progressHandler = (data: any) => {
-            if (data.fileName) {
-              const icon = data.isArchive ? '📦' : '💾';
-              log(`${icon} ${data.fileName}`, { context: 'romfile', state: 'loading' });
-            }
-          };
-          window.api.onScanProgress(progressHandler);
-
-          const stats = await window.api.addRomsFolder(effectiveFolder);
-
-          if (stats.length > 0) {
-            log(`Dossier cible ajouté : ${stats.length} fichiers trouvés`, { context: 'folder', state: 'success' });
-          } else {
-            log(`Dossier cible ajouté (vide)`, { context: 'folder', state: 'success' });
-          }
-
-          // Rafraîchir la liste des dossiers
-          const rootFolders = await window.api.getRootFolders();
-          loadedFolders = rootFolders;
-          updateLeftSidebar();
-          updateWorkflowButtons();
-        } catch (folderError) {
-          log(`Impossible d'ajouter le dossier cible : ${folderError instanceof Error ? folderError.message : String(folderError)}`, { severity: 'warning', context: 'folder' });
-        }
-      }
-
-      log('Prêt pour ajouter des dossiers de ROMs !', { context: 'folder', state: 'waiting' });
-    } else {
-      log('Création annulée.', { context: 'database', state: 'cancel' });
-      datQuickLoadButton.disabled = false;
-      dbCreateButton.disabled = false;
+      updateWorkflowButtons();
+    } else if (payload?.mode === 'primary') {
+      await handlePrimaryDatLoaded(payload);
     }
   } catch (error) {
-    log(`Erreur : ${error instanceof Error ? error.message : String(error)}`, { severity: 'error', context: 'database' });
+    log('logs.dat.refreshAfterLoadError', { params: { error: error instanceof Error ? error.message : String(error) }, severity: 'error', context: 'dat' });
   }
 });
 
 // Fonction réutilisable pour ajouter des dossiers de ROMs
 async function addRomsFolders() {
   if (!currentDbPath) {
-    log('Veuillez d\'abord créer une base de données !', { severity: 'warning', context: 'folder' });
+    log('logs.folder.createDbFirst', { severity: 'warning', context: 'folder' });
     return;
   }
 
   try {
-    datQuickLoadButton.disabled = true;
     romAddFolderButton.disabled = true;
     romAddFolderButtonSidebar.disabled = true;
-    log('Sélection du/des dossier(s)...', { context: 'folder', state: 'question' });
+    log('logs.folder.selecting', { context: 'folder', state: 'question' });
 
     const folderPaths = await window.api.selectRomFolders();
     if (folderPaths) {
       const folders = Array.isArray(folderPaths) ? folderPaths : [folderPaths];
 
-      log(`Scan de ${folders.length} dossier(s)...`, { context: 'folder', state: 'loading' });
+      log('logs.folder.scanningCount', { params: { count: folders.length }, context: 'folder', state: 'loading' });
 
       const progressHandler = (data: any) => {
         if (data.fileName) {
           const icon = data.isArchive ? '📦' : '💾';
-          log(`${icon} ${data.fileName}`, { context: 'romfile', state: 'loading' });
+          log('logs.romfile.scanningIcon', { params: { icon, file: data.fileName }, context: 'romfile', state: 'loading' });
         }
       };
 
@@ -3552,7 +4153,7 @@ async function addRomsFolders() {
 
       const stats = await window.api.addRomsFolder(folders);
 
-      log(`Scan terminé : ${stats.length} fichiers trouvés au total.`, { context: 'folder', state: 'success' });
+      log('logs.folder.scanDoneTotal', { params: { count: stats.length }, context: 'folder', state: 'success' });
 
       // Rafraîchir la liste des dossiers
       const rootFolders = await window.api.getRootFolders();
@@ -3563,10 +4164,10 @@ async function addRomsFolders() {
       // Mettre à jour l'état des boutons workflow
       updateWorkflowButtons();
     } else {
-      log('Sélection annulée.', { context: 'folder', state: 'cancel' });
+      log('logs.folder.selectCancelled', { context: 'folder', state: 'cancel' });
     }
   } catch (error) {
-    log(`Erreur : ${error instanceof Error ? error.message : String(error)}`, { severity: 'error', context: 'folder' });
+    log('common.errorWithDetail', { params: { error: error instanceof Error ? error.message : String(error) }, severity: 'error', context: 'folder' });
   } finally {
     romAddFolderButton.disabled = false;
     romAddFolderButtonSidebar.disabled = false;
@@ -3585,111 +4186,436 @@ matchRomsButton?.addEventListener('click', runMatching);
 // Étape 6 : Handler pour la consolidation
 consolidateRomsButton?.addEventListener('click', runConsolidation);
 
-// Chargement rapide
-datQuickLoadButton?.addEventListener('click', async () => {
+// ============================================================================
+// Phase 10 — Sélection automatique par règles d'inclusion/exclusion
+// ============================================================================
+//
+// Modèle : un état de départ (tout / rien / sélection actuelle) + une liste
+// ordonnée de règles. Pour chaque jeu, les règles sont évaluées de haut en
+// bas et la DERNIÈRE règle qui correspond détermine l'état final.
+// BIOS, devices et jeux disparus sont exclus du ciblage (gérés par la cascade).
+// Les règles sont persistées dans la metadata DB ('selection_rules').
+
+type AsmField = 'name' | 'description' | 'category' | 'driver_status' | 'has_chd' | 'is_clone' | 'match_status';
+
+interface SelectionRule {
+  action: 'select' | 'deselect';
+  field: AsmField;
+  operator: string;
+  value: string;
+}
+
+let asmRules: SelectionRule[] = [];
+let asmBase: 'all' | 'none' | 'current' = 'all';
+
+const ASM_TEXT_FIELDS: AsmField[] = ['name', 'description', 'category'];
+
+// Libellés résolus au rendu (les traductions ne sont pas chargées à l'import du module)
+function asmFieldLabels(): Record<AsmField, string> {
+  return {
+    name: t('index.asm.fieldName'),
+    description: t('index.asm.fieldDescription'),
+    category: t('index.asm.fieldCategory'),
+    driver_status: t('index.asm.fieldDriverStatus'),
+    has_chd: t('index.asm.fieldHasChd'),
+    is_clone: t('index.asm.fieldIsClone'),
+    match_status: t('index.asm.fieldMatchStatus')
+  };
+}
+
+function asmTextOps(): Array<{ v: string; l: string }> {
+  return [
+    { v: 'contains', l: t('index.asm.opContains') },
+    { v: 'not-contains', l: t('index.asm.opNotContains') },
+    { v: 'starts', l: t('index.asm.opStarts') },
+    { v: 'ends', l: t('index.asm.opEnds') },
+    { v: 'regex', l: t('index.asm.opRegex') }
+  ];
+}
+
+function asmEnumOps(): Array<{ v: string; l: string }> {
+  return [
+    { v: 'is', l: t('index.asm.opIs') },
+    { v: 'is-not', l: t('index.asm.opIsNot') }
+  ];
+}
+
+function asmEnumValues(): Partial<Record<AsmField, Array<{ v: string; l: string }>>> {
+  return {
+    driver_status: [
+      { v: 'good', l: 'good' },
+      { v: 'imperfect', l: 'imperfect' },
+      { v: 'preliminary', l: 'preliminary' },
+      { v: '', l: t('index.asm.valueUnset') }
+    ],
+    has_chd: [{ v: 'yes', l: t('common.yes').toLowerCase() }, { v: 'no', l: t('common.no').toLowerCase() }],
+    is_clone: [{ v: 'yes', l: t('common.yes').toLowerCase() }, { v: 'no', l: t('common.no').toLowerCase() }],
+    match_status: [
+      { v: 'complete', l: t('index.asm.valueComplete') },
+      { v: 'partial', l: t('index.asm.valuePartial') },
+      { v: 'missing', l: t('index.asm.valueMissing') },
+      { v: 'unknown', l: t('index.asm.valueUnknown') }
+    ]
+  };
+}
+
+// Modèles rapides : jeux de règles pré-configurés ajoutés à la liste courante
+const ASM_PRESETS: Record<string, SelectionRule[]> = {
+  'no-proto': [
+    { action: 'deselect', field: 'name', operator: 'contains', value: '(proto' },
+    { action: 'deselect', field: 'name', operator: 'contains', value: '(beta' },
+    { action: 'deselect', field: 'name', operator: 'contains', value: '(demo' },
+    { action: 'deselect', field: 'name', operator: 'contains', value: '(sample' }
+  ],
+  // Convention No-Intro/Redump : les BIOS sont préfixés « [BIOS] » dans le nom.
+  // (Les BIOS MAME portent isbios="yes" et sont déjà exclus du ciblage des règles —
+  // leur sélection est pilotée par la cascade de dépendances.)
+  'no-bios': [
+    { action: 'deselect', field: 'name', operator: 'contains', value: '[bios]' }
+  ],
+  // Convention No-Intro/Redump : « (Aftermarket) » = production post-commerciale,
+  // « (Unl) » = jeu non licencié. N'existe pas dans les DAT MAME.
+  'no-aftermarket-unl': [
+    { action: 'deselect', field: 'name', operator: 'contains', value: '(aftermarket' },
+    { action: 'deselect', field: 'name', operator: 'contains', value: '(unl)' }
+  ],
+  'no-clones': [{ action: 'deselect', field: 'is_clone', operator: 'is', value: 'yes' }],
+  'good-only': [{ action: 'deselect', field: 'driver_status', operator: 'is-not', value: 'good' }],
+  'no-chd': [{ action: 'deselect', field: 'has_chd', operator: 'is', value: 'yes' }],
+  'complete-only': [{ action: 'deselect', field: 'match_status', operator: 'is-not', value: 'complete' }]
+};
+
+function asmRuleMatches(rule: SelectionRule, game: GameInfo): boolean {
+  if (ASM_TEXT_FIELDS.includes(rule.field)) {
+    const raw = String((game as any)[rule.field] || '');
+    const v = raw.toLowerCase();
+    const q = (rule.value || '').toLowerCase();
+    // Une règle texte sans valeur ne matche rien (sauf regex vide, rejetée aussi)
+    if (!rule.value) return false;
+    switch (rule.operator) {
+      case 'contains': return v.includes(q);
+      case 'not-contains': return !v.includes(q);
+      case 'starts': return v.startsWith(q);
+      case 'ends': return v.endsWith(q);
+      case 'regex':
+        try { return new RegExp(rule.value, 'i').test(raw); } catch { return false; }
+      default: return false;
+    }
+  }
+
+  // Champs booléens / énumérés
+  let actual: string;
+  if (rule.field === 'has_chd') actual = game.has_chd ? 'yes' : 'no';
+  else if (rule.field === 'is_clone') actual = game.parent_name_ref ? 'yes' : 'no';
+  else if (rule.field === 'driver_status') actual = game.driver_status || '';
+  else actual = game.match_status || 'unknown';
+
+  const eq = actual === rule.value;
+  return rule.operator === 'is-not' ? !eq : eq;
+}
+
+/** Jeux ciblés par les règles : ni disparus, ni BIOS, ni devices. */
+function asmTargets(): GameInfo[] {
+  return allGames.filter(g => !g.is_disappeared && !g.is_bios && !g.is_device);
+}
+
+/** Calcule l'état de sélection final pour chaque jeu ciblé. */
+function asmCompute(): Map<number, boolean> {
+  const result = new Map<number, boolean>();
+  for (const g of asmTargets()) {
+    let sel = asmBase === 'all' ? true : asmBase === 'none' ? false : g.is_selected !== 0;
+    for (const rule of asmRules) {
+      if (asmRuleMatches(rule, g)) sel = rule.action === 'select';
+    }
+    result.set(g.id, sel);
+  }
+  return result;
+}
+
+// Aperçu débounced (les regex sur de gros DAT MAME peuvent coûter cher au keystroke)
+let asmPreviewTimer: ReturnType<typeof setTimeout> | null = null;
+
+function asmSchedulePreview() {
+  if (asmPreviewTimer) clearTimeout(asmPreviewTimer);
+  asmPreviewTimer = setTimeout(asmUpdatePreview, 250);
+}
+
+function asmUpdatePreview() {
+  const el = document.getElementById('asm-preview');
+  if (!el) return;
+  const result = asmCompute();
+  let sel = 0;
+  let changed = 0;
+  for (const g of asmTargets()) {
+    const target = result.get(g.id)!;
+    if (target) sel++;
+    if (target !== (g.is_selected !== 0)) changed++;
+  }
+  el.innerHTML = t('index.asm.preview', { selected: `<strong>${sel}</strong>`, total: result.size, changed: `<strong>${changed}</strong>` });
+}
+
+/** Construit la ligne d'édition d'une règle (action / champ / opérateur / valeur / déplacer / supprimer). */
+function asmMakeRow(rule: SelectionRule, index: number): HTMLElement {
+  const row = document.createElement('div');
+  row.className = 'asm-rule';
+
+  // Boutons déplacer (l'ordre des règles est significatif)
+  const upBtn = document.createElement('button');
+  upBtn.className = 'asm-rule-btn';
+  upBtn.textContent = '▲';
+  upBtn.title = t('index.asm.moveUp');
+  upBtn.disabled = index === 0;
+  upBtn.addEventListener('click', () => {
+    [asmRules[index - 1], asmRules[index]] = [asmRules[index], asmRules[index - 1]];
+    asmRenderRules();
+  });
+
+  const downBtn = document.createElement('button');
+  downBtn.className = 'asm-rule-btn';
+  downBtn.textContent = '▼';
+  downBtn.title = t('index.asm.moveDown');
+  downBtn.disabled = index === asmRules.length - 1;
+  downBtn.addEventListener('click', () => {
+    [asmRules[index], asmRules[index + 1]] = [asmRules[index + 1], asmRules[index]];
+    asmRenderRules();
+  });
+
+  // Action (sélectionner / désélectionner)
+  const actionSel = document.createElement('select');
+  for (const [v, l] of [['select', `✅ ${t('index.asm.actionSelect')}`], ['deselect', `❌ ${t('index.asm.actionDeselect')}`]] as const) {
+    const opt = document.createElement('option');
+    opt.value = v;
+    opt.textContent = l;
+    if (rule.action === v) opt.selected = true;
+    actionSel.appendChild(opt);
+  }
+  actionSel.addEventListener('change', () => {
+    rule.action = actionSel.value as 'select' | 'deselect';
+    asmSchedulePreview();
+  });
+
+  // Champ
+  const fieldSel = document.createElement('select');
+  const fieldLabels = asmFieldLabels();
+  (Object.keys(fieldLabels) as AsmField[]).forEach(f => {
+    const opt = document.createElement('option');
+    opt.value = f;
+    opt.textContent = fieldLabels[f];
+    if (rule.field === f) opt.selected = true;
+    fieldSel.appendChild(opt);
+  });
+  fieldSel.addEventListener('change', () => {
+    rule.field = fieldSel.value as AsmField;
+    // Réinitialiser opérateur + valeur cohérents avec le nouveau champ
+    if (ASM_TEXT_FIELDS.includes(rule.field)) {
+      rule.operator = 'contains';
+      rule.value = '';
+    } else {
+      rule.operator = 'is';
+      rule.value = asmEnumValues()[rule.field]?.[0]?.v ?? '';
+    }
+    asmRenderRules();
+  });
+
+  // Opérateur
+  const opSel = document.createElement('select');
+  const ops = ASM_TEXT_FIELDS.includes(rule.field) ? asmTextOps() : asmEnumOps();
+  ops.forEach(({ v, l }) => {
+    const opt = document.createElement('option');
+    opt.value = v;
+    opt.textContent = l;
+    if (rule.operator === v) opt.selected = true;
+    opSel.appendChild(opt);
+  });
+  opSel.addEventListener('change', () => {
+    rule.operator = opSel.value;
+    asmSchedulePreview();
+  });
+
+  // Valeur : input texte (champs texte) ou select (champs énumérés)
+  let valueEl: HTMLElement;
+  if (ASM_TEXT_FIELDS.includes(rule.field)) {
+    const input = document.createElement('input');
+    input.type = 'text';
+    input.placeholder = rule.operator === 'regex' ? t('index.asm.regexPlaceholder') : t('index.asm.textPlaceholder');
+    input.value = rule.value;
+    input.addEventListener('input', () => {
+      rule.value = input.value;
+      asmSchedulePreview();
+    });
+    valueEl = input;
+  } else {
+    const sel = document.createElement('select');
+    sel.className = 'asm-value-select';
+    (asmEnumValues()[rule.field] || []).forEach(({ v, l }) => {
+      const opt = document.createElement('option');
+      opt.value = v;
+      opt.textContent = l;
+      if (rule.value === v) opt.selected = true;
+      sel.appendChild(opt);
+    });
+    sel.addEventListener('change', () => {
+      rule.value = sel.value;
+      asmSchedulePreview();
+    });
+    valueEl = sel;
+  }
+
+  // Supprimer
+  const delBtn = document.createElement('button');
+  delBtn.className = 'asm-rule-btn asm-delete';
+  delBtn.textContent = '🗑';
+  delBtn.title = t('index.asm.deleteRule');
+  delBtn.addEventListener('click', () => {
+    asmRules.splice(index, 1);
+    asmRenderRules();
+  });
+
+  row.appendChild(upBtn);
+  row.appendChild(downBtn);
+  row.appendChild(actionSel);
+  row.appendChild(fieldSel);
+  row.appendChild(opSel);
+  row.appendChild(valueEl);
+  row.appendChild(delBtn);
+  return row;
+}
+
+function asmRenderRules() {
+  const container = document.getElementById('asm-rules');
+  if (!container) return;
+  container.innerHTML = '';
+  if (asmRules.length === 0) {
+    const empty = document.createElement('div');
+    empty.className = 'asm-rules-empty';
+    empty.textContent = t('index.asm.noRules');
+    container.appendChild(empty);
+  } else {
+    asmRules.forEach((rule, index) => container.appendChild(asmMakeRow(rule, index)));
+  }
+  asmSchedulePreview();
+}
+
+async function openAutoSelectModal() {
+  if (!currentDbPath || allGames.length === 0) {
+    log('logs.game.loadDatFirst', { severity: 'warning', context: 'game' });
+    return;
+  }
+
+  // Restaurer les règles persistées dans la base
   try {
-    const allDisabled = true;
-    datQuickLoadButton.disabled = allDisabled;
-    datSelectButton.disabled = allDisabled;
-    dbCreateButton.disabled = allDisabled;
-    romAddFolderButton.disabled = allDisabled;
-    romAddFolderButtonSidebar.disabled = allDisabled;
-
-    log('Ouverture de la boîte de dialogue...', { context: 'dat', state: 'question' });
-
-    const filePath = await window.api.selectDatFile();
-
-    if (!filePath) {
-      log('Sélection annulée.', { context: 'dat', state: 'cancel' });
-      datQuickLoadButton.disabled = false;
-      datSelectButton.disabled = false;
-      return;
+    const saved = await window.api.getDbMetadata('selection_rules');
+    if (saved) {
+      const parsed = JSON.parse(saved);
+      asmBase = parsed.base === 'none' || parsed.base === 'current' ? parsed.base : 'all';
+      asmRules = Array.isArray(parsed.rules) ? parsed.rules : [];
     }
+  } catch {
+    // Metadata absente ou corrompue — on repart de zéro
+  }
 
-    log(`Fichier DAT/XML sélectionné : ${filePath}`, { context: 'dat', state: 'select' });
-    currentDatPath = filePath;
+  document.querySelectorAll<HTMLInputElement>('input[name="asm-base"]').forEach(r => {
+    r.checked = r.value === asmBase;
+  });
 
-    log('Création de la base de données...', { context: 'database', state: 'loading' });
+  asmRenderRules();
 
-    const resultQuick = await window.api.quickLoadDatabase(currentDatPath);
-    if (!resultQuick) {
-      log('Création annulée.', { context: 'database', state: 'cancel' });
-      datQuickLoadButton.disabled = false;
-      datSelectButton.disabled = false;
-      return;
-    }
+  const modal = document.getElementById('auto-select-modal') as HTMLElement;
+  modal.style.display = 'flex';
+}
 
-    log(`Base de données créée : ${resultQuick.dbPath}`, { context: 'database', state: 'success' });
-    log(`Jeux importés : ${resultQuick.gamesCount}`, { context: 'game', state: 'count' });
-    log(`ROMs référencées : ${resultQuick.romsCount}`, { context: 'romfile', state: 'count' });
+async function asmApply() {
+  const applyBtn = document.getElementById('asm-apply') as HTMLButtonElement;
+  applyBtn.disabled = true;
 
-    currentDbPath = resultQuick.dbPath;
-    currentDatInfo = resultQuick.datInfo || null;
+  try {
+    const result = asmCompute();
 
-    // Mettre à jour le bandeau d'info DB
-    updateDbInfoBanner();
-
-    updateLeftSidebar();
-
-    // Mettre à jour l'état des boutons workflow
-    updateWorkflowButtons();
-
-    // Afficher le rapport initial avec tous les jeux/fichiers en "manquants"
-    if (resultQuick.gamesCount > 0) {
-      await displayInitialReport(resultQuick.gamesCount, resultQuick.romsCount);
-      log('📊 Rapport de matching initialisé', { context: 'match', state: 'waiting' });
-    }
-
-    // Auto-ajouter le dossier de ROMs validées s'il est configuré
-    // (avec sous-dossier système si l'option multi-système est activée)
-    const settings = await window.api.getSettings();
-    if (settings.validatedRomsFolder) {
-      const effectiveFolder = await window.api.getEffectiveValidatedFolder();
-      targetFolderPath = effectiveFolder;
-      await window.api.setDbMetadata('target_folder', effectiveFolder);
-      try {
-        log(`Vérification du dossier cible : ${effectiveFolder}`, { context: 'folder', state: 'loading' });
-
-        const progressHandler = (data: any) => {
-          if (data.fileName) {
-            const icon = data.isArchive ? '📦' : '💾';
-            log(`${icon} ${data.fileName}`, { context: 'romfile', state: 'loading' });
-          }
-        };
-        window.api.onScanProgress(progressHandler);
-
-        const stats = await window.api.addRomsFolder(effectiveFolder);
-
-        if (stats.length > 0) {
-          log(`Dossier cible ajouté : ${stats.length} fichiers trouvés`, { context: 'folder', state: 'success' });
-        } else {
-          log(`Dossier cible ajouté (vide)`, { context: 'folder', state: 'success' });
-        }
-
-        // Rafraîchir la liste des dossiers
-        const rootFolders = await window.api.getRootFolders();
-        loadedFolders = rootFolders;
-        updateLeftSidebar();
-        updateWorkflowButtons();
-      } catch (folderError) {
-        log(`Impossible d'ajouter le dossier cible : ${folderError instanceof Error ? folderError.message : String(folderError)}`, { severity: 'warning', context: 'folder' });
+    // Ne mettre à jour que les jeux dont l'état change réellement
+    const toSelect: number[] = [];
+    const toDeselect: number[] = [];
+    for (const g of asmTargets()) {
+      const target = result.get(g.id)!;
+      if (target !== (g.is_selected !== 0)) {
+        (target ? toSelect : toDeselect).push(g.id);
       }
     }
 
-    log('Prêt pour ajouter des dossiers de ROMs !', { context: 'folder', state: 'waiting' });
+    // Chunker les updates bulk (limite de variables SQLite sur les gros DAT MAME)
+    const CHUNK = 500;
+    for (let i = 0; i < toSelect.length; i += CHUNK) {
+      await window.api.updateGameSelectionBulk(toSelect.slice(i, i + CHUNK), true);
+    }
+    for (let i = 0; i < toDeselect.length; i += CHUNK) {
+      await window.api.updateGameSelectionBulk(toDeselect.slice(i, i + CHUNK), false);
+    }
 
+    // Synchroniser l'état local
+    for (const g of allGames) {
+      if (result.has(g.id)) {
+        g.is_selected = result.get(g.id) ? 1 : 0;
+      }
+    }
+
+    // Persister les règles dans la base pour la prochaine ouverture
+    await window.api.setDbMetadata('selection_rules', JSON.stringify({ base: asmBase, rules: asmRules }));
+
+    // Recalculer la cascade de dépendances et re-rendre
+    await refreshDependencyResolution();
+    applyFiltersAndGrouping();
+    updateSelectAllCheckbox();
+    generateSelectionFilters();
+
+    log('logs.game.autoSelectApplied', { params: { selected: toSelect.length, deselected: toDeselect.length }, context: 'game', state: 'success' });
+
+    (document.getElementById('auto-select-modal') as HTMLElement).style.display = 'none';
   } catch (error) {
-    log(`Erreur : ${error instanceof Error ? error.message : String(error)}`, { severity: 'error', context: 'folder' });
-    datQuickLoadButton.disabled = false;
-    datSelectButton.disabled = false;
+    log('logs.game.autoSelectError', { params: { error: error instanceof Error ? error.message : String(error) }, severity: 'error', context: 'game' });
+  } finally {
+    applyBtn.disabled = false;
   }
-});
+}
+
+function setupAutoSelectModal() {
+  document.getElementById('auto-select-btn')?.addEventListener('click', openAutoSelectModal);
+
+  document.getElementById('asm-add-rule')?.addEventListener('click', () => {
+    asmRules.push({ action: 'deselect', field: 'name', operator: 'contains', value: '' });
+    asmRenderRules();
+  });
+
+  document.querySelectorAll<HTMLInputElement>('input[name="asm-base"]').forEach(radio => {
+    radio.addEventListener('change', () => {
+      asmBase = radio.value as 'all' | 'none' | 'current';
+      asmSchedulePreview();
+    });
+  });
+
+  document.querySelectorAll<HTMLButtonElement>('#auto-select-modal [data-preset]').forEach(btn => {
+    btn.addEventListener('click', () => {
+      const preset = ASM_PRESETS[btn.dataset.preset || ''];
+      if (preset) {
+        // Copie profonde : les règles du preset sont éditables indépendamment
+        asmRules.push(...preset.map(r => ({ ...r })));
+        asmRenderRules();
+      }
+    });
+  });
+
+  document.getElementById('asm-cancel')?.addEventListener('click', () => {
+    (document.getElementById('auto-select-modal') as HTMLElement).style.display = 'none';
+  });
+
+  document.getElementById('asm-apply')?.addEventListener('click', asmApply);
+}
+
+setupAutoSelectModal();
 
 // Écouter les actions du menu
 window.api.onMenuAction(async (action: string) => {
   switch (action) {
     case 'new-database':
-      datSelectButton?.click();
+      datLoadButton?.click();
       break;
     case 'open-database':
       openExistingDatabase();
@@ -3698,7 +4624,7 @@ window.api.onMenuAction(async (action: string) => {
       closeDatabase();
       break;
     case 'load-dat':
-      datQuickLoadButton?.click();
+      datLoadButton?.click();
       break;
     case 'add-folder':
       romAddFolderButton?.click();
@@ -3708,7 +4634,7 @@ window.api.onMenuAction(async (action: string) => {
       if (selectedElement && selectedElement.type === 'folder') {
         await handleDeleteFolder(selectedElement.value);
       } else {
-        log('Aucun dossier sélectionné', { severity: 'warning', context: 'folder' });
+        log('logs.folder.noneSelected', { severity: 'warning', context: 'folder' });
       }
       break;
     case 'match-roms':
@@ -3740,12 +4666,14 @@ window.api.onViewMode?.((mode: string) => {
   }
 });
 
-// Écouter les messages de log
-window.api.onLogMessage((data: { severity: string, context: string, message: string }) => {
-  log(data.message, { 
-    severity: data.severity as LogSeverity, 
-    context: data.context as LogContext 
-  });
+// Écouter les messages de log envoyés par le main process.
+// isFromMain=true : le main a déjà écrit dans le fichier — ne pas ré-écrire.
+window.api.onLogMessage((data: { severity: string, context: string, key: string, params?: Record<string, string | number> }) => {
+  log(data.key, {
+    severity: data.severity as LogSeverity,
+    context: data.context as LogContext,
+    params: data.params
+  }, true);
 });
 
 // Fermeture de la fenêtre modale
@@ -3777,6 +4705,8 @@ function setupGroupingAndFiltering() {
 
   groupBySelect.addEventListener('change', () => {
     currentGroupBy = groupBySelect.value as 'none' | 'category' | 'letter' | 'match-status' | 'selection' | 'change-status';
+    // Les clés de groupes ne sont plus valides quand le mode de groupement change
+    collapsedGameGroups.clear();
     applyFiltersAndGrouping();
     updateGroupFilterSummary();
   });
@@ -3800,13 +4730,10 @@ function setupGroupingAndFiltering() {
       // Mettre à jour l'état local
       displayedGames.forEach((g: GameInfo) => g.is_selected = isSelected ? 1 : 0);
 
-      // Mettre à jour les checkboxes dans le DOM (hors disabled)
-      const checkboxes = document.querySelectorAll('.game-checkbox:not(:disabled)') as NodeListOf<HTMLInputElement>;
-      checkboxes.forEach(cb => {
-        cb.checked = isSelected;
-        const listItem = cb.closest('.list-item');
-        if (listItem) listItem.classList.toggle('deselected', !isSelected);
-      });
+      // Recalculer la cascade (auto-sélections de BIOS/parents/devices) puis
+      // re-rendre complètement pour libérer les éventuels cadenas obsolètes.
+      await refreshDependencyResolution();
+      applyFiltersAndGrouping();
 
       updateGroupCheckboxes();
       updateSelectionCounter();
@@ -3820,15 +4747,23 @@ function updateGroupFilterSummary() {
   const bar = document.getElementById('active-filters-bar');
   if (!bar) return;
 
-  const selectionLabels: Record<string, string> = { 'selected': '✅ Sélectionné', 'unselected': '⬜ Non sélectionné' };
-  const changeStatusLabels: Record<string, string> = { 'new': '🆕 Nouveau', 'modified': '✏️ Modifié', 'unchanged': '⏸️ Inchangé', 'disappeared': '❌ Disparu' };
+  const selectionLabels: Record<string, string> = {
+    'selected': `✅ ${t('index.selectionStatus.selected')}`,
+    'unselected': `⬜ ${t('index.selectionStatus.unselected')}`
+  };
+  const changeStatusLabels: Record<string, string> = {
+    'new': `🆕 ${t('index.changeStatus.new')}`,
+    'modified': `✏️ ${t('index.changeStatus.modified')}`,
+    'unchanged': `⏸️ ${t('index.changeStatus.unchanged')}`,
+    'disappeared': `❌ ${t('index.changeStatus.disappeared')}`
+  };
 
   // Définir les groupes de filtres avec leur label, set actif et fonction de label
   const filterGroups: Array<{ label: string; activeSet: Set<string>; getDisplayName: (key: string) => string; containerId: string }> = [
-    { label: 'Catégorie', activeSet: activeFilters, getDisplayName: (k) => k, containerId: 'category-filters-container' },
-    { label: 'Matching', activeSet: activeMatchFilters, getDisplayName: (k) => `${matchStatusIcons[k]} ${matchStatusLabels[k]}`, containerId: 'match-status-filters-container' },
-    { label: 'Sélection', activeSet: activeSelectionFilters, getDisplayName: (k) => selectionLabels[k] || k, containerId: 'selection-filters-container' },
-    { label: 'Évolution DAT', activeSet: activeChangeFilters, getDisplayName: (k) => changeStatusLabels[k] || k, containerId: 'change-status-filters-container' }
+    { label: t('index.filters.groupCategory'), activeSet: activeFilters, getDisplayName: (k) => k, containerId: 'category-filters-container' },
+    { label: t('index.filters.matching'), activeSet: activeMatchFilters, getDisplayName: (k) => `${matchStatusIcons[k]} ${matchStatusLabel(k)}`, containerId: 'match-status-filters-container' },
+    { label: t('index.filters.groupSelection'), activeSet: activeSelectionFilters, getDisplayName: (k) => selectionLabels[k] || k, containerId: 'selection-filters-container' },
+    { label: t('index.filters.groupChangeStatus'), activeSet: activeChangeFilters, getDisplayName: (k) => changeStatusLabels[k] || k, containerId: 'change-status-filters-container' }
   ];
 
   const activeGroups = filterGroups.filter(g => g.activeSet.size > 0);
@@ -3893,7 +4828,7 @@ function updateGroupFilterSummary() {
   if (activeGroups.length > 1) {
     const clearAll = document.createElement('span');
     clearAll.className = 'clear-all-filters';
-    clearAll.textContent = '✕ Tout effacer';
+    clearAll.textContent = `✕ ${t('index.filters.clearAll')}`;
     clearAll.addEventListener('click', () => {
       filterGroups.forEach(group => clearFilterGroup(group));
     });
@@ -3901,8 +4836,29 @@ function updateGroupFilterSummary() {
   }
 }
 
+/**
+ * Rafraîchissement à chaud après un changement de langue : retraduit le DOM
+ * statique puis re-rend les zones dynamiques via les fonctions existantes.
+ * Préserve l'état de l'application (base ouverte, sélection, panneau de logs) —
+ * contrairement à un location.reload().
+ */
+async function handleLanguageChanged(): Promise<void> {
+  await refreshTranslations();
+  updateLeftSidebar();
+  await updateDbInfoBanner();
+  updateWorkflowButtons();
+  if (matchingComplete) {
+    await displayMatchingReport('matching-report');
+  }
+  if (selectedElement) {
+    await updateCenterContent(selectedElement.type, selectedElement.value);
+  }
+}
+
 // Initialisation
-document.addEventListener('DOMContentLoaded', () => {
+document.addEventListener('DOMContentLoaded', async () => {
+  // Traductions d'abord : le DOM statique et tous les textes dynamiques en dépendent
+  await initI18n({ onLanguageChanged: handleLanguageChanged });
   initSplitters();
   setupContextMenu();
   setupViewControls();
@@ -3924,5 +4880,5 @@ document.addEventListener('DOMContentLoaded', () => {
     window.api.openDatDownloadWindow();
   });
 
-  log('RUMCET est prêt ! Utilisez le menu Fichier ou les boutons pour commencer.', { context: 'welcome' });
+  log('logs.welcome.ready', { context: 'welcome' });
 }, { once: true });

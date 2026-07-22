@@ -55,6 +55,17 @@ export interface AppSettings {
   protectFilesForUnselectedGames: boolean;
 
   // ========================================
+  // ONGLET ARCADE (MAME)
+  // ========================================
+  arcadeTargetSetMode?: 'split' | 'non-merged' | 'merged';
+  /** Ranger les sets BIOS dans un sous-dossier bios/ (DAT MAME). */
+  arcadeSeparateBios?: boolean;
+  /** Ranger chaque CHD dans un sous-dossier au nom du jeu (DAT MAME). */
+  arcadeChdSubfolder?: boolean;
+  /** Créer un .zip vide pour les jeux CHD-only (visibilité Recalbox). */
+  arcadeChdEmptyZip?: boolean;
+
+  // ========================================
   // ONGLET GÉNÉRAL - Mise à jour DAT
   // ========================================
   autoSelectNewGames: boolean;
@@ -214,10 +225,12 @@ export interface NoIntroFormParams {
 }
 
 export interface DatDownloadParams {
-  type: 'system' | 'mame';
+  type: 'system' | 'mame' | 'pleasuredome';
   source?: 'no-intro' | 'redump';
   systemId?: string;
   mameVersion?: string;
+  /** Pleasuredome : URL directe de l'archive DAT à télécharger. */
+  url?: string;
   destFolder: string;
   noIntroParams?: NoIntroFormParams;
 }
@@ -228,23 +241,46 @@ export interface DatDownloadResult {
   error?: string;
 }
 
+/** Une entrée DAT listée sur la page MAME de Pleasuredome. */
+export interface PleasuredomeDatEntry {
+  /** Libellé lisible, ex : "MAME 0.288 ROMs (split)". */
+  name: string;
+  /** URL absolue de l'archive (zip) contenant le DAT. */
+  url: string;
+}
+
 // ========================================
 // INTERFACES POUR LE TÉLÉCHARGEMENT DE ROMS
 // ========================================
+
+export type DownloadExtensionSource = 'global' | 'sysCompressed' | 'datRaw' | 'extraRaw' | 'manual';
+
+export interface DownloadExtensionEntry {
+  ext: string;
+  source: DownloadExtensionSource;
+  isArchive: boolean;
+}
+
+export interface ExtensionPickerData {
+  activeExtensions: DownloadExtensionEntry[];
+}
 
 export interface DownloadSource {
   id: string;
   name: string;
   baseUrl: string;
   enabled: boolean;
-  extensions?: string[];
-  systemExtensions?: Record<string, string[]>;
+  systems?: DownloadSourceSystem[];
 }
 
-export interface SystemDownloadExtensions {
+export interface DownloadSourceSystem {
   systemId: string;
-  extensions: string[];
+  subfolder?: string;
+  /** Si défini, surcharge la résolution globale pour ce couple source × système. */
+  override?: ExtensionPickerData;
 }
+
+export type SystemDownloadExtensions = { systemId: string } & ExtensionPickerData;
 
 export interface RomDownloadProgress {
   phase: 'preparing' | 'local-search' | 'downloading' | 'extracting' | 'hashing' | 'matching' | 'consolidating' | 'incomplete' | 'complete';
@@ -254,7 +290,10 @@ export interface RomDownloadProgress {
   currentSource?: string;
   currentExtension?: string;
   downloadPercent?: number;
-  message: string;
+  /** Clé i18n du message (résolue dans la langue de l'UI par le renderer). */
+  key: string;
+  /** Paramètres d'interpolation {nom} de la clé. */
+  params?: Record<string, string | number>;
 }
 
 export interface RomDownloadGameResult {
@@ -301,7 +340,10 @@ export interface ScanStats {
 export interface LogMessage {
   severity: string;
   context: string;
-  message: string;
+  /** Clé i18n du message (ou texte brut si la clé n'existe pas dans les dictionnaires). */
+  key: string;
+  /** Paramètres d'interpolation {nom} de la clé. */
+  params?: Record<string, string | number>;
 }
 
 export interface ArchiveFile {
@@ -384,7 +426,10 @@ export interface ConsolidationProgress {
   currentGame?: string;
   currentGameIndex: number;
   totalGames: number;
-  message: string;
+  /** Clé i18n du message (résolue dans la langue de l'UI par le renderer). */
+  key: string;
+  /** Paramètres d'interpolation {nom} de la clé. */
+  params?: Record<string, string | number>;
 }
 
 export interface ConsolidationResult {
@@ -558,6 +603,42 @@ declare global {
       loadDatFile: (filePath: string) => Promise<DatLoadResult>;
 
       /**
+       * Phase 9 — Charge un DAT complémentaire pour étendre la DB active (typiquement
+       * un DAT CHDs qui vient s'ajouter à un DAT ROMs déjà chargé, ou un pack BIOS,
+       * homebrew, etc.). Ouvre un dialog de sélection de fichier. Les jeux
+       * déjà présents en DB voient uniquement leurs ROMs manquantes ajoutées ;
+       * les nouveaux jeux sont créés. Retourne un résumé de ce qui a été ajouté,
+       * ou null si l'utilisateur a annulé le dialog.
+       */
+      loadComplementaryDat: () => Promise<{
+        success: boolean;
+        datPath: string;
+        datName: string;
+        datVersion: string | null;
+        gamesCount: number;
+        romsCount: number;
+        disksCount: number;
+        relationshipsCount: number;
+        sourceId: number;
+      } | null>;
+
+      /**
+       * Phase 9 — Liste des sources DAT chargées dans la DB courante (primaire + complémentaires).
+       */
+      listDatSources: () => Promise<Array<{
+        id: number;
+        file_path: string | null;
+        role: 'primary' | 'complementary';
+        dat_name: string | null;
+        dat_description: string | null;
+        dat_version: string | null;
+        dat_set_mode: string | null;
+        games_added: number;
+        roms_added: number;
+        loaded_at: string;
+      }>>;
+
+      /**
        * Mettre à jour le DAT : snapshot, import nouveau DAT, comparaison.
        */
       updateDat: () => Promise<DatUpdateResult | null>;
@@ -670,6 +751,17 @@ declare global {
        * @param isSelected - true pour sélectionner, false pour désélectionner.
        */
       updateGameSelectionBulk: (gameIds: number[], isSelected: boolean) => Promise<void>;
+
+      /**
+       * Résout les dépendances arcade selon le mode cible du settings.
+       * Retourne les IDs auto-sélectionnés (parents, BIOS, devices requis par
+       * les jeux user-sélectionnés) avec leurs raisons d'inclusion.
+       */
+      resolveDependencies: () => Promise<{
+        autoIds: number[];
+        reasons: Record<number, Array<{ type: string; requiredBy: number; requiredByName: string }>>;
+        targetMode?: 'split' | 'non-merged' | 'merged';
+      }>;
 
       /**
        * Liste les fichiers d'un dossier.
@@ -895,7 +987,7 @@ declare global {
       // ========================================
 
       onMenuAction: (callback: (action: string) => void) => void;
-      onScanProgress: (callback: (data: any) => void) => void;
+      onScanProgress: (callback: (data: any) => void) => (() => void);
       onViewMode: (callback: (mode: string) => void) => void;
 
       // ========================================
@@ -904,9 +996,38 @@ declare global {
 
       getDownloadSystems: () => Promise<DatSystemInfo[]>;
       getMameVersions: () => Promise<MameVersion[]>;
+      getPleasuredomeDats: () => Promise<PleasuredomeDatEntry[]>;
       downloadDat: (params: DatDownloadParams) => Promise<DatDownloadResult>;
+      openDatPage: (params: DatDownloadParams) => Promise<DatDownloadResult>;
       openDatDownloadWindow: () => Promise<void>;
       selectDownloadFolder: () => Promise<string | null>;
+
+      /**
+       * Écran unifié de chargement DAT — contexte : base ouverte ou non
+       * (détermine le mode primaire vs complémentaire), infos de la base active,
+       * dossier DAT par défaut.
+       */
+      getDatDownloadContext: () => Promise<{
+        dbOpen: boolean;
+        dbPath: string | null;
+        datName: string | null;
+        defaultDatFolder: string;
+      }>;
+      /** Dialog de sélection d'un fichier DAT/XML local. */
+      selectLocalDat: () => Promise<string | null>;
+      /** Chemin .sqlite proposé automatiquement à partir du chemin du DAT. */
+      getDefaultDbPath: (datPath: string) => Promise<string | null>;
+      /** Dialog « Enregistrer sous » pour personnaliser le chemin de la base. */
+      browseDbPath: (suggestedPath?: string) => Promise<string | null>;
+      /**
+       * Flux unifié : crée la base + charge le DAT (primaire) si aucune base
+       * n'est ouverte, sinon fusionne en complémentaire dans la base active.
+       * Peut retourner { fileExists: true } si la base cible existe déjà et
+       * qu'overwrite n'a pas été confirmé.
+       */
+      loadDatUnified: (params: { datPath: string; dbPath?: string; overwrite?: boolean }) => Promise<any>;
+      /** Événement émis vers la fenêtre principale après un chargement réussi. */
+      onDatDownloadLoaded: (callback: (payload: any) => void) => () => void;
 
       // ========================================
       // API de téléchargement de ROMs
@@ -928,16 +1049,32 @@ declare global {
       updateMenuState: (state: { canLoadDat: boolean; canAddFolder: boolean; canCloseDatabase: boolean }) => void;
       
       // ========================================
+      // API i18n (traductions)
+      // ========================================
+
+      /**
+       * Récupère la langue courante et le dictionnaire de traductions aplati
+       * (clés pointées, repli déjà appliqué côté main).
+       */
+      getI18n: () => Promise<{ language: 'fr' | 'en'; messages: Record<string, string> }>;
+
+      /**
+       * Écoute le changement de langue (déclenché par la sauvegarde des paramètres).
+       * @param callback - Appelé avec le code de la nouvelle langue.
+       */
+      onLanguageChanged: (callback: (language: string) => void) => void;
+
+      // ========================================
       // API des logs
       // ========================================
-      
+
       /**
        * Écrit un message dans les logs.
        * @param severity - Le niveau de sévérité (info, warning, error).
        * @param context - Le contexte du log.
        * @param message - Le message à logger.
        */
-      writeLog: (severity: string, context: string, message: string) => Promise<void>;
+      writeLog: (severity: string, context: string, key: string, params?: Record<string, string | number>) => Promise<void>;
       
       /**
        * Écoute les messages de log envoyés depuis le main process.

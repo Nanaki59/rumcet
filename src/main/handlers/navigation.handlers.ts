@@ -3,6 +3,8 @@ import { IpcMain } from 'electron';
 import path from 'path';
 import { initDatabase } from '../../database/init.js';
 import { databaseService } from '../services/database.service.js';
+import { resolveDependencies } from '../../helpers/resolveDependencies.js';
+import { settingsManager, type ArcadeTargetSetMode } from '../../helpers/settingsManager.js';
 
 interface FolderFileResult {
   filePath: string;
@@ -38,7 +40,7 @@ export function registerNavigationHandlers(ipcMain: IpcMain) {
         database = await initDatabase(dbPath, false);
         databaseService.setDatabase(database);
       } catch (error) {
-        console.error('Erreur lors de la réouverture de la base:', error);
+        console.error('Error while reopening the database:', error);
         return [];
       }
     }
@@ -46,14 +48,38 @@ export function registerNavigationHandlers(ipcMain: IpcMain) {
     if (!database) return [];
 
     try {
-      const query = systemId 
-        ? 'SELECT * FROM games WHERE system_id = ? ORDER BY name'
-        : 'SELECT * FROM games ORDER BY name';
+      // has_chd : pré-calculé via EXISTS pour éviter une requête par jeu côté renderer.
+      // rom_count : nombre de ROMs « fichiers » (is_disk = 0). Les CHD ne sont PAS
+      //   comptés comme des ROMs (ils sont des disques séparés dans l'archive MAME).
+      // disk_count : nombre de disques (CHD, is_disk = 1) liés au jeu.
+      // La visibilité d'un jeu dans la liste (masquage des devices vides) se base
+      //   côté renderer sur rom_count + disk_count > 0 : un jeu avec seulement un CHD
+      //   (disque orphelin) doit rester visible.
+      // Agrégation de dat_roms en UNE seule passe (au lieu de 3 sous-requêtes
+      // corrélées par jeu, prohibitif sur un DAT MAME de ~48k jeux) puis jointure.
+      const baseQuery = `
+        SELECT
+          g.*,
+          CASE WHEN COALESCE(d.disk_count, 0) > 0 THEN 1 ELSE 0 END AS has_chd,
+          COALESCE(d.rom_count, 0) AS rom_count,
+          COALESCE(d.disk_count, 0) AS disk_count
+        FROM games g
+        LEFT JOIN (
+          SELECT game_id,
+            SUM(CASE WHEN is_disk = 0 THEN 1 ELSE 0 END) AS rom_count,
+            SUM(CASE WHEN is_disk = 1 THEN 1 ELSE 0 END) AS disk_count
+          FROM dat_roms
+          GROUP BY game_id
+        ) d ON d.game_id = g.id
+      `;
+      const query = systemId
+        ? `${baseQuery} WHERE g.system_id = ? ORDER BY g.name`
+        : `${baseQuery} ORDER BY g.name`;
 
       const games = await database.all(query, systemId ? [systemId] : []);
       return games;
     } catch (error) {
-      console.error('Erreur lors de la récupération des jeux:', error);
+      console.error('Error while retrieving games:', error);
       return [];
     }
   });
@@ -68,7 +94,7 @@ export function registerNavigationHandlers(ipcMain: IpcMain) {
         database = await initDatabase(dbPath, false);
         databaseService.setDatabase(database);
       } catch (error) {
-        console.error('Erreur lors de la réouverture de la base:', error);
+        console.error('Error while reopening the database:', error);
         return [];
       }
     }
@@ -82,7 +108,7 @@ export function registerNavigationHandlers(ipcMain: IpcMain) {
       );
       return roms;
     } catch (error) {
-      console.error('Erreur lors de la récupération des ROMs:', error);
+      console.error('Error while retrieving ROMs:', error);
       return [];
     }
   });
@@ -95,23 +121,61 @@ export function registerNavigationHandlers(ipcMain: IpcMain) {
     try {
       await database.run('UPDATE games SET is_selected = ? WHERE id = ?', [isSelected ? 1 : 0, gameId]);
     } catch (error) {
-      console.error('Erreur lors de la mise à jour de la sélection:', error);
+      console.error('Error while updating selection:', error);
     }
   });
 
-  // Mettre à jour la sélection de plusieurs jeux
+  // Mettre à jour la sélection de plusieurs jeux.
+  // Chunké : SQLite limite le nombre de variables par requête (souvent 999 ou
+  // 32766 selon la version compilée). Un « Tout sélectionner » sur un DAT MAME
+  // complet (~48k jeux) dépassait la limite → SQLITE_ERROR: too many SQL variables.
   ipcMain.handle('games:update-selection-bulk', async (_event, gameIds: number[], isSelected: boolean) => {
     const database = databaseService.getDatabase();
-    if (!database) return;
+    if (!database || gameIds.length === 0) return;
+
+    const CHUNK = 900; // marge sous la limite historique de 999
+    try {
+      await database.run('BEGIN TRANSACTION');
+      for (let i = 0; i < gameIds.length; i += CHUNK) {
+        const chunk = gameIds.slice(i, i + CHUNK);
+        const placeholders = chunk.map(() => '?').join(',');
+        await database.run(
+          `UPDATE games SET is_selected = ? WHERE id IN (${placeholders})`,
+          [isSelected ? 1 : 0, ...chunk]
+        );
+      }
+      await database.run('COMMIT');
+    } catch (error) {
+      try { await database.run('ROLLBACK'); } catch { /* ignore */ }
+      console.error('Error while bulk-updating selection:', error);
+    }
+  });
+
+  // Résoudre les dépendances arcade selon le mode cible du settings.
+  // Retourne un objet sérialisable : { autoIds, reasons: { [autoId]: AutoReason[] } }
+  // - autoIds : liste des game IDs auto-sélectionnés (parents, BIOS, devices) en sus
+  //             des user-sélectionnés.
+  // - reasons : pour chaque ID auto, la liste des raisons (type + nom du demandeur).
+  ipcMain.handle('dependencies:resolve', async () => {
+    const database = databaseService.getDatabase();
+    if (!database) return { autoIds: [], reasons: {} };
 
     try {
-      const placeholders = gameIds.map(() => '?').join(',');
-      await database.run(
-        `UPDATE games SET is_selected = ? WHERE id IN (${placeholders})`,
-        [isSelected ? 1 : 0, ...gameIds]
-      );
+      const targetMode = (settingsManager.get('arcadeTargetSetMode') as ArcadeTargetSetMode) || 'split';
+      const { states, autoReasons } = await resolveDependencies(database, targetMode);
+
+      const autoIds: number[] = [];
+      const reasons: Record<number, Array<{ type: string; requiredBy: number; requiredByName: string }>> = {};
+      for (const [gameId, state] of states.entries()) {
+        if (state === 'auto') {
+          autoIds.push(gameId);
+          reasons[gameId] = autoReasons.get(gameId) || [];
+        }
+      }
+      return { autoIds, reasons, targetMode };
     } catch (error) {
-      console.error('Erreur lors de la mise à jour de la sélection en masse:', error);
+      console.error('Error while resolving dependencies:', error);
+      return { autoIds: [], reasons: {} };
     }
   });
 
@@ -125,7 +189,7 @@ export function registerNavigationHandlers(ipcMain: IpcMain) {
         database = await initDatabase(dbPath, false);
         databaseService.setDatabase(database);
       } catch (error) {
-        console.error('Erreur lors de la réouverture de la base:', error);
+        console.error('Error while reopening the database:', error);
         return { folders: [], files: [] };
       }
     }
@@ -269,7 +333,7 @@ export function registerNavigationHandlers(ipcMain: IpcMain) {
         };
       }
     } catch (error) {
-      console.error('Erreur lors de la récupération du contenu du dossier:', error);
+      console.error('Error while retrieving folder contents:', error);
       return { folders: [], files: [] };
     }
   });

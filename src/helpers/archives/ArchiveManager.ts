@@ -207,13 +207,19 @@ export class ArchiveManager extends EventEmitter {
    * @param format Format spécifique (optionnel, sinon utilise la priorité)
    */
   async createArchive(
-    files: string[], 
+    files: string[],
     outputPath: string,
     settings?: {
       archiveFormatPriority?: ArchiveFormat[];
       compressionLevel?: 'fastest' | 'normal' | 'maximum';
       solidArchive?: boolean;
       multithreading?: boolean;
+      /**
+       * Phase 6 — CWD pour l'opération 7z. Quand défini, `files` doit contenir
+       * des chemins RELATIFS à ce répertoire pour que 7z préserve la structure
+       * des sous-dossiers dans l'archive (nécessaire pour les sets MAME merged).
+       */
+      workingDirectory?: string;
     },
     format?: ArchiveFormat
   ): Promise<string> {
@@ -273,7 +279,8 @@ export class ArchiveManager extends EventEmitter {
         outputPath: outputPath,
         compressionLevel: numericLevel,
         solidArchive: settings?.solidArchive !== undefined ? settings.solidArchive : true,
-        multithreading: settings?.multithreading !== undefined ? settings.multithreading : true
+        multithreading: settings?.multithreading !== undefined ? settings.multithreading : true,
+        workingDirectory: settings?.workingDirectory
       };
       
       await handler.create(options);
@@ -690,7 +697,7 @@ export class ArchiveManager extends EventEmitter {
     const handler = this.getHandlerByFormat('rar');
     if (handler && handler instanceof RarHandler) {
       handler.setToolPaths(paths);
-      console.log('🔧 Chemins des outils RAR configurés:', paths);
+      console.log('🔧 RAR tool paths configured:', paths);
     }
   }
   
@@ -701,7 +708,7 @@ export class ArchiveManager extends EventEmitter {
     const handler = this.getHandlerByFormat('rar');
     if (handler && handler instanceof RarHandler) {
       handler.setToolPriority(priority);
-      console.log('🔧 Ordre de priorité des outils RAR configuré:', priority);
+      console.log('🔧 RAR tool priority order configured:', priority);
     }
   }
 }

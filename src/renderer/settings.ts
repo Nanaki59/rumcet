@@ -1,11 +1,24 @@
 // src/renderer/settings.ts
 
-import { SYSTEMS } from '../config/systems.js';
+import { SYSTEMS, type SystemDefinition } from '../config/systems.js';
+import { initI18n, refreshTranslations, t } from './i18n.js';
+import { setupConsoleCapture } from './consoleCapture.js';
+
+// Capturer les console.* de cette page vers le fichier de logs dès le chargement
+setupConsoleCapture();
+import { renderGroupedSystems, type SortMode } from './systemListRenderer.js';
+import {
+  renderExtensionPicker,
+  buildDefaultPickerData,
+  type ExtensionPickerData,
+  type ExtensionPickerSources
+} from './extensionPicker.js';
 
 // Utiliser les types depuis global.d.ts
 type ArchiveFormat = '7z' | 'zip' | 'chd';
 type CleanupScope = 'used-only' | 'all-matched';
 type RarTool = '7zip' | 'winrar' | 'unrar';
+type ArcadeTargetSetMode = 'split' | 'non-merged' | 'merged';
 
 // Types élargis (alignés avec settingsManager.ts) pour suivre Recalbox
 type SystemCategory = string;
@@ -33,6 +46,10 @@ interface AppSettings {
   cleanupScope: CleanupScope;
   protectFilesForUnselectedGames: boolean;
   autoSelectNewGames: boolean;
+  arcadeTargetSetMode?: ArcadeTargetSetMode;
+  arcadeSeparateBios?: boolean;
+  arcadeChdSubfolder?: boolean;
+  arcadeChdEmptyZip?: boolean;
   theme: 'light' | 'dark';
   language: 'fr' | 'en';
   autoScanOnStartup: boolean;
@@ -61,14 +78,14 @@ interface AppSettings {
     name: string;
     baseUrl: string;
     enabled: boolean;
-    extensions?: string[];
-    systemExtensions?: Record<string, string[]>;
+    systems?: Array<{
+      systemId: string;
+      subfolder?: string;
+      override?: ExtensionPickerData;
+    }>;
   }>;
   downloadExtensions?: string[];
-  downloadSystemExtensions?: Array<{
-    systemId: string;
-    extensions: string[];
-  }>;
+  downloadSystemExtensions?: Array<{ systemId: string } & ExtensionPickerData>;
   incompleteRomsFolder?: string;
 }
 
@@ -93,7 +110,11 @@ let currentSettings: AppSettings;
 // ============================================
 
 window.addEventListener('DOMContentLoaded', async () => {
-  console.log('Chargement des paramètres...');
+  // Traductions d'abord : le DOM statique et tous les textes dynamiques en dépendent.
+  // Pas de reload au changement de langue : c'est cette fenêtre qui le déclenche via
+  // la sauvegarde — un reload tuerait le flux « ✅ Enregistré ! » + fermeture différée.
+  await initI18n({ onLanguageChanged: refreshTranslations });
+  console.log('Loading settings...');
   await loadSettings();
   setupTabs();
 
@@ -103,6 +124,16 @@ window.addEventListener('DOMContentLoaded', async () => {
   // Tri & recherche dans la compatibilité par système
   document.getElementById('systemCompatSortMode')?.addEventListener('change', renderSystemCompatibility);
   document.getElementById('systemCompatSearch')?.addEventListener('input', renderSystemCompatibility);
+
+  // Tri & recherche dans Extensions par système (téléchargement)
+  document.getElementById('downloadSysExtSortMode')?.addEventListener('change', renderDownloadSystemExtensions);
+  document.getElementById('downloadSysExtSearch')?.addEventListener('input', renderDownloadSystemExtensions);
+  // Mise à jour des extensions globales par défaut → rafraîchir l'affichage des rappels
+  document.getElementById('downloadExtensions')?.addEventListener('input', () => {
+    const val = (document.getElementById('downloadExtensions') as HTMLInputElement).value;
+    currentSettings.downloadExtensions = val.split(',').map(s => s.trim().replace(/^\./, '')).filter(Boolean);
+    renderDownloadSystemExtensions();
+  });
 
   // Réagir au changement de la checkbox "Déplacer les fichiers non matchés" pour griser/dégriser
   document.getElementById('moveUnmatchedFiles')?.addEventListener('change', updateUnmatchedFolderEnabled);
@@ -118,6 +149,8 @@ window.addEventListener('DOMContentLoaded', async () => {
 // État persistant (entre re-renders) des groupes pliés dans la compatibilité.
 // Clé : nom du groupe primaire (type ou constructeur selon le mode de tri).
 const collapsedCompatGroups = new Set<string>();
+// Idem pour l'écran "Extensions par système" (téléchargement).
+const collapsedDownloadSysExtGroups = new Set<string>();
 
 // ============================================
 // GESTION DES ONGLETS
@@ -149,9 +182,9 @@ function setupTabs(): void {
 
 async function loadSettings(): Promise<void> {
   try {
-    console.log('Récupération des paramètres depuis l\'API...');
+    console.log('Retrieving settings from the API...');
     currentSettings = await window.api.getSettings() as AppSettings;
-    console.log('Paramètres reçus:', currentSettings);
+    console.log('Settings received:', currentSettings);
     
     // Onglet Général
     (document.getElementById('theme') as HTMLSelectElement).value = currentSettings.theme || 'light';
@@ -182,6 +215,18 @@ async function loadSettings(): Promise<void> {
     (document.getElementById('cleanupScope') as HTMLSelectElement).value = currentSettings.cleanupScope || 'used-only';
     (document.getElementById('protectFilesForUnselectedGames') as HTMLInputElement).checked = currentSettings.protectFilesForUnselectedGames !== undefined ? currentSettings.protectFilesForUnselectedGames : true;
     toggleCleanupOptions();
+
+    // Onglet Arcade — mode du set cible
+    const arcadeMode: ArcadeTargetSetMode = currentSettings.arcadeTargetSetMode || 'split';
+    const arcadeRadio = document.querySelector(
+      `input[name="arcadeTargetSetMode"][value="${arcadeMode}"]`
+    ) as HTMLInputElement | null;
+    if (arcadeRadio) arcadeRadio.checked = true;
+
+    // Onglet Arcade — organisation des dossiers (BIOS / CHD)
+    (document.getElementById('arcadeSeparateBios') as HTMLInputElement).checked = !!currentSettings.arcadeSeparateBios;
+    (document.getElementById('arcadeChdSubfolder') as HTMLInputElement).checked = !!currentSettings.arcadeChdSubfolder;
+    (document.getElementById('arcadeChdEmptyZip') as HTMLInputElement).checked = !!currentSettings.arcadeChdEmptyZip;
 
     // Onglet Archives
     (document.getElementById('compressionLevel') as HTMLSelectElement).value = currentSettings.compressionLevel || 'normal';
@@ -220,9 +265,9 @@ async function loadSettings(): Promise<void> {
     (document.getElementById('incompleteRomsFolder') as HTMLInputElement).value =
       currentSettings.incompleteRomsFolder || '';
 
-    console.log('Paramètres chargés dans l\'interface');
+    console.log('Settings loaded into the interface');
   } catch (error) {
-    console.error('Erreur lors du chargement des paramètres:', error);
+    console.error('Error while loading settings:', error);
   }
 }
 
@@ -231,7 +276,7 @@ async function loadSettings(): Promise<void> {
 // ============================================
 
 async function browseFolder(fieldId: string): Promise<void> {
-  console.log('Sélection d\'un dossier pour:', fieldId);
+  console.log('Selecting a folder for:', fieldId);
   
   let folderType = '';
   switch (fieldId) {
@@ -274,7 +319,7 @@ async function browseFolder(fieldId: string): Promise<void> {
       }
     }
   } catch (error) {
-    console.error('Erreur lors de la sélection du dossier:', error);
+    console.error('Error while selecting the folder:', error);
   }
 }
 
@@ -283,15 +328,15 @@ async function browseFolder(fieldId: string): Promise<void> {
 // ============================================
 
 async function browseFile(fieldId: string, fileName: string): Promise<void> {
-  console.log('Sélection d\'un fichier pour:', fieldId);
+  console.log('Selecting a file for:', fieldId);
   
   try {
     // openFileDialog peut retourner string | string[] | undefined
     const result = await window.api.openFileDialog({
-      title: `Sélectionner ${fileName}`,
+      title: t('settings.dialogs.selectFile', { fileName }),
       filters: [
-        { name: 'Exécutables', extensions: ['exe'] },
-        { name: 'Tous les fichiers', extensions: ['*'] }
+        { name: t('common.filterExecutables'), extensions: ['exe'] },
+        { name: t('common.filterAllFiles'), extensions: ['*'] }
       ],
       multiSelections: false
     });
@@ -303,7 +348,7 @@ async function browseFile(fieldId: string, fileName: string): Promise<void> {
       (currentSettings as any)[fieldId] = filePath;
     }
   } catch (error) {
-    console.error('Erreur lors de la sélection du fichier:', error);
+    console.error('Error while selecting the file:', error);
   }
 }
 
@@ -312,56 +357,56 @@ async function browseFile(fieldId: string, fileName: string): Promise<void> {
 // ============================================
 
 async function autoDetect7Zip(): Promise<void> {
-  console.log('Auto-détection de 7-Zip...');
+  console.log('Auto-detecting 7-Zip...');
   
   try {
     const result = await window.api.archive.detectTools();
     if (result.sevenZip) {
       (document.getElementById('sevenZipPath') as HTMLInputElement).value = result.sevenZip;
       (currentSettings as any).sevenZipPath = result.sevenZip;
-      alert('7-Zip détecté : ' + result.sevenZip);
+      alert(t('settings.tools.detectedAlert', { tool: '7-Zip', path: result.sevenZip }));
     } else {
-      alert('7-Zip non trouvé. Veuillez sélectionner manuellement le fichier 7z.exe');
+      alert(t('settings.tools.notFoundAlert', { tool: '7-Zip', file: '7z.exe' }));
     }
   } catch (error) {
-    console.error('Erreur lors de l\'auto-détection de 7-Zip:', error);
-    alert('Erreur lors de la détection automatique de 7-Zip');
+    console.error('Error while auto-detecting 7-Zip:', error);
+    alert(t('settings.tools.detectErrorAlert', { tool: '7-Zip' }));
   }
 }
 
 async function autoDetectWinRAR(): Promise<void> {
-  console.log('Auto-détection de WinRAR...');
+  console.log('Auto-detecting WinRAR...');
   
   try {
     const result = await window.api.archive.detectTools();
     if (result.winrar) {
       (document.getElementById('winrarPath') as HTMLInputElement).value = result.winrar;
       (currentSettings as any).winrarPath = result.winrar;
-      alert('WinRAR détecté : ' + result.winrar);
+      alert(t('settings.tools.detectedAlert', { tool: 'WinRAR', path: result.winrar }));
     } else {
-      alert('WinRAR non trouvé. Veuillez sélectionner manuellement le fichier Rar.exe');
+      alert(t('settings.tools.notFoundAlert', { tool: 'WinRAR', file: 'Rar.exe' }));
     }
   } catch (error) {
-    console.error('Erreur lors de l\'auto-détection de WinRAR:', error);
-    alert('Erreur lors de la détection automatique de WinRAR');
+    console.error('Error while auto-detecting WinRAR:', error);
+    alert(t('settings.tools.detectErrorAlert', { tool: 'WinRAR' }));
   }
 }
 
 async function autoDetectUnRAR(): Promise<void> {
-  console.log('Auto-détection de UnRAR...');
+  console.log('Auto-detecting UnRAR...');
   
   try {
     const result = await window.api.archive.detectTools();
     if (result.unrar) {
       (document.getElementById('unrarPath') as HTMLInputElement).value = result.unrar;
       (currentSettings as any).unrarPath = result.unrar;
-      alert('UnRAR détecté : ' + result.unrar);
+      alert(t('settings.tools.detectedAlert', { tool: 'UnRAR', path: result.unrar }));
     } else {
-      alert('UnRAR non trouvé. Veuillez sélectionner manuellement le fichier UnRAR.exe');
+      alert(t('settings.tools.notFoundAlert', { tool: 'UnRAR', file: 'UnRAR.exe' }));
     }
   } catch (error) {
-    console.error('Erreur lors de l\'auto-détection de UnRAR:', error);
-    alert('Erreur lors de la détection automatique de UnRAR');
+    console.error('Error while auto-detecting UnRAR:', error);
+    alert(t('settings.tools.detectErrorAlert', { tool: 'UnRAR' }));
   }
 }
 
@@ -542,7 +587,7 @@ function createRarToolPriorityItem(tool: RarTool, index: number): HTMLElement {
 
 function getRarToolDisplayName(tool: RarTool): string {
   const names: Record<RarTool, string> = {
-    '7zip': '7-Zip (Recommandé)',
+    '7zip': t('settings.tools.sevenZipRecommended'),
     'winrar': 'WinRAR',
     'unrar': 'UnRAR'
   };
@@ -583,177 +628,74 @@ function renderSystemCompatibility(): void {
   const container = document.getElementById('systemCompatibilityList');
   if (!container) return;
 
-  container.innerHTML = '';
-
-  // Liste de base : TOUJOURS depuis le registre central (defaultSystemCompatibility = SYSTEMS).
-  // Les surcharges utilisateur (currentSettings.systemCompatibility) ne servent qu'à
-  // remplacer les supportedFormats pour les systemId connus du registre.
+  // Map des overrides utilisateur par systemId
   const userOverrides = new Map<string, SystemCompatibility>();
   for (const ov of currentSettings.systemCompatibility ?? []) {
     userOverrides.set(ov.systemId.toLowerCase(), ov);
   }
-  const systemCompat: SystemCompatibility[] = defaultSystemCompatibility.map(base => {
-    const override = userOverrides.get(base.systemId.toLowerCase());
-    if (override && override.supportedFormats) {
-      return { ...base, supportedFormats: override.supportedFormats };
-    }
-    return base;
-  });
 
-  // Filtre par recherche
-  const searchInput = document.getElementById('systemCompatSearch') as HTMLInputElement | null;
-  const search = (searchInput?.value || '').trim().toLowerCase();
-  const filtered = search
-    ? systemCompat.filter(s =>
-        s.systemId.toLowerCase().includes(search) ||
-        s.systemName.toLowerCase().includes(search) ||
-        (s.category || '').toLowerCase().includes(search) ||
-        (s.subcategory || '').toLowerCase().includes(search)
-      )
-    : systemCompat;
-
-  // Mode de tri
   const sortSelect = document.getElementById('systemCompatSortMode') as HTMLSelectElement | null;
-  const sortMode = sortSelect?.value || 'type-then-manufacturer';
+  const sortMode = (sortSelect?.value || 'type-then-manufacturer') as SortMode;
+  const searchInput = document.getElementById('systemCompatSearch') as HTMLInputElement | null;
+  const search = searchInput?.value || '';
 
-  let grouped: Map<string, Map<string, SystemCompatibility[]>>;
-  if (sortMode === 'alphabetical') {
-    grouped = new Map();
-    grouped.set('', new Map([['', [...filtered].sort((a, b) => a.systemName.localeCompare(b.systemName))]]));
-  } else {
-    // Détermination des deux niveaux selon le mode choisi
-    const primaryKey = (s: SystemCompatibility) =>
-      sortMode === 'type-then-manufacturer'
-        ? (s.subcategory || 'autres')
-        : (s.category || 'Autres');
-    const secondaryKey = (s: SystemCompatibility) =>
-      sortMode === 'type-then-manufacturer'
-        ? (s.category || 'Autres')
-        : (s.subcategory || 'autres');
-
-    grouped = new Map();
-    for (const sys of filtered) {
-      const p = primaryKey(sys);
-      const s = secondaryKey(sys);
-      if (!grouped.has(p)) grouped.set(p, new Map());
-      const sec = grouped.get(p)!;
-      if (!sec.has(s)) sec.set(s, []);
-      sec.get(s)!.push(sys);
-    }
-
-    // Tri des clés primaires alphabétiquement (avec "Autres"/"autres" en dernier)
-    const sortedPrimary = [...grouped.keys()].sort((a, b) => {
-      const aOther = a.toLowerCase() === 'autres';
-      const bOther = b.toLowerCase() === 'autres';
-      if (aOther && !bOther) return 1;
-      if (!aOther && bOther) return -1;
-      return a.localeCompare(b);
-    });
-    grouped = new Map(sortedPrimary.map(k => [k, grouped.get(k)!]));
-  }
-
-  // Capitalise la première lettre (les types Recalbox sont en minuscules : console, handheld, ...)
-  const capitalize = (s: string) => s ? s.charAt(0).toUpperCase() + s.slice(1) : s;
-
-  for (const [primary, secondaryMap] of grouped) {
-    const section = document.createElement('div');
-    section.className = 'system-category-section';
-
-    // Conteneur du contenu pliable (sous-titres + items)
-    const content = document.createElement('div');
-    content.className = 'system-category-content';
-
-    if (primary) {
-      const catTitle = document.createElement('h4');
-      catTitle.className = 'system-category-title';
-      const isCollapsed = collapsedCompatGroups.has(primary);
-      catTitle.dataset.collapsed = isCollapsed ? '1' : '0';
-      const chevron = document.createElement('span');
-      chevron.className = 'system-category-chevron';
-      chevron.textContent = isCollapsed ? '▶' : '▼';
-      const label = document.createElement('span');
-      label.textContent = capitalize(primary);
-      catTitle.appendChild(chevron);
-      catTitle.appendChild(label);
-      catTitle.style.cursor = 'pointer';
-      catTitle.style.userSelect = 'none';
-      content.style.display = isCollapsed ? 'none' : '';
-      catTitle.addEventListener('click', () => {
-        const nowCollapsed = catTitle.dataset.collapsed !== '1';
-        catTitle.dataset.collapsed = nowCollapsed ? '1' : '0';
-        chevron.textContent = nowCollapsed ? '▶' : '▼';
-        content.style.display = nowCollapsed ? 'none' : '';
-        if (nowCollapsed) collapsedCompatGroups.add(primary);
-        else collapsedCompatGroups.delete(primary);
-      });
-      section.appendChild(catTitle);
-    }
-
-    const sortedSecondary = [...secondaryMap.keys()].sort((a, b) => a.localeCompare(b));
-    for (const secondary of sortedSecondary) {
-      const subcatSystems = secondaryMap.get(secondary)!;
-      if (secondary) {
-        const subcatTitle = document.createElement('h6');
-        subcatTitle.className = 'system-subcategory-title';
-        subcatTitle.textContent = capitalize(secondary);
-        content.appendChild(subcatTitle);
-      }
-
-    for (const system of [...subcatSystems].sort((a, b) => a.systemName.localeCompare(b.systemName))) {
-      // Récupérer les infos par défaut pour les icônes warning/unsupported
-      const defaultEntry = defaultSystemCompatibility.find(s => s.systemId === system.systemId);
-
+  renderGroupedSystems({
+    container,
+    systems: SYSTEMS,
+    sortMode,
+    search,
+    collapsed: collapsedCompatGroups,
+    renderItem: (sys: SystemDefinition) => {
       const systemDiv = document.createElement('div');
       systemDiv.className = 'system-compatibility-item';
-      systemDiv.dataset.systemId = system.systemId;
+      systemDiv.dataset.systemId = sys.systemId;
 
-      // Header : nom du système + bouton reset individuel
       const headerDiv = document.createElement('div');
       headerDiv.className = 'system-compatibility-header';
 
       const title = document.createElement('h5');
-      title.textContent = system.systemName;
+      title.textContent = sys.fullname;
       headerDiv.appendChild(title);
 
       const resetBtn = document.createElement('button');
       resetBtn.className = 'btn-reset-system';
-      resetBtn.title = `Réinitialiser ${system.systemName} aux valeurs par défaut`;
+      resetBtn.title = t('settings.compatibility.resetSystemTitle', { system: sys.fullname });
       resetBtn.textContent = '↺';
-      resetBtn.addEventListener('click', () => resetSystemCompatibility(system.systemId));
+      resetBtn.addEventListener('click', () => resetSystemCompatibility(sys.systemId));
       headerDiv.appendChild(resetBtn);
 
       systemDiv.appendChild(headerDiv);
+
+      // Formats supportés (cases à cocher) — basés sur l'override utilisateur si présent, sinon registre
+      const override = userOverrides.get(sys.systemId.toLowerCase());
+      const supported = override?.supportedFormats ?? sys.supportedFormats;
 
       const checkboxesDiv = document.createElement('div');
       checkboxesDiv.className = 'format-checkboxes';
 
       (['7z', 'zip', 'chd'] as ArchiveFormat[]).forEach(format => {
         const label = document.createElement('label');
-
         const checkbox = document.createElement('input');
         checkbox.type = 'checkbox';
-        checkbox.dataset.system = system.systemId;
+        checkbox.dataset.system = sys.systemId;
         checkbox.dataset.format = format;
-        checkbox.checked = system.supportedFormats.includes(format);
+        checkbox.checked = supported.includes(format);
 
         const formatText = document.createElement('span');
         formatText.textContent = format.toUpperCase();
 
-        // Icône warning (triangle orange) — format partiellement supporté
-        if (defaultEntry?.warningFormats?.includes(format)) {
+        if (sys.warningFormats?.includes(format)) {
           const warning = document.createElement('span');
           warning.className = 'format-icon-warning';
           warning.textContent = ' ⚠️';
-          warning.title = 'Compatibilité partielle : certains émulateurs ne supportent pas ce format';
+          warning.title = t('settings.compatibility.partialSupportTitle');
           formatText.appendChild(warning);
         }
-
-        // Icône croix rouge — format non supporté
-        if (defaultEntry?.unsupportedFormats?.includes(format)) {
+        if (sys.unsupportedFormats?.includes(format)) {
           const unsupported = document.createElement('span');
           unsupported.className = 'format-icon-unsupported';
           unsupported.textContent = ' ❌';
-          unsupported.title = 'Non supporté par les émulateurs de ce système';
+          unsupported.title = t('settings.compatibility.unsupportedTitle');
           formatText.appendChild(unsupported);
         }
 
@@ -764,20 +706,19 @@ function renderSystemCompatibility(): void {
 
       systemDiv.appendChild(checkboxesDiv);
 
-      // Affichage informatif des formats bruts (non éditables)
-      const sysDef = SYSTEMS.find(s => s.systemId === system.systemId);
-      if (sysDef && (sysDef.datRawFormats.length > 0 || sysDef.extraRawFormats.length > 0)) {
+      // Affichage informatif des formats bruts
+      if (sys.datRawFormats.length > 0 || sys.extraRawFormats.length > 0) {
         const rawInfo = document.createElement('div');
         rawInfo.className = 'raw-formats-info';
 
-        if (sysDef.datRawFormats.length > 0) {
+        if (sys.datRawFormats.length > 0) {
           const datLine = document.createElement('div');
           datLine.className = 'raw-formats-line';
           const datLabel = document.createElement('span');
           datLabel.className = 'raw-formats-label';
-          datLabel.textContent = 'Formats sans compression :';
+          datLabel.textContent = t('settings.compatibility.rawFormatsDat');
           datLine.appendChild(datLabel);
-          for (const ext of sysDef.datRawFormats) {
+          for (const ext of sys.datRawFormats) {
             const tag = document.createElement('span');
             tag.className = 'raw-format-tag raw-format-dat';
             tag.textContent = '.' + ext;
@@ -786,14 +727,14 @@ function renderSystemCompatibility(): void {
           rawInfo.appendChild(datLine);
         }
 
-        if (sysDef.extraRawFormats.length > 0) {
+        if (sys.extraRawFormats.length > 0) {
           const extraLine = document.createElement('div');
           extraLine.className = 'raw-formats-line';
           const extraLabel = document.createElement('span');
           extraLabel.className = 'raw-formats-label';
-          extraLabel.textContent = 'Autres formats lus par les émulateurs :';
+          extraLabel.textContent = t('settings.compatibility.rawFormatsExtra');
           extraLine.appendChild(extraLabel);
-          for (const ext of sysDef.extraRawFormats) {
+          for (const ext of sys.extraRawFormats) {
             const tag = document.createElement('span');
             tag.className = 'raw-format-tag raw-format-extra';
             tag.textContent = '.' + ext;
@@ -805,13 +746,9 @@ function renderSystemCompatibility(): void {
         systemDiv.appendChild(rawInfo);
       }
 
-      content.appendChild(systemDiv);
+      return systemDiv;
     }
-    } // fin subcategories loop
-
-    section.appendChild(content);
-    container.appendChild(section);
-  }
+  });
 }
 
 /**
@@ -821,7 +758,11 @@ function resetSystemCompatibility(systemId: string): void {
   const defaultConfig = defaultSystemCompatibility.find(s => s.systemId === systemId);
   if (!defaultConfig) return;
 
-  const systemDiv = document.querySelector(`.system-compatibility-item[data-system-id="${systemId}"]`);
+  // Scopé à #systemCompatibilityList : l'onglet Téléchargement (Extensions par
+  // système) réutilise la même classe .system-compatibility-item pour un widget
+  // différent (tags d'extensions) — sans ce scope, querySelector pouvait cibler
+  // la mauvaise carte (les deux onglets coexistent dans le DOM, juste masqués via CSS).
+  const systemDiv = document.querySelector(`#systemCompatibilityList .system-compatibility-item[data-system-id="${systemId}"]`);
   if (!systemDiv) return;
 
   const checkboxes = systemDiv.querySelectorAll<HTMLInputElement>('input[type="checkbox"]');
@@ -911,27 +852,26 @@ function renderDownloadSources(): void {
 
     item.innerHTML = `
       <div style="display: flex; gap: 8px; align-items: center; margin-bottom: 8px;">
-        <input type="text" class="source-name" value="${escapeHtml(source.name)}" placeholder="Nom" style="flex: 1; padding: 6px 10px; border: 1px solid #ced4da; border-radius: 4px; font-size: 13px;">
+        <input type="text" class="source-name" value="${escapeHtml(source.name)}" placeholder="${escapeHtml(t('settings.download.sourceNamePlaceholder'))}" style="flex: 1; padding: 6px 10px; border: 1px solid #ced4da; border-radius: 4px; font-size: 13px;">
         <label style="display: flex; align-items: center; gap: 4px; font-size: 13px; white-space: nowrap;">
-          <input type="checkbox" class="source-enabled" ${source.enabled ? 'checked' : ''}> Actif
+          <input type="checkbox" class="source-enabled" ${source.enabled ? 'checked' : ''}> ${escapeHtml(t('settings.download.sourceEnabled'))}
         </label>
       </div>
       <div style="display: flex; gap: 8px; align-items: center; margin-bottom: 8px;">
-        <input type="text" class="source-url" value="${escapeHtml(source.baseUrl)}" placeholder="URL de base (ex: https://example.com/roms/)" style="flex: 1; padding: 6px 10px; border: 1px solid #ced4da; border-radius: 4px; font-size: 13px;">
+        <input type="text" class="source-url" value="${escapeHtml(source.baseUrl)}" placeholder="${escapeHtml(t('settings.download.sourceUrlPlaceholder'))}" style="flex: 1; padding: 6px 10px; border: 1px solid #ced4da; border-radius: 4px; font-size: 13px;">
       </div>
-      <div style="display: flex; gap: 8px; align-items: center; margin-bottom: 8px;">
-        <input type="text" class="source-extensions" value="${(source.extensions || []).join(', ')}" placeholder="Extensions (vide = utiliser les globales)" style="flex: 1; padding: 6px 10px; border: 1px solid #ced4da; border-radius: 4px; font-size: 13px;">
-      </div>
-      <div class="source-system-overrides" style="margin-bottom: 8px;">
-        ${renderSourceSystemOverrides(source.systemExtensions || {}, index)}
-      </div>
+      <div class="source-system-overrides" style="margin-bottom: 8px;"></div>
       <div style="display: flex; gap: 6px; justify-content: flex-end;">
-        <button class="btn-secondary source-add-system" data-index="${index}" style="font-size: 12px; padding: 4px 8px;">+ Système</button>
+        <button class="btn-secondary source-add-system" data-index="${index}" style="font-size: 12px; padding: 4px 8px;">${escapeHtml(t('settings.download.addSystem'))}</button>
         <button class="btn-secondary source-move-up" data-index="${index}" style="font-size: 12px; padding: 4px 8px;" ${index === 0 ? 'disabled' : ''}>&#8593;</button>
         <button class="btn-secondary source-move-down" data-index="${index}" style="font-size: 12px; padding: 4px 8px;" ${index === sources.length - 1 ? 'disabled' : ''}>&#8595;</button>
         <button class="btn-danger source-delete" data-index="${index}" style="font-size: 12px; padding: 4px 8px;">&#10005;</button>
       </div>
     `;
+
+    // Rendu dynamique des systèmes de la source (DOM, pas innerHTML car listeners)
+    const overridesDiv = item.querySelector('.source-system-overrides') as HTMLElement;
+    renderSourceSystems(source.systems || [], index, overridesDiv);
 
     container.appendChild(item);
   });
@@ -949,30 +889,146 @@ function renderDownloadSources(): void {
   container.querySelectorAll('.source-add-system').forEach(btn => {
     btn.addEventListener('click', () => addSystemOverrideToSource(Number((btn as HTMLElement).dataset.index)));
   });
-  container.querySelectorAll('.source-system-remove').forEach(btn => {
-    btn.addEventListener('click', () => {
-      const sourceIdx = Number((btn as HTMLElement).dataset.sourceIndex);
-      const systemId = (btn as HTMLElement).dataset.systemId!;
-      removeSystemOverrideFromSource(sourceIdx, systemId);
-    });
-  });
+  // (Les boutons de suppression de système par source sont attachés directement
+  // dans renderSourceSystems, qui crée chaque ligne avec son handler.)
 }
 
-function renderSourceSystemOverrides(systemExtensions: Record<string, string[]>, sourceIndex: number): string {
-  const entries = Object.entries(systemExtensions);
-  if (entries.length === 0) return '';
+/**
+ * Rendu de la liste des systèmes associés à une source.
+ * Pour chaque système :
+ *  - nom + bouton ✕ supprimer
+ *  - sous-dossier
+ *  - case "Surcharger les extensions" : si cochée, expose un picker propre à ce
+ *    couple source × système. Sinon : message indiquant que la résolution globale s'applique.
+ */
+function renderSourceSystems(
+  sourceSystems: Array<{ systemId: string; subfolder?: string; override?: ExtensionPickerData }>,
+  sourceIndex: number,
+  container: HTMLElement
+): void {
+  container.innerHTML = '';
+  if (sourceSystems.length === 0) return;
 
-  return entries.map(([systemId, exts]) => {
-    const systemName = defaultSystemCompatibility.find(s => s.systemId === systemId)?.systemName || systemId;
-    return `<div style="display: flex; gap: 6px; align-items: center; margin-top: 4px; padding-left: 12px;">
-      <span style="font-size: 12px; color: #7f8c8d; min-width: 140px;">${escapeHtml(systemName)} :</span>
-      <input type="text" class="source-system-ext" data-source-index="${sourceIndex}" data-system-id="${systemId}"
-        value="${exts.join(', ')}" placeholder="Extensions pour ce système"
-        style="flex: 1; padding: 4px 8px; border: 1px solid #ced4da; border-radius: 4px; font-size: 12px;">
-      <button class="btn-secondary source-system-remove" data-source-index="${sourceIndex}" data-system-id="${systemId}"
-        style="font-size: 11px; padding: 2px 6px;">&#10005;</button>
-    </div>`;
-  }).join('');
+  for (const entry of sourceSystems) {
+    const sys = SYSTEMS.find(s => s.systemId === entry.systemId);
+    const displayName = sys?.fullname || entry.systemId;
+
+    const row = document.createElement('div');
+    row.className = 'source-system-row';
+    row.dataset.systemId = entry.systemId;
+    row.style.cssText = 'border: 1px dashed #dee2e6; border-radius: 4px; padding: 8px; margin-top: 6px; background: #fff;';
+
+    // Ligne 1 : nom + bouton supprimer
+    const titleRow = document.createElement('div');
+    titleRow.style.cssText = 'display:flex; align-items:center; gap:8px; margin-bottom:6px;';
+    const name = document.createElement('span');
+    name.style.cssText = 'font-size:13px; color:#2c3e50; font-weight:600; flex:1;';
+    name.textContent = displayName;
+    titleRow.appendChild(name);
+    const removeBtn = document.createElement('button');
+    removeBtn.className = 'btn-danger';
+    removeBtn.style.cssText = 'font-size:11px; padding:2px 6px;';
+    removeBtn.innerHTML = '&#10005;';
+    removeBtn.title = t('settings.download.removeSystemTitle', { system: displayName });
+    removeBtn.addEventListener('click', () => removeSystemFromSource(sourceIndex, entry.systemId));
+    titleRow.appendChild(removeBtn);
+    row.appendChild(titleRow);
+
+    // Ligne 2 : sous-dossier sur la source
+    const subfolderRow = document.createElement('div');
+    subfolderRow.style.cssText = 'display:flex; align-items:center; gap:6px; margin-bottom:6px;';
+    const subfolderLabel = document.createElement('span');
+    subfolderLabel.style.cssText = 'font-size:12px; color:#7f8c8d; min-width:120px;';
+    subfolderLabel.textContent = t('settings.download.subfolder');
+    const subfolderInput = document.createElement('input');
+    subfolderInput.type = 'text';
+    subfolderInput.className = 'source-system-subfolder';
+    subfolderInput.dataset.sourceIndex = String(sourceIndex);
+    subfolderInput.dataset.systemId = entry.systemId;
+    subfolderInput.placeholder = t('settings.download.subfolderPlaceholder');
+    subfolderInput.value = entry.subfolder || '';
+    subfolderInput.style.cssText = 'flex:1; padding:4px 8px; border:1px solid #ced4da; border-radius:4px; font-size:12px;';
+    subfolderRow.appendChild(subfolderLabel);
+    subfolderRow.appendChild(subfolderInput);
+    row.appendChild(subfolderRow);
+
+    // Ligne 3 : case "Surcharger les extensions"
+    const overrideRow = document.createElement('div');
+    overrideRow.style.cssText = 'display:flex; align-items:center; gap:6px; margin-bottom:6px;';
+    const overrideLabel = document.createElement('label');
+    overrideLabel.style.cssText = 'display:flex; align-items:center; gap:4px; font-size:12px; color:#2c3e50; cursor:pointer;';
+    const overrideCb = document.createElement('input');
+    overrideCb.type = 'checkbox';
+    overrideCb.checked = !!entry.override;
+    overrideLabel.appendChild(overrideCb);
+    const overrideText = document.createElement('span');
+    overrideText.textContent = t('settings.download.overrideExtensions');
+    overrideLabel.appendChild(overrideText);
+    overrideRow.appendChild(overrideLabel);
+    row.appendChild(overrideRow);
+
+    // Bloc picker (visible uniquement si surcharge cochée), OU message "résolution globale"
+    const pickerWrapper = document.createElement('div');
+    row.appendChild(pickerWrapper);
+
+    const renderPickerArea = () => {
+      pickerWrapper.innerHTML = '';
+      if (!overrideCb.checked) {
+        const info = document.createElement('div');
+        info.style.cssText = 'font-size:11px; color:#7f8c8d; padding:4px 0 0 6px; font-style:italic;';
+        info.textContent = t('settings.download.globalResolutionInfo');
+        pickerWrapper.appendChild(info);
+        return;
+      }
+      if (!sys) {
+        const info = document.createElement('div');
+        info.style.cssText = 'font-size:11px; color:#e67e22; padding:4px 0 0 6px;';
+        info.textContent = t('settings.download.unknownSystem');
+        pickerWrapper.appendChild(info);
+        return;
+      }
+      // Initialiser l'override si nécessaire (depuis la résolution globale)
+      if (!entry.override) {
+        const global = currentSettings.downloadSystemExtensions?.find(e => e.systemId === entry.systemId);
+        entry.override = global
+          ? { activeExtensions: [...global.activeExtensions] }
+          : buildDefaultPickerData(buildPickerSources(sys));
+      }
+      renderExtensionPicker({
+        container: pickerWrapper,
+        data: entry.override,
+        sources: buildPickerSources(sys),
+        onChange: (newData) => {
+          entry.override = newData;
+          renderPickerArea();
+        },
+        onReset: () => {
+          entry.override = buildDefaultPickerData(buildPickerSources(sys));
+          renderPickerArea();
+        }
+      });
+    };
+    overrideCb.addEventListener('change', () => {
+      if (overrideCb.checked) {
+        // sera initialisé par renderPickerArea
+      } else {
+        delete entry.override;
+      }
+      renderPickerArea();
+    });
+    renderPickerArea();
+
+    container.appendChild(row);
+  }
+}
+
+function removeSystemFromSource(sourceIndex: number, systemId: string): void {
+  if (!currentSettings?.downloadSources) return;
+  syncDownloadSourcesFromDom();
+  const source = currentSettings.downloadSources[sourceIndex];
+  if (!source?.systems) return;
+  source.systems = source.systems.filter(s => s.systemId !== systemId);
+  renderDownloadSources();
 }
 
 function escapeHtml(str: string): string {
@@ -1010,32 +1066,74 @@ function deleteDownloadSource(index: number): void {
   renderDownloadSources();
 }
 
+/**
+ * Ouvre une modale de sélection système (parmi ceux non encore associés à cette source).
+ * Au clic sur "Valider", ajoute le système à la source avec des valeurs par défaut.
+ */
 function addSystemOverrideToSource(sourceIndex: number): void {
   if (!currentSettings?.downloadSources) return;
   syncDownloadSourcesFromDom();
   const source = currentSettings.downloadSources[sourceIndex];
   if (!source) return;
-  if (!source.systemExtensions) source.systemExtensions = {};
+  if (!source.systems) source.systems = [];
 
-  // Find systems not already overridden
-  const existingIds = Object.keys(source.systemExtensions);
-  const available = defaultSystemCompatibility.filter(s => !existingIds.includes(s.systemId));
-  if (available.length === 0) return;
+  // Systèmes non encore associés
+  const existingIds = new Set(source.systems.map(s => s.systemId));
+  const available = SYSTEMS.filter(s => !existingIds.has(s.systemId));
+  if (available.length === 0) {
+    alert(t('settings.download.allSystemsUsed'));
+    return;
+  }
 
-  // Add the first available system with its default extensions
-  const sys = available[0];
-  const defaultExts = [...(sys.supportedFormats || []), ...(sys.warningFormats || [])];
-  source.systemExtensions[sys.systemId] = defaultExts;
-  renderDownloadSources();
-}
+  // Modale simple : un dropdown groupé par manufacturer
+  const overlay = document.createElement('div');
+  overlay.style.cssText = 'position:fixed; inset:0; background:rgba(0,0,0,0.5); z-index:9999; display:flex; align-items:center; justify-content:center;';
+  const dialog = document.createElement('div');
+  dialog.style.cssText = 'background:#fff; border-radius:8px; padding:20px; width:90%; max-width:480px; box-shadow:0 8px 32px rgba(0,0,0,0.25);';
+  dialog.innerHTML = `
+    <h3 style="margin:0 0 12px; color:#2c3e50;">${escapeHtml(t('settings.download.addSystemTitle'))}</h3>
+    <p style="margin:0 0 12px; color:#7f8c8d; font-size:13px;">${escapeHtml(t('settings.download.addSystemDescription'))}</p>
+    <select id="source-add-system-select" size="12" style="width:100%; padding:6px; border:1px solid #bdc3c7; border-radius:4px; font-size:13px; margin-bottom:12px;"></select>
+    <div style="display:flex; justify-content:flex-end; gap:8px;">
+      <button class="btn-secondary" id="source-add-system-cancel">${escapeHtml(t('common.cancel'))}</button>
+      <button class="btn-primary" id="source-add-system-ok" disabled>${escapeHtml(t('common.validate'))}</button>
+    </div>
+  `;
+  overlay.appendChild(dialog);
+  document.body.appendChild(overlay);
 
-function removeSystemOverrideFromSource(sourceIndex: number, systemId: string): void {
-  if (!currentSettings?.downloadSources) return;
-  syncDownloadSourcesFromDom();
-  const source = currentSettings.downloadSources[sourceIndex];
-  if (!source?.systemExtensions) return;
-  delete source.systemExtensions[systemId];
-  renderDownloadSources();
+  const select = dialog.querySelector('#source-add-system-select') as HTMLSelectElement;
+  const okBtn = dialog.querySelector('#source-add-system-ok') as HTMLButtonElement;
+  const cancelBtn = dialog.querySelector('#source-add-system-cancel') as HTMLButtonElement;
+
+  // Optgroups par manufacturer triés alphabétiquement
+  const byManu = new Map<string, typeof available>();
+  for (const sys of available) {
+    const m = sys.manufacturer || t('common.others');
+    if (!byManu.has(m)) byManu.set(m, []);
+    byManu.get(m)!.push(sys);
+  }
+  const sortedManu = [...byManu.keys()].sort((a, b) => a.localeCompare(b));
+  for (const m of sortedManu) {
+    const group = document.createElement('optgroup');
+    group.label = m;
+    for (const sys of byManu.get(m)!.sort((a, b) => a.fullname.localeCompare(b.fullname))) {
+      const opt = document.createElement('option');
+      opt.value = sys.systemId;
+      opt.textContent = sys.fullname;
+      group.appendChild(opt);
+    }
+    select.appendChild(group);
+  }
+
+  select.addEventListener('change', () => { okBtn.disabled = !select.value; });
+  cancelBtn.addEventListener('click', () => overlay.remove());
+  okBtn.addEventListener('click', () => {
+    if (!select.value) return;
+    source.systems!.push({ systemId: select.value, subfolder: '' });
+    overlay.remove();
+    renderDownloadSources();
+  });
 }
 
 function syncDownloadSourcesFromDom(): void {
@@ -1047,19 +1145,19 @@ function syncDownloadSourcesFromDom(): void {
     source.name = (item.querySelector('.source-name') as HTMLInputElement)?.value || '';
     source.baseUrl = (item.querySelector('.source-url') as HTMLInputElement)?.value || '';
     source.enabled = (item.querySelector('.source-enabled') as HTMLInputElement)?.checked ?? true;
-    const extVal = (item.querySelector('.source-extensions') as HTMLInputElement)?.value || '';
-    source.extensions = extVal ? extVal.split(',').map(s => s.trim()).filter(s => s.length > 0) : undefined;
 
-    // System overrides
-    const sysExtInputs = item.querySelectorAll('.source-system-ext');
-    if (sysExtInputs.length > 0) {
-      if (!source.systemExtensions) source.systemExtensions = {};
-      sysExtInputs.forEach(input => {
-        const sysId = (input as HTMLElement).dataset.systemId!;
-        const val = (input as HTMLInputElement).value;
-        source.systemExtensions![sysId] = val.split(',').map(s => s.trim()).filter(s => s.length > 0);
-      });
-    }
+    // Synchroniser les systèmes (subfolder + override extensions)
+    if (!source.systems) source.systems = [];
+    const sysRows = item.querySelectorAll('.source-system-row');
+    sysRows.forEach(row => {
+      const systemId = (row as HTMLElement).dataset.systemId!;
+      const entry = source.systems!.find(s => s.systemId === systemId);
+      if (!entry) return;
+      const subfolder = (row.querySelector('.source-system-subfolder') as HTMLInputElement)?.value.trim() || '';
+      entry.subfolder = subfolder || undefined;
+      // L'override est maintenu en direct dans `entry.override` par le picker (onChange).
+      // Rien à synchroniser depuis le DOM ici — la case "Surcharger" l'a déjà attaché/supprimé.
+    });
   });
 }
 
@@ -1072,41 +1170,106 @@ function collectDownloadSources(): AppSettings['downloadSources'] {
 // TÉLÉCHARGEMENT — EXTENSIONS PAR SYSTÈME
 // ============================================
 
+/** Construit les sources d'extensions disponibles pour un système donné. */
+function buildPickerSources(sys: SystemDefinition): ExtensionPickerSources {
+  return {
+    global: currentSettings.downloadExtensions || [],
+    sysCompressed: [...sys.supportedFormats, ...sys.warningFormats],
+    datRaw: sys.datRawFormats,
+    extraRaw: sys.extraRawFormats
+  };
+}
+
+/** Récupère (ou initialise) la config picker pour un système global. */
+function getDownloadSysExtData(sys: SystemDefinition): ExtensionPickerData {
+  const all = currentSettings.downloadSystemExtensions || [];
+  const found = all.find(e => e.systemId === sys.systemId);
+  if (found) {
+    return {
+      activeExtensions: [...found.activeExtensions]
+    };
+  }
+  return buildDefaultPickerData(buildPickerSources(sys));
+}
+
+function setDownloadSysExtData(systemId: string, data: ExtensionPickerData): void {
+  if (!currentSettings.downloadSystemExtensions) currentSettings.downloadSystemExtensions = [];
+  const idx = currentSettings.downloadSystemExtensions.findIndex(e => e.systemId === systemId);
+  const entry = { systemId, ...data };
+  if (idx >= 0) currentSettings.downloadSystemExtensions[idx] = entry;
+  else currentSettings.downloadSystemExtensions.push(entry);
+}
+
 function renderDownloadSystemExtensions(): void {
-  const container = document.getElementById('downloadSystemExtensionsList')!;
-  container.innerHTML = '';
-  const systemExts = currentSettings?.downloadSystemExtensions || [];
+  const container = document.getElementById('downloadSystemExtensionsList');
+  if (!container) return;
 
-  defaultSystemCompatibility.forEach(sys => {
-    const override = systemExts.find(s => s.systemId === sys.systemId);
-    const defaultExts = [...(sys.supportedFormats || []), ...(sys.warningFormats || [])];
-    const displayExts = override ? override.extensions.join(', ') : '';
+  const sortSelect = document.getElementById('downloadSysExtSortMode') as HTMLSelectElement | null;
+  const sortMode = (sortSelect?.value || 'type-then-manufacturer') as SortMode;
+  const searchInput = document.getElementById('downloadSysExtSearch') as HTMLInputElement | null;
+  const search = searchInput?.value || '';
 
-    const row = document.createElement('div');
-    row.style.cssText = 'display: flex; gap: 8px; align-items: center; margin-bottom: 4px;';
-    row.innerHTML = `
-      <span style="font-size: 13px; min-width: 220px; color: #2c3e50;">${escapeHtml(sys.systemName)}</span>
-      <input type="text" class="system-dl-ext" data-system-id="${sys.systemId}"
-        value="${escapeHtml(displayExts)}" placeholder="${defaultExts.join(', ')}"
-        style="flex: 1; padding: 5px 8px; border: 1px solid #ced4da; border-radius: 4px; font-size: 12px;">
-    `;
-    container.appendChild(row);
+  renderGroupedSystems({
+    container,
+    systems: SYSTEMS,
+    sortMode,
+    search,
+    collapsed: collapsedDownloadSysExtGroups,
+    renderItem: (sys: SystemDefinition) => {
+      const card = document.createElement('div');
+      card.className = 'system-compatibility-item';
+      card.dataset.systemId = sys.systemId;
+
+      // Header : nom + bouton reset (le bouton ↺ sera dans le picker lui-même)
+      const headerDiv = document.createElement('div');
+      headerDiv.className = 'system-compatibility-header';
+      const title = document.createElement('h5');
+      title.textContent = sys.fullname;
+      headerDiv.appendChild(title);
+      card.appendChild(headerDiv);
+
+      // Container du picker
+      const pickerDiv = document.createElement('div');
+      card.appendChild(pickerDiv);
+
+      const data = getDownloadSysExtData(sys);
+      const sources = buildPickerSources(sys);
+
+      const renderHere = () => {
+        renderExtensionPicker({
+          container: pickerDiv,
+          data,
+          sources,
+          onChange: (newData) => {
+            setDownloadSysExtData(sys.systemId, newData);
+            renderHere();
+          },
+          onReset: () => {
+            const fresh = buildDefaultPickerData(sources);
+            setDownloadSysExtData(sys.systemId, fresh);
+            renderDownloadSystemExtensions();
+          }
+        });
+      };
+      renderHere();
+      return card;
+    }
   });
 }
 
+/** Réinitialise tous les systèmes aux valeurs par défaut (toutes les extensions sources actives). */
+function resetAllDownloadSystemExtensions(): void {
+  currentSettings.downloadSystemExtensions = SYSTEMS.map(s => ({
+    systemId: s.systemId,
+    ...buildDefaultPickerData(buildPickerSources(s))
+  }));
+  renderDownloadSystemExtensions();
+}
+(window as any).resetAllDownloadSystemExtensions = resetAllDownloadSystemExtensions;
+
+/** Collecte la config par système depuis l'état édité en mémoire (déjà tenu à jour par les listeners). */
 function collectDownloadSystemExtensions(): AppSettings['downloadSystemExtensions'] {
-  const result: Array<{ systemId: string; extensions: string[] }> = [];
-  document.querySelectorAll('.system-dl-ext').forEach(input => {
-    const systemId = (input as HTMLElement).dataset.systemId!;
-    const val = (input as HTMLInputElement).value.trim();
-    if (val) {
-      result.push({
-        systemId,
-        extensions: val.split(',').map(s => s.trim()).filter(s => s.length > 0)
-      });
-    }
-  });
-  return result;
+  return (currentSettings.downloadSystemExtensions || []).map(e => ({ ...e }));
 }
 
 // ============================================
@@ -1115,11 +1278,18 @@ function collectDownloadSystemExtensions(): AppSettings['downloadSystemExtension
 
 async function saveSettings(): Promise<void> {
   try {
-    console.log('Sauvegarde des paramètres...');
+    console.log('Saving settings...');
     
-    // Collecter la compatibilité système
+    // Collecter la compatibilité système.
+    // Scopé à #systemCompatibilityList : sans ce scope, cette requête récupérait
+    // AUSSI les cartes de l'onglet Téléchargement (Extensions par système), qui
+    // réutilisent la même classe .system-compatibility-item pour un widget différent
+    // (tags d'extensions, sans cases 7z/zip/chd). Résultat : un doublon par système
+    // était poussé dans systemCompatibility à chaque sauvegarde, avec des formats
+    // vides pour la copie fantôme — corrompant systemCompatibility en mémoire jusqu'au
+    // prochain redémarrage (où le dédoublonnage au chargement rattrapait le coup).
     const systemCompatibility: SystemCompatibility[] = [];
-    const systemItems = document.querySelectorAll('.system-compatibility-item');
+    const systemItems = document.querySelectorAll('#systemCompatibilityList .system-compatibility-item');
 
     systemItems.forEach(item => {
       const systemId = (item as HTMLElement).dataset.systemId!;
@@ -1164,6 +1334,12 @@ async function saveSettings(): Promise<void> {
       cleanupScope: (document.getElementById('cleanupScope') as HTMLSelectElement).value as CleanupScope,
       protectFilesForUnselectedGames: (document.getElementById('protectFilesForUnselectedGames') as HTMLInputElement).checked,
 
+      // Arcade — mode du set cible (MAME uniquement, ignoré pour les autres systèmes)
+      arcadeTargetSetMode: ((document.querySelector('input[name="arcadeTargetSetMode"]:checked') as HTMLInputElement | null)?.value as ArcadeTargetSetMode) || 'split',
+      arcadeSeparateBios: (document.getElementById('arcadeSeparateBios') as HTMLInputElement).checked,
+      arcadeChdSubfolder: (document.getElementById('arcadeChdSubfolder') as HTMLInputElement).checked,
+      arcadeChdEmptyZip: (document.getElementById('arcadeChdEmptyZip') as HTMLInputElement).checked,
+
       // Compression
       compressionLevel: (document.getElementById('compressionLevel') as HTMLSelectElement).value as any,
       recreateArchivesIfNeeded: (document.getElementById('recreateArchivesIfNeeded') as HTMLInputElement).checked,
@@ -1200,25 +1376,25 @@ async function saveSettings(): Promise<void> {
       incompleteRomsFolder: (document.getElementById('incompleteRomsFolder') as HTMLInputElement).value,
     };
 
-    console.log('Nouveaux paramètres à sauvegarder:', newSettings);
+    console.log('New settings to save:', newSettings);
 
     await window.api.updateSettings(newSettings);
-    console.log('Paramètres sauvegardés avec succès');
+    console.log('Settings saved successfully');
     
     const status = document.getElementById('save-status');
     if (status) {
-      status.textContent = '✅ Enregistré !';
+      status.textContent = t('settings.savedStatus');
       setTimeout(() => {
         status.textContent = '';
       }, 2000);
     }
-    
+
     setTimeout(() => {
       window.close();
     }, 1000);
   } catch (error) {
-    console.error('Erreur lors de l\'enregistrement:', error);
-    alert('Erreur lors de l\'enregistrement : ' + (error as Error).message);
+    console.error('Error while saving:', error);
+    alert(t('settings.saveError', { error: (error as Error).message }));
   }
 }
 
@@ -1231,13 +1407,13 @@ function cancel(): void {
 }
 
 async function resetToDefaults(): Promise<void> {
-  if (confirm('Êtes-vous sûr de vouloir réinitialiser tous les paramètres ?')) {
+  if (confirm(t('settings.resetConfirm'))) {
     try {
       await window.api.resetSettings();
       await loadSettings();
-      alert('Paramètres réinitialisés !');
+      alert(t('settings.resetDone'));
     } catch (error) {
-      console.error('Erreur lors de la réinitialisation:', error);
+      console.error('Error while resetting:', error);
     }
   }
 }

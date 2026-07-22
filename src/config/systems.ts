@@ -624,7 +624,7 @@ export const SYSTEMS: SystemDefinition[] = [
     unsupportedFormats: ['chd'],
     datRawFormats: [],
     extraRawFormats: ['cmd'],
-    datNamePatterns: [/^mame|m\.a\.m\.e\./i],
+    datNamePatterns: [/^mame|m\.a\.m\.e\.|^arcade(?!\s*pc)/i],
     datSources: undefined
   },
   {

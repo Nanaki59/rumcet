@@ -171,6 +171,9 @@ contextBridge.exposeInMainWorld('api', {
   selectDatFile: () => ipcRenderer.invoke('dat:select-file'),
   createDatabase: (datPath: string, clearExisting?: boolean) => ipcRenderer.invoke('database:create', datPath, clearExisting),
   loadDatFile: (datPath: string) => ipcRenderer.invoke('dat:load', datPath) as Promise<DatLoadResult>,
+  // Phase 9 — DAT complémentaire (ex : ROMs + CHDs séparés)
+  loadComplementaryDat: () => ipcRenderer.invoke('dat:load-complementary'),
+  listDatSources: () => ipcRenderer.invoke('dat:list-sources'),
   updateDat: () => ipcRenderer.invoke('dat:update'),
   getDatUpdateReport: () => ipcRenderer.invoke('dat:get-update-report'),
   getGameDiff: (gameName: string) => ipcRenderer.invoke('dat:get-game-diff', gameName),
@@ -207,6 +210,7 @@ contextBridge.exposeInMainWorld('api', {
   listRomsByGame: (gameId: number) => ipcRenderer.invoke('roms:list-by-game', gameId),
   updateGameSelection: (gameId: number, isSelected: boolean) => ipcRenderer.invoke('games:update-selection', gameId, isSelected),
   updateGameSelectionBulk: (gameIds: number[], isSelected: boolean) => ipcRenderer.invoke('games:update-selection-bulk', gameIds, isSelected),
+  resolveDependencies: () => ipcRenderer.invoke('dependencies:resolve'),
   listFolderFiles: (folderPath: string) => ipcRenderer.invoke('folder:list-files', folderPath),
   listFolderContents: (folderPath: string, viewMode?: 'hierarchical' | 'flat') => 
     ipcRenderer.invoke('folder:list-contents', folderPath, viewMode),
@@ -261,9 +265,23 @@ contextBridge.exposeInMainWorld('api', {
 
   getDownloadSystems: () => ipcRenderer.invoke('dat-download:get-systems'),
   getMameVersions: () => ipcRenderer.invoke('dat-download:get-mame-versions'),
+  getPleasuredomeDats: () => ipcRenderer.invoke('dat-download:get-pleasuredome-dats'),
   downloadDat: (params: any) => ipcRenderer.invoke('dat-download:download', params),
+  openDatPage: (params: any) => ipcRenderer.invoke('dat-download:open-page', params),
   openDatDownloadWindow: () => ipcRenderer.invoke('dat-download:open-window'),
   selectDownloadFolder: () => ipcRenderer.invoke('dat-download:select-folder'),
+  // Écran unifié de chargement DAT (primaire / complémentaire)
+  getDatDownloadContext: () => ipcRenderer.invoke('dat-download:get-context'),
+  selectLocalDat: () => ipcRenderer.invoke('dat-download:select-local-dat'),
+  getDefaultDbPath: (datPath: string) => ipcRenderer.invoke('dat-download:get-default-db-path', datPath),
+  browseDbPath: (suggestedPath?: string) => ipcRenderer.invoke('dat-download:browse-db-path', suggestedPath),
+  loadDatUnified: (params: { datPath: string; dbPath?: string; overwrite?: boolean }) =>
+    ipcRenderer.invoke('dat-download:load', params),
+  onDatDownloadLoaded: (callback: (payload: any) => void) => {
+    const listener = (_event: any, payload: any) => callback(payload);
+    ipcRenderer.on('dat-download:loaded', listener);
+    return () => ipcRenderer.removeListener('dat-download:loaded', listener);
+  },
 
   // ========================================
   // API de téléchargement de ROMs
@@ -291,7 +309,14 @@ contextBridge.exposeInMainWorld('api', {
   },
   
   onScanProgress: (callback: (data: any) => void) => {
-    ipcRenderer.on('scan-progress', (_event, data) => callback(data));
+    // Un seul scan à la fois : les trois flux de scan (ajout de dossier, rescan,
+    // dossier validé auto) ré-enregistrent leur handler avant chaque scan. Sans
+    // nettoyage, les listeners s'accumulaient et chaque événement 'scan-progress'
+    // était loggé N fois (triple-log observé). On retire les précédents avant d'ajouter.
+    ipcRenderer.removeAllListeners('scan-progress');
+    const handler = (_event: any, data: any) => callback(data);
+    ipcRenderer.on('scan-progress', handler);
+    return () => ipcRenderer.removeListener('scan-progress', handler);
   },
 
   // ========================================
@@ -302,8 +327,17 @@ contextBridge.exposeInMainWorld('api', {
     ipcRenderer.send('menu:update-state', state);
   },
 
-  writeLog: (severity: string, context: string, message: string) =>
-    ipcRenderer.invoke('log:write', severity, context, message),
+  // ========================================
+  // API i18n (traductions)
+  // ========================================
+
+  getI18n: () => ipcRenderer.invoke('i18n:get'),
+  onLanguageChanged: (callback: (language: string) => void) => {
+    ipcRenderer.on('i18n:language-changed', (_event, language) => callback(language));
+  },
+
+  writeLog: (severity: string, context: string, key: string, params?: Record<string, string | number>) =>
+    ipcRenderer.invoke('log:write', severity, context, key, params),
   getLogHistory: () => ipcRenderer.invoke('log:get-history'),
   onLogMessage: (callback: (data: any) => void) => {
     ipcRenderer.on('log-message', (_event, data) => callback(data));

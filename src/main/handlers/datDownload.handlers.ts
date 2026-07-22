@@ -18,7 +18,7 @@
 
 // src/main/handlers/datDownload.handlers.ts
 
-import { ipcMain, app } from 'electron';
+import { ipcMain, app, shell, dialog, BrowserWindow } from 'electron';
 import https from 'https';
 import http from 'http';
 import path from 'path';
@@ -27,7 +27,13 @@ import AdmZip from 'adm-zip';
 import Seven from 'node-7z';
 import sevenBin from '7zip-bin';
 import { SYSTEMS } from '../../config/systems.js';
-import type { DatSystemInfo, MameVersion, DatDownloadParams, DatDownloadResult, NoIntroFormParams } from '../../types/global.js';
+import { settingsManager } from '../../helpers/settingsManager.js';
+import { getDatabasePathFromDat } from '../../helpers/getDatabasePathFromDat.js';
+import { databaseService } from '../services/database.service.js';
+import { getMetadata } from '../../database/init.js';
+import { createDatabaseAndLoadDat } from './database.handlers.js';
+import { loadComplementaryDatFromPath } from './dat.handlers.js';
+import type { DatSystemInfo, MameVersion, DatDownloadParams, DatDownloadResult, NoIntroFormParams, PleasuredomeDatEntry } from '../../types/global.js';
 
 const pathTo7zip = sevenBin.path7za;
 
@@ -224,7 +230,7 @@ async function fetchRecalboxMameVersions(): Promise<RecalboxMameInfo> {
       }
     }));
   } catch (error) {
-    console.warn('Impossible de récupérer les versions MAME Recalbox:', error);
+    console.warn('Unable to retrieve MAME Recalbox versions:', error);
   }
 
   return info;
@@ -320,6 +326,57 @@ async function fetchMameVersions(): Promise<MameVersion[]> {
 }
 
 // ==========================================
+// Pleasuredome (DATs MAME pré-organisés par mode : split / merged / non-merged / CHDs)
+// ==========================================
+
+const PLEASUREDOME_MAME_URL = 'https://pleasuredome.github.io/pleasuredome/mame/index.html';
+
+/**
+ * Récupère la liste des DATs MAME disponibles sur la page Pleasuredome.
+ * La page GitHub Pages liste des liens vers des archives .zip contenant chacune
+ * un fichier .dat/.xml (ex : "MAME 0.288 ROMs (split).zip").
+ *
+ * ⚠️ Les DATs Pleasuredome sont strippés des attributs relationnels
+ * (cloneof/romof/merge) — RUMCET affiche déjà un avertissement dans le bandeau
+ * quand il détecte ce cas (mode déduit du header).
+ */
+async function fetchPleasuredomeDats(): Promise<PleasuredomeDatEntry[]> {
+  const html = (await httpGet(PLEASUREDOME_MAME_URL)).toString('utf-8');
+  const entries: PleasuredomeDatEntry[] = [];
+  const seen = new Set<string>();
+
+  // Liens <a href="xxx.zip">label</a> — la page utilise des hrefs relatifs.
+  const linkRe = /<a\s+[^>]*href="([^"]+\.zip)"[^>]*>([\s\S]*?)<\/a>/gi;
+  let m: RegExpExecArray | null;
+  while ((m = linkRe.exec(html)) !== null) {
+    let url = m[1];
+    // Résoudre les URLs relatives par rapport à la page
+    try {
+      url = new URL(url, PLEASUREDOME_MAME_URL).toString();
+    } catch {
+      continue;
+    }
+    if (seen.has(url)) continue;
+    seen.add(url);
+
+    // Libellé : texte du lien sans balises, sinon nom de fichier décodé
+    let label = m[2].replace(/<[^>]+>/g, '').trim();
+    if (!label) {
+      try {
+        label = decodeURIComponent(path.basename(new URL(url).pathname, '.zip'));
+      } catch {
+        label = path.basename(url, '.zip');
+      }
+    }
+
+    entries.push({ name: label, url });
+  }
+
+  // Ne garder que les entrées MAME (la page peut lister d'autres liens de navigation)
+  return entries.filter(e => /mame/i.test(e.name) || /mame/i.test(e.url));
+}
+
+// ==========================================
 // Téléchargement des DAT
 // ==========================================
 
@@ -330,158 +387,6 @@ async function downloadRedumpDat(slug: string, destFolder: string): Promise<DatD
     return extractDatFromZip(zipBuffer, destFolder, `redump_${slug}`);
   } catch (error: any) {
     return { success: false, error: `Erreur téléchargement Redump: ${error.message}` };
-  }
-}
-
-/**
- * Requête HTTP avec gestion des cookies de session.
- * Retourne le buffer de la réponse + les headers (pour récupérer les cookies et redirections).
- */
-function httpRequest(
-  url: string,
-  options: {
-    method?: 'GET' | 'POST';
-    body?: string;
-    contentType?: string;
-    cookies?: string;
-  } = {}
-): Promise<{ buffer: Buffer; headers: http.IncomingHttpHeaders; statusCode: number; location?: string }> {
-  return new Promise((resolve, reject) => {
-    const parsed = new URL(url);
-    const protocol = parsed.protocol === 'https:' ? https : http;
-    const method = options.method || 'GET';
-
-    const reqHeaders: Record<string, string> = { 'User-Agent': USER_AGENT };
-    if (options.cookies) reqHeaders['Cookie'] = options.cookies;
-    if (options.contentType) reqHeaders['Content-Type'] = options.contentType;
-    if (options.body) reqHeaders['Content-Length'] = String(Buffer.byteLength(options.body));
-
-    const req = protocol.request({
-      hostname: parsed.hostname,
-      port: parsed.port,
-      path: parsed.pathname + parsed.search,
-      method,
-      headers: reqHeaders,
-      timeout: REQUEST_TIMEOUT
-    }, (res) => {
-      const chunks: Buffer[] = [];
-      res.on('data', (chunk: Buffer) => chunks.push(chunk));
-      res.on('end', () => {
-        resolve({
-          buffer: Buffer.concat(chunks),
-          headers: res.headers,
-          statusCode: res.statusCode || 0,
-          location: res.headers.location
-        });
-      });
-      res.on('error', reject);
-    });
-
-    req.on('error', reject);
-    req.on('timeout', () => { req.destroy(); reject(new Error('Timeout')); });
-    if (options.body) req.write(options.body);
-    req.end();
-  });
-}
-
-function extractSessionCookie(headers: http.IncomingHttpHeaders): string | null {
-  const setCookie = headers['set-cookie'];
-  if (!setCookie) return null;
-  for (const cookie of setCookie) {
-    const match = cookie.match(/PHPSESSID=([^;]+)/);
-    if (match) return match[1];
-  }
-  return null;
-}
-
-async function downloadNoIntroDat(systemId: string, destFolder: string, params?: NoIntroFormParams): Promise<DatDownloadResult> {
-  try {
-    const baseUrl = 'https://datomatic.no-intro.org';
-
-    // ── Étape 1 : GET la page de config pour obtenir le cookie de session et le nom du bouton Prepare ──
-    const configUrl = `${baseUrl}/index.php?page=download&op=dat&s=${systemId}`;
-    const step1 = await httpRequest(configUrl);
-    const sessionId = extractSessionCookie(step1.headers);
-    if (!sessionId) {
-      return { success: false, error: 'No-Intro : impossible d\'obtenir une session' };
-    }
-    const sessionCookie = `PHPSESSID=${sessionId}`;
-
-    // Extraire le nom dynamique du bouton Prepare (ex: dat_dl_2025-25)
-    const prepareMatch = step1.buffer.toString('utf-8').match(/name="(dat_dl_[^"]+)"\s+value="Prepare"/);
-    if (!prepareMatch) {
-      return { success: false, error: 'No-Intro : bouton Prepare non trouvé sur la page' };
-    }
-    const prepareButtonName = prepareMatch[1];
-
-    // ── Étape 2 : POST le formulaire avec les paramètres + bouton Prepare ──
-    const formFields: Record<string, string> = {
-      'format': '0',
-      'naming': '0',
-      'inc_bios': (params?.includeBios !== false) ? '1' : '0',
-      'release_1': '1', // Fulltitle
-      'release_2': (params?.includeProto !== false && params?.includeBeta !== false && params?.includeDemo !== false && params?.includeSample !== false) ? '1' : '0',
-      'license_1': '1',
-      'license_2': '1',
-      'license_0': '1',
-      'lifespan_1': '1',
-      'inc_adult': '1',
-      'storage_1': '1',
-      'storage_2': '1',
-      'inc_nodump': '0',
-      'inc_mia': '1',
-      'special1_filter': 'all_specials1',
-      'special2_filter': 'all_specials2',
-      'language_filter': 'all_languages',
-      'region_filter': 'all_regions',
-      [prepareButtonName]: 'Prepare'
-    };
-
-    const formBody = new URLSearchParams(formFields).toString();
-    const step2 = await httpRequest(configUrl, {
-      method: 'POST',
-      body: formBody,
-      contentType: 'application/x-www-form-urlencoded',
-      cookies: sessionCookie
-    });
-
-    // La réponse doit être une redirection 302 vers la page manager
-    if (step2.statusCode !== 302 || !step2.location) {
-      return { success: false, error: 'No-Intro : redirection attendue après Prepare non reçue' };
-    }
-
-    // ── Étape 3 : GET la page manager pour obtenir le nom du bouton Download ──
-    let managerUrl = step2.location;
-    if (managerUrl.startsWith('/') || !managerUrl.startsWith('http')) {
-      managerUrl = `${baseUrl}/${managerUrl.replace(/^\//, '')}`;
-    }
-
-    const step3 = await httpRequest(managerUrl, { cookies: sessionCookie });
-    const managerHtml = step3.buffer.toString('utf-8');
-
-    // Extraire le nom dynamique du bouton Download (un hash MD5)
-    const downloadMatch = managerHtml.match(/name="([a-f0-9]{32})"\s+value="Download!!"/);
-    if (!downloadMatch) {
-      return { success: false, error: 'No-Intro : bouton Download non trouvé sur la page manager' };
-    }
-    const downloadButtonName = downloadMatch[1];
-
-    // ── Étape 4 : POST le bouton Download pour récupérer le ZIP ──
-    const step4 = await httpRequest(managerUrl, {
-      method: 'POST',
-      body: `${downloadButtonName}=Download%21%21`,
-      contentType: 'application/x-www-form-urlencoded',
-      cookies: sessionCookie
-    });
-
-    // Vérifier que c'est bien un ZIP
-    if (step4.buffer.length < 4 || step4.buffer[0] !== 0x50 || step4.buffer[1] !== 0x4B) {
-      return { success: false, error: 'No-Intro : le serveur n\'a pas retourné un fichier ZIP' };
-    }
-
-    return extractDatFromZip(step4.buffer, destFolder, `nointro_${systemId}`);
-  } catch (error: any) {
-    return { success: false, error: `Erreur téléchargement No-Intro: ${error.message}` };
   }
 }
 
@@ -617,7 +522,7 @@ async function extractDatFromZip(zipBuffer: Buffer, destFolder: string, prefix: 
 // Enregistrement des handlers IPC
 // ==========================================
 
-export function registerDatDownloadHandlers(): void {
+export function registerDatDownloadHandlers(getMainWindow?: () => BrowserWindow | null): void {
   ipcMain.handle('dat-download:get-systems', async () => {
     return buildUnifiedSystemList();
   });
@@ -626,38 +531,188 @@ export function registerDatDownloadHandlers(): void {
     return fetchMameVersions();
   });
 
+  ipcMain.handle('dat-download:get-pleasuredome-dats', async () => {
+    return fetchPleasuredomeDats();
+  });
+
+  /**
+   * Contexte pour l'écran unifié de chargement DAT :
+   *  - dbOpen : une base est-elle active ? (détermine primary vs complementary)
+   *  - dbPath / datName : infos de la base active (affichage du mode complémentaire)
+   *  - defaultDatFolder : dossier par défaut des DATs (destination téléchargement)
+   */
+  ipcMain.handle('dat-download:get-context', async () => {
+    const database = databaseService.getDatabase();
+    let datName: string | null = null;
+    if (database) {
+      try { datName = await getMetadata(database, 'dat_name'); } catch { /* ignore */ }
+    }
+    return {
+      dbOpen: !!database,
+      dbPath: databaseService.getDbPath() || null,
+      datName,
+      defaultDatFolder: settingsManager.get('defaultDatFolder') || ''
+    };
+  });
+
+  /** Sélection d'un fichier DAT/XML local (dialog depuis la fenêtre de chargement). */
+  ipcMain.handle('dat-download:select-local-dat', async (event) => {
+    const win = BrowserWindow.fromWebContents(event.sender);
+    const result = await dialog.showOpenDialog(win!, {
+      title: 'Sélectionner un fichier DAT/XML',
+      defaultPath: settingsManager.get('defaultDatFolder') || undefined,
+      filters: [
+        { name: 'Fichiers DAT/XML', extensions: ['dat', 'xml'] },
+        { name: 'Tous les fichiers', extensions: ['*'] }
+      ],
+      properties: ['openFile']
+    });
+    if (result.canceled || result.filePaths.length === 0) return null;
+    return result.filePaths[0];
+  });
+
+  /** Chemin de base de données proposé automatiquement à partir du nom du DAT. */
+  ipcMain.handle('dat-download:get-default-db-path', async (_event, datPath: string) => {
+    try {
+      return getDatabasePathFromDat(datPath);
+    } catch {
+      return null;
+    }
+  });
+
+  /** Dialog « Enregistrer sous » pour personnaliser l'emplacement/nom de la base. */
+  ipcMain.handle('dat-download:browse-db-path', async (event, suggestedPath?: string) => {
+    const win = BrowserWindow.fromWebContents(event.sender);
+    const result = await dialog.showSaveDialog(win!, {
+      title: 'Choisir l\'emplacement et le nom de la base de données',
+      defaultPath: suggestedPath || settingsManager.get('defaultDatabaseFolder') || undefined,
+      filters: [
+        { name: 'Base de données SQLite', extensions: ['sqlite'] },
+        { name: 'Base de données générique', extensions: ['db'] }
+      ],
+      properties: ['createDirectory']
+    });
+    if (result.canceled || !result.filePath) return null;
+    return result.filePath;
+  });
+
+  /**
+   * Flux unifié de chargement d'un DAT :
+   *  - Base fermée → crée la base (à dbPath, ou chemin auto dérivé du DAT)
+   *    et charge le DAT en PRIMAIRE.
+   *  - Base ouverte → fusionne le DAT en COMPLÉMENTAIRE dans la base active.
+   * Notifie la fenêtre principale via l'événement 'dat-download:loaded' pour
+   * qu'elle rafraîchisse son état (bandeau, liste de jeux, workflow).
+   */
+  ipcMain.handle('dat-download:load', async (_event, params: { datPath: string; dbPath?: string; overwrite?: boolean }) => {
+    const { datPath } = params;
+    if (!datPath) throw new Error('Aucun fichier DAT spécifié.');
+
+    const database = databaseService.getDatabase();
+
+    if (database) {
+      // ── Mode complémentaire ──
+      const result = await loadComplementaryDatFromPath(datPath);
+      const payload = { mode: 'complementary' as const, ...result };
+      getMainWindow?.()?.webContents.send('dat-download:loaded', payload);
+      return payload;
+    }
+
+    // ── Mode primaire : création de la base ──
+    const dbPath = params.dbPath || getDatabasePathFromDat(datPath);
+
+    // Protection écrasement : si le fichier existe et que l'appelant n'a pas
+    // confirmé, on renvoie un marqueur pour que l'UI demande confirmation.
+    if (!params.overwrite) {
+      try {
+        await fs.access(dbPath);
+        return { mode: 'primary' as const, fileExists: true, dbPath };
+      } catch {
+        // Le fichier n'existe pas — on continue
+      }
+    }
+
+    const result = await createDatabaseAndLoadDat(datPath, dbPath);
+    const payload = { mode: 'primary' as const, datPath, ...result };
+    getMainWindow?.()?.webContents.send('dat-download:loaded', payload);
+    return payload;
+  });
+
+  /**
+   * Téléchargement direct du DAT — utilisé pour Redump et MAME (sources sûres).
+   * Le téléchargement automatisé chez No-Intro entraînant des bans IP, cette
+   * source n'est PAS gérée ici : utiliser `dat-download:open-page` à la place.
+   */
   ipcMain.handle('dat-download:download', async (_event, params: DatDownloadParams): Promise<DatDownloadResult> => {
-    const { type, source, systemId, mameVersion, destFolder, noIntroParams } = params;
+    const { type, source, systemId, mameVersion, url, destFolder } = params;
 
     if (type === 'mame') {
-      if (!mameVersion) {
-        return { success: false, error: 'Version MAME non spécifiée' };
-      }
-      // Trouver l'URL de téléchargement dans la liste des versions
+      if (!mameVersion) return { success: false, error: 'Version MAME non spécifiée' };
       const versions = await fetchMameVersions();
       const version = versions.find(v => v.version === mameVersion);
-      if (!version) {
-        return { success: false, error: `Version MAME ${mameVersion} non trouvée` };
-      }
+      if (!version) return { success: false, error: `Version MAME ${mameVersion} non trouvée` };
       return downloadMameDat(version.downloadUrl, destFolder);
     }
 
+    if (type === 'pleasuredome') {
+      if (!url) return { success: false, error: 'URL Pleasuredome non spécifiée' };
+      // downloadMameDat détecte le type d'archive (zip/7z) par magic bytes
+      return downloadMameDat(url, destFolder);
+    }
+
     if (type === 'system') {
-      if (!source || !systemId) {
-        return { success: false, error: 'Source ou système non spécifié' };
-      }
-
-      if (source === 'redump') {
-        return downloadRedumpDat(systemId, destFolder);
-      }
-
+      if (!source || !systemId) return { success: false, error: 'Source ou système non spécifié' };
+      if (source === 'redump') return downloadRedumpDat(systemId, destFolder);
       if (source === 'no-intro') {
-        return downloadNoIntroDat(systemId, destFolder, noIntroParams);
+        return {
+          success: false,
+          error: 'Le téléchargement automatique No-Intro est désactivé (risque de bannissement IP). Utilisez « Ouvrir la page » pour télécharger manuellement.'
+        };
       }
-
       return { success: false, error: `Source inconnue: ${source}` };
     }
 
     return { success: false, error: `Type de téléchargement inconnu: ${type}` };
+  });
+
+  /**
+   * Ouvre la page de téléchargement officielle dans le navigateur par défaut.
+   * Utilisé pour No-Intro (toujours), Redump et MAME (en complément du direct).
+   *
+   * URLs construites :
+   *  - no-intro : https://datomatic.no-intro.org/index.php?page=download&op=dat&s={id}
+   *  - redump   : http://redump.org/datfile/{slug}/
+   *  - MAME     : URL fournie par fetchMameVersions()
+   */
+  ipcMain.handle('dat-download:open-page', async (_event, params: DatDownloadParams): Promise<DatDownloadResult> => {
+    const { type, source, systemId, mameVersion } = params;
+
+    try {
+      let url: string | null = null;
+
+      if (type === 'mame') {
+        if (!mameVersion) return { success: false, error: 'Version MAME non spécifiée' };
+        const versions = await fetchMameVersions();
+        const version = versions.find(v => v.version === mameVersion);
+        if (!version) return { success: false, error: `Version MAME ${mameVersion} non trouvée` };
+        url = version.downloadUrl;
+      } else if (type === 'pleasuredome') {
+        url = params.url || PLEASUREDOME_MAME_URL;
+      } else if (type === 'system') {
+        if (!source || !systemId) return { success: false, error: 'Source ou système non spécifié' };
+        if (source === 'redump') url = `http://redump.org/datfile/${systemId}/`;
+        else if (source === 'no-intro') url = `https://datomatic.no-intro.org/index.php?page=download&op=dat&s=${systemId}`;
+        else return { success: false, error: `Source inconnue: ${source}` };
+      } else {
+        return { success: false, error: `Type de téléchargement inconnu: ${type}` };
+      }
+
+      if (!url) return { success: false, error: 'URL non déterminée' };
+
+      await shell.openExternal(url);
+      return { success: true, filePath: url };
+    } catch (error: any) {
+      return { success: false, error: `Impossible d'ouvrir la page : ${error.message}` };
+    }
   });
 }

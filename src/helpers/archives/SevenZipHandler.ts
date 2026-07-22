@@ -205,18 +205,29 @@ export class SevenZipHandler implements IArchiveHandler {
         rawArgs.push('-md=128m', '-mfb=273');
       }
 
-      console.log(`[7z] compression mx=${mx}, solid=${options.solidArchive}, mt=${options.multithreading}`);
+      console.log(`[7z] compression mx=${mx}, solid=${options.solidArchive}, mt=${options.multithreading}${options.workingDirectory ? ', cwd=' + options.workingDirectory : ''}`);
 
       const addOptions: any = {
         $bin: this.sevenZipPath,
         method: ['0=LZMA2'],
         $raw: rawArgs
       };
-      
-      const myStream = Seven.add(options.outputPath, options.files, addOptions);
+
+      // Phase 6 : node-7z 3.0.0 ignore $cwd (bug de la lib : lifecycle.js utilise
+      // _spawnOptions qui n'est jamais peuplé). Contournement via process.chdir()
+      // temporaire autour de Seven.add — spawn() est synchrone donc le processus
+      // 7z hérite du cwd immédiatement.
+      const originalCwd = process.cwd();
+      let myStream: any;
+      try {
+        if (options.workingDirectory) process.chdir(options.workingDirectory);
+        myStream = Seven.add(options.outputPath, options.files, addOptions);
+      } finally {
+        if (options.workingDirectory) process.chdir(originalCwd);
+      }
       
       myStream.on('end', () => {
-        console.log(`[7z] ✓ archive créée : ${options.outputPath}`);
+        console.log(`[7z] ✓ archive created: ${options.outputPath}`);
         resolve();
       });
       
@@ -243,7 +254,7 @@ export class SevenZipHandler implements IArchiveHandler {
    * Note: 7z ne supporte pas vraiment les commentaires, donc cette méthode ne fait rien
    */
   async clearComments(archivePath: string): Promise<void> {
-    console.log('7z ne supporte pas les commentaires d\'archive, rien à effacer');
+    console.log('7z does not support archive comments, nothing to clear');
   }
   
   /**
@@ -264,7 +275,7 @@ export class SevenZipHandler implements IArchiveHandler {
       const myStream = Seven.add(options.archivePath, options.files, addOptions);
       
       myStream.on('end', () => {
-        console.log(`✅ Fichiers ajoutés à: ${options.archivePath}`);
+        console.log(`✅ Files added to: ${options.archivePath}`);
         resolve();
       });
       
@@ -287,7 +298,7 @@ export class SevenZipHandler implements IArchiveHandler {
       const myStream = Seven.delete(options.archivePath, options.files, deleteOptions);
       
       myStream.on('end', () => {
-        console.log(`✅ Fichiers supprimés de: ${options.archivePath}`);
+        console.log(`✅ Files removed from: ${options.archivePath}`);
         resolve();
       });
       

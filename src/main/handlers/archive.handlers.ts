@@ -34,23 +34,22 @@ export function registerArchiveHandlers(ipcMain: IpcMain, mainWindow: BrowserWin
     // Ne configurer que si au moins un chemin existe
     if (rarToolPaths.sevenZip || rarToolPaths.winrar || rarToolPaths.unrar) {
       archiveManager.setRarToolPaths(rarToolPaths);
-      console.log('🔧 Chemins RAR initialisés:', rarToolPaths);
+      console.log('🔧 RAR paths initialized:', rarToolPaths);
     }
     
     // 2. Configurer l'ordre de priorité
     if (settings.rarToolPriority && Array.isArray(settings.rarToolPriority)) {
       archiveManager.setRarToolPriority(settings.rarToolPriority);
-      console.log('🔧 Priorité RAR initialisée:', settings.rarToolPriority);
+      console.log('🔧 RAR priority initialized:', settings.rarToolPriority);
     }
     
-    sendLogToRenderer(mainWindow, 'info', 'archive', 'Configuration RAR initialisée');
+    sendLogToRenderer(mainWindow, 'info', 'archive', 'logs.archive.rarConfigured');
   }
   
   // APPELER L'INITIALISATION IMMÉDIATEMENT
   initializeRarConfiguration().catch(error => {
-    console.error('Erreur lors de l\'initialisation RAR:', error);
-    sendLogToRenderer(mainWindow, 'error', 'archive', 
-      `Erreur initialisation RAR: ${error}`);
+    console.error('Error during RAR initialization:', error);
+    sendLogToRenderer(mainWindow, 'error', 'archive', 'logs.archive.rarInitError', { error: String(error) });
   });
 
   
@@ -174,7 +173,7 @@ export function registerArchiveHandlers(ipcMain: IpcMain, mainWindow: BrowserWin
     
     if (!result.canceled && result.filePaths[0]) {
       archiveManager.setChdmanPath(result.filePaths[0]);
-      sendLogToRenderer(mainWindow, 'info', 'archive', `Chemin chdman configuré: ${result.filePaths[0]}`);
+      sendLogToRenderer(mainWindow, 'info', 'archive', 'logs.archive.toolPathSet', { tool: 'chdman', path: result.filePaths[0] });
       return result.filePaths[0];
     }
     
@@ -196,7 +195,7 @@ export function registerArchiveHandlers(ipcMain: IpcMain, mainWindow: BrowserWin
     
     if (!result.canceled && result.filePaths[0]) {
       archiveManager.setSevenZipPath(result.filePaths[0]);
-      sendLogToRenderer(mainWindow, 'info', 'archive', `Chemin 7-Zip configuré: ${result.filePaths[0]}`);
+      sendLogToRenderer(mainWindow, 'info', 'archive', 'logs.archive.toolPathSet', { tool: '7-Zip', path: result.filePaths[0] });
       return result.filePaths[0];
     }
     
@@ -231,7 +230,7 @@ export function registerArchiveHandlers(ipcMain: IpcMain, mainWindow: BrowserWin
         handler.setToolPaths(paths);
       }
       
-      sendLogToRenderer(mainWindow, 'info', 'archive', `Chemin ${toolType} configuré: ${result.filePaths[0]}`);
+      sendLogToRenderer(mainWindow, 'info', 'archive', 'logs.archive.toolPathSet', { tool: toolType, path: result.filePaths[0] });
       return result.filePaths[0];
     }
     
@@ -247,12 +246,12 @@ export function registerArchiveHandlers(ipcMain: IpcMain, mainWindow: BrowserWin
    */
   ipcMain.handle('archive:list', async (_event, archivePath: string) => {
     try {
-      sendLogToRenderer(mainWindow, 'info', 'archive', `Liste du contenu: ${path.basename(archivePath)}`);
+      sendLogToRenderer(mainWindow, 'info', 'archive', 'logs.archive.list', { file: path.basename(archivePath) });
       const contents = await archiveManager.listArchive(archivePath);
       return { success: true, contents };
     } catch (error: any) {
       const errorMsg = error.message || String(error);
-      sendLogToRenderer(mainWindow, 'error', 'archive', `Échec liste: ${errorMsg}`);
+      sendLogToRenderer(mainWindow, 'error', 'archive', 'logs.archive.listError', { error: errorMsg });
       return { success: false, error: errorMsg };
     }
   });
@@ -262,13 +261,13 @@ export function registerArchiveHandlers(ipcMain: IpcMain, mainWindow: BrowserWin
    */
   ipcMain.handle('archive:extract', async (_event, archivePath: string, outputDir: string, files?: string[]) => {
     try {
-      sendLogToRenderer(mainWindow, 'info', 'archive', `Extraction: ${path.basename(archivePath)}`);
+      sendLogToRenderer(mainWindow, 'info', 'archive', 'logs.archive.extract', { file: path.basename(archivePath) });
       await archiveManager.extractArchive(archivePath, outputDir, files);
-      sendLogToRenderer(mainWindow, 'info', 'archive', `✅ Extraction réussie`);
+      sendLogToRenderer(mainWindow, 'info', 'archive', 'logs.archive.extractDone');
       return { success: true };
     } catch (error: any) {
       const errorMsg = error.message || String(error);
-      sendLogToRenderer(mainWindow, 'error', 'archive', `Échec extraction: ${errorMsg}`);
+      sendLogToRenderer(mainWindow, 'error', 'archive', 'logs.archive.extractError', { error: errorMsg });
       return { success: false, error: errorMsg };
     }
   });
@@ -278,13 +277,13 @@ export function registerArchiveHandlers(ipcMain: IpcMain, mainWindow: BrowserWin
    */
   ipcMain.handle('archive:create', async (_event, files: string[], outputPath: string, settings?: any) => {
     try {
-      sendLogToRenderer(mainWindow, 'info', 'archive', `Création: ${path.basename(outputPath)}`);
+      sendLogToRenderer(mainWindow, 'info', 'archive', 'logs.archive.create', { file: path.basename(outputPath) });
       const createdPath = await archiveManager.createArchive(files, outputPath, settings);
-      sendLogToRenderer(mainWindow, 'info', 'archive', `✅ Archive créée: ${path.basename(createdPath)}`);
+      sendLogToRenderer(mainWindow, 'info', 'archive', 'logs.archive.created', { file: path.basename(createdPath) });
       return { success: true, archivePath: createdPath };
     } catch (error: any) {
       const errorMsg = error.message || String(error);
-      sendLogToRenderer(mainWindow, 'error', 'archive', `Échec création: ${errorMsg}`);
+      sendLogToRenderer(mainWindow, 'error', 'archive', 'logs.archive.createError', { error: errorMsg });
       return { success: false, error: errorMsg };
     }
   });
@@ -315,7 +314,7 @@ export function registerArchiveHandlers(ipcMain: IpcMain, mainWindow: BrowserWin
     
     for (const filePath of filePaths) {
       try {
-        sendLogToRenderer(mainWindow, 'info', 'archive', `Conversion CHD: ${path.basename(filePath)}`);
+        sendLogToRenderer(mainWindow, 'info', 'archive', 'logs.archive.convertChd', { file: path.basename(filePath) });
         
         const outputPath = filePath.replace(/\.[^/.]+$/, '.chd');
         await archiveManager.createArchive([filePath], outputPath);
@@ -326,7 +325,7 @@ export function registerArchiveHandlers(ipcMain: IpcMain, mainWindow: BrowserWin
           message: `Converti en ${path.basename(outputPath)}`
         });
         
-        sendLogToRenderer(mainWindow, 'info', 'archive', `✅ CHD créé: ${path.basename(outputPath)}`);
+        sendLogToRenderer(mainWindow, 'info', 'archive', 'logs.archive.chdCreated', { file: path.basename(outputPath) });
         
       } catch (error: any) {
         const errorMsg = error.message || String(error);
@@ -335,7 +334,7 @@ export function registerArchiveHandlers(ipcMain: IpcMain, mainWindow: BrowserWin
           success: false,
           message: errorMsg
         });
-        sendLogToRenderer(mainWindow, 'error', 'archive', `Échec: ${errorMsg}`);
+        sendLogToRenderer(mainWindow, 'error', 'archive', 'logs.archive.chdError', { error: errorMsg });
       }
     }
     

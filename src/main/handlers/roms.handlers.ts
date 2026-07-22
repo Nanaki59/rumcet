@@ -32,7 +32,7 @@ export function registerRomsHandlers(ipcMain: IpcMain, mainWindow: BrowserWindow
 
     try {
       for (const folderPath of folders) {
-        sendLogToRenderer(mainWindow, 'info', 'folder', `Début du scan : ${folderPath}`);
+        sendLogToRenderer(mainWindow, 'info', 'folder', 'logs.folder.scanStart', { path: folderPath });
         
         const structure = await scanFolderWithStructure(folderPath);
         
@@ -46,9 +46,9 @@ export function registerRomsHandlers(ipcMain: IpcMain, mainWindow: BrowserWindow
             });
             
             if (file.isArchive) {
-              sendLogToRenderer(mainWindow, 'info', 'archive', `Archive trouvée : ${file.fileName} (${file.archiveType})`);
+              sendLogToRenderer(mainWindow, 'info', 'archive', 'logs.archive.found', { file: file.fileName, type: file.archiveType });
             } else {
-              sendLogToRenderer(mainWindow, 'info', 'romfile', `Fichier trouvé : ${file.fileName}`);
+              sendLogToRenderer(mainWindow, 'info', 'romfile', 'logs.romfile.found', { file: file.fileName });
             }
           }
           
@@ -63,15 +63,15 @@ export function registerRomsHandlers(ipcMain: IpcMain, mainWindow: BrowserWindow
         if (database && databaseService.isDatLoaded()) {
           const fileCount = await saveScanResultsWithStructure(database, structure);
           totalFiles += fileCount;
-          sendLogToRenderer(mainWindow, 'info', 'database', `${fileCount} fichiers sauvegardés en base depuis : ${folderPath}`);
+          sendLogToRenderer(mainWindow, 'info', 'database', 'logs.database.filesSaved', { count: fileCount, path: folderPath });
         }
       }
 
-      sendLogToRenderer(mainWindow, 'info', 'folder', `Scan terminé : ${totalFiles} fichiers au total`);
+      sendLogToRenderer(mainWindow, 'info', 'folder', 'logs.folder.scanDone', { count: totalFiles });
       return { length: totalFiles };
       
     } catch (error) {
-      sendLogToRenderer(mainWindow, 'error', 'folder', `Erreur lors du scan : ${error}`);
+      sendLogToRenderer(mainWindow, 'error', 'folder', 'logs.folder.scanError', { error: String(error) });
       throw error;
     }
   });
@@ -86,7 +86,7 @@ export function registerRomsHandlers(ipcMain: IpcMain, mainWindow: BrowserWindow
       await database.run('DELETE FROM scanned_files WHERE file_path = ?', [filePath]);
       return { success: true };
     } catch (error) {
-      console.error('Erreur lors du retrait du fichier :', error);
+      console.error('Error while removing the file:', error);
       throw error;
     }
   });
@@ -102,10 +102,10 @@ export function registerRomsHandlers(ipcMain: IpcMain, mainWindow: BrowserWindow
       if (database) {
         await database.run('DELETE FROM scanned_files WHERE file_path = ?', [filePath]);
       }
-      sendLogToRenderer(mainWindow, 'info', 'folder', `Fichier déplacé vers la corbeille : ${filePath}`);
+      sendLogToRenderer(mainWindow, 'info', 'folder', 'logs.folder.fileTrashed', { path: filePath });
       return true;
     } catch (error) {
-      sendLogToRenderer(mainWindow, 'error', 'folder', `Erreur lors de la suppression du fichier : ${error}`);
+      sendLogToRenderer(mainWindow, 'error', 'folder', 'logs.folder.fileDeleteError', { error: String(error) });
       throw error;
     }
   });
@@ -125,7 +125,7 @@ export function registerRomsHandlers(ipcMain: IpcMain, mainWindow: BrowserWindow
       
       return { success: true };
     } catch (error) {
-      console.error('Erreur lors de la suppression du dossier:', error);
+      console.error('Error while deleting the folder:', error);
       throw error;
     }
   });
@@ -169,7 +169,7 @@ export function registerRomsHandlers(ipcMain: IpcMain, mainWindow: BrowserWindow
 
       return rootsWithCount;
     } catch (error) {
-      console.error('Erreur lors de la récupération des dossiers racines:', error);
+      console.error('Error while retrieving root folders:', error);
       return [];
     }
   });
@@ -187,11 +187,11 @@ export function registerRomsHandlers(ipcMain: IpcMain, mainWindow: BrowserWindow
       // Utiliser shell.trashItem pour déplacer vers la corbeille (cross-platform)
       await shell.trashItem(folderPath);
       
-      sendLogToRenderer(mainWindow, 'info', 'folder', `Dossier déplacé vers la corbeille : ${folderPath}`);
+      sendLogToRenderer(mainWindow, 'info', 'folder', 'logs.folder.folderTrashed', { path: folderPath });
       
       return true;
     } catch (error) {
-      sendLogToRenderer(mainWindow, 'error', 'folder', `Erreur lors de la suppression : ${error}`);
+      sendLogToRenderer(mainWindow, 'error', 'folder', 'logs.folder.deleteError', { error: String(error) });
       throw error;
     }
   });

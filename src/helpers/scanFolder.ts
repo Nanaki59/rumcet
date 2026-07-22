@@ -120,7 +120,7 @@ async function scanDirectoryRecursive(
           
           console.log(`✅ Archive: ${entry.name} (${scannedFile.archiveType}) - ${scannedFile.contents.length} fichiers`);
         } catch (error) {
-          console.error(`❌ Erreur scan archive ${fullPath}:`, error);
+          console.error(`❌ Archive scan error ${fullPath}:`, error);
           scannedFile.contents = [];
         }
       }
@@ -157,13 +157,17 @@ export async function saveScanResultsWithStructure(
   await db.run('BEGIN TRANSACTION');
 
   try {
-    let totalFiles = 0;
-
-    // Fonction récursive pour sauvegarder la structure
+    // Fonction récursive pour sauvegarder la structure.
+    // Retourne le nombre de fichiers de CE sous-arbre. Le compteur est LOCAL à
+    // chaque appel : auparavant une variable `totalFiles` partagée était à la fois
+    // incrémentée dans la boucle ET re-additionnée via la valeur de retour des
+    // sous-dossiers (`totalFiles += await saveStructure(...)`), ce qui doublait le
+    // total à chaque niveau de récursion (ex : 82088 pour ~35 fichiers réels).
     async function saveStructure(
-      struct: FolderStructure, 
+      struct: FolderStructure,
       parentFolderId: number | null = null
     ): Promise<number> {
+      let count = 0;
       // Insérer le dossier
       const folderResult = await db.run(
         `INSERT OR REPLACE INTO scanned_folders 
@@ -242,24 +246,25 @@ export async function saveScanResultsWithStructure(
           );
         }
         
-        totalFiles++;
+        count++;
       }
 
       insertFile.finalize();
       insertArchiveContent.finalize();
 
-      // Sauvegarder les sous-dossiers récursivement
+      // Sauvegarder les sous-dossiers récursivement (chacun retourne le nombre
+      // de fichiers de son propre sous-arbre)
       for (const subFolder of struct.subFolders) {
-        totalFiles += await saveStructure(subFolder, folderId);
+        count += await saveStructure(subFolder, folderId);
       }
 
-      return totalFiles;
+      return count;
     }
 
     const total = await saveStructure(structure);
 
     await db.run('COMMIT');
-    console.log(`✅ ${total} fichiers sauvegardés en base`);
+    console.log(`✅ ${total} files saved to the database`);
     
     return total;
 

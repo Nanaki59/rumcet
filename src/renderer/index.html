@@ -53,11 +53,17 @@
       background: linear-gradient(135deg, #ffffff 0%, #f8f9fa 100%);
       padding: 8px 12px;
       border-radius: 4px;
-      display: grid;
-      grid-template-columns: auto auto auto 1fr;
+      display: flex;
+      align-items: center;
+      flex-wrap: nowrap;
       gap: 5px 15px;
       border-left: 4px solid #3498db;
       box-shadow: 0 1px 3px rgba(0, 0, 0, 0.08);
+    }
+
+    .db-info-path {
+      flex: 1 1 auto;
+      min-width: 0;
     }
 
     .db-info-label {
@@ -87,6 +93,12 @@
       font-family: monospace;
       font-size: 11px;
       color: #7f8c8d;
+    }
+
+    /* Cellules optionnelles (Mode DAT, Mode set, Disques) placées après le chemin :
+       elles ne doivent jamais se rétrécir — c'est le chemin qui se tronque via ellipsis. */
+    .db-info-optional {
+      flex-shrink: 0;
     }
 
     .header .workflow-group {
@@ -1053,6 +1065,180 @@
       font-weight: 600;
     }
 
+    /* Phase 10 — Sélection automatique par règles */
+    .auto-select-btn {
+      padding: 4px 12px;
+      background: white;
+      border: 1px solid #ced4da;
+      border-radius: 4px;
+      font-size: 12px;
+      font-family: inherit;
+      cursor: pointer;
+      color: #2c3e50;
+      white-space: nowrap;
+    }
+
+    .auto-select-btn:hover {
+      background: #eaf4fd;
+      border-color: #3498db;
+    }
+
+    .asm-row {
+      display: flex;
+      align-items: center;
+      gap: 14px;
+      flex-wrap: wrap;
+      font-size: 13px;
+    }
+
+    .asm-row label {
+      display: flex;
+      align-items: center;
+      gap: 5px;
+      cursor: pointer;
+    }
+
+    .asm-row input[type="radio"] {
+      accent-color: #3498db;
+    }
+
+    .asm-row-label {
+      font-weight: 600;
+      color: #2c3e50;
+      font-size: 12px;
+    }
+
+    .asm-presets button {
+      padding: 4px 10px;
+      background: #f8f9fa;
+      border: 1px solid #ced4da;
+      border-radius: 12px;
+      font-size: 12px;
+      font-family: inherit;
+      cursor: pointer;
+      color: #2c3e50;
+    }
+
+    .asm-presets button:hover {
+      background: #eaf4fd;
+      border-color: #3498db;
+    }
+
+    .asm-rules {
+      display: flex;
+      flex-direction: column;
+      gap: 6px;
+      max-height: 300px;
+      overflow-y: auto;
+      border: 1px solid #dee2e6;
+      border-radius: 6px;
+      padding: 8px;
+      background: #fafbfc;
+      min-height: 46px;
+    }
+
+    .asm-rules-empty {
+      color: #95a5a6;
+      font-size: 12px;
+      font-style: italic;
+      text-align: center;
+      padding: 8px;
+    }
+
+    .asm-rule {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+    }
+
+    .asm-rule select,
+    .asm-rule input[type="text"] {
+      padding: 5px 8px;
+      border: 1px solid #ced4da;
+      border-radius: 4px;
+      font-size: 12px;
+      font-family: inherit;
+    }
+
+    .asm-rule input[type="text"] {
+      flex: 1;
+      min-width: 0;
+    }
+
+    .asm-rule .asm-value-select {
+      flex: 1;
+    }
+
+    .asm-rule-btn {
+      padding: 3px 7px;
+      background: white;
+      border: 1px solid #ced4da;
+      border-radius: 4px;
+      cursor: pointer;
+      font-size: 11px;
+      color: #2c3e50;
+      flex-shrink: 0;
+    }
+
+    .asm-rule-btn:hover:not(:disabled) {
+      background: #eaf4fd;
+    }
+
+    .asm-rule-btn:disabled {
+      opacity: 0.35;
+      cursor: default;
+    }
+
+    .asm-rule-btn.asm-delete:hover {
+      background: #fdecea;
+      border-color: #e74c3c;
+    }
+
+    .asm-preview {
+      padding: 8px 12px;
+      background: #eaf4fd;
+      border: 1px solid #bcdcf5;
+      border-radius: 6px;
+      font-size: 13px;
+      color: #21618c;
+    }
+
+    .asm-btn-primary {
+      padding: 8px 22px;
+      background: #3498db;
+      color: white;
+      border: none;
+      border-radius: 5px;
+      font-size: 13px;
+      font-weight: 600;
+      font-family: inherit;
+      cursor: pointer;
+    }
+
+    .asm-btn-primary:hover:not(:disabled) {
+      background: #2980b9;
+    }
+
+    .asm-btn-primary:disabled {
+      opacity: 0.5;
+      cursor: not-allowed;
+    }
+
+    .asm-btn-secondary {
+      padding: 8px 16px;
+      background: #ecf0f1;
+      color: #2c3e50;
+      border: 1px solid #ced4da;
+      border-radius: 5px;
+      font-size: 13px;
+      font-family: inherit;
+      cursor: pointer;
+    }
+
+    .asm-btn-secondary:hover {
+      background: #dee2e6;
+    }
+
     .game-checkbox {
       width: 16px;
       height: 16px;
@@ -1063,6 +1249,16 @@
 
     .list-item.deselected {
       opacity: 0.5;
+    }
+
+    /* Jeu auto-sélectionné par cascade arcade (parent, BIOS, device requis
+       par un jeu user-sélectionné). Cadenas + fond légèrement teinté. */
+    .list-item.auto-selected {
+      background-color: #f4f9ff;
+    }
+    .auto-lock-badge {
+      cursor: help;
+      user-select: none;
     }
 
     .match-status-badge {
@@ -1360,6 +1556,61 @@
     .rom-status-badge.rom-unknown {
       color: #95a5a6;
       background-color: rgba(149, 165, 166, 0.1);
+    }
+
+    /* Phase 3bis — Badges de type ROM (origine arcade) */
+    .rom-type-badge {
+      display: inline-block;
+      font-size: 10px;
+      font-weight: 600;
+      padding: 1px 6px;
+      border-radius: 3px;
+      white-space: nowrap;
+      cursor: help;
+      margin-left: 6px;
+      vertical-align: middle;
+    }
+    .rom-type-badge.type-own {
+      color: #2c3e50;
+      background-color: rgba(149, 165, 166, 0.18);
+    }
+    .rom-type-badge.type-inherited {
+      color: #2980b9;
+      background-color: rgba(52, 152, 219, 0.14);
+    }
+    .rom-type-badge.type-bios {
+      color: #8e44ad;
+      background-color: rgba(155, 89, 182, 0.14);
+    }
+    .rom-type-badge.type-device {
+      color: #d35400;
+      background-color: rgba(230, 126, 34, 0.14);
+    }
+    .rom-type-badge.type-disk {
+      color: #16a085;
+      background-color: rgba(26, 188, 156, 0.14);
+    }
+    .rom-type-badge.type-clone {
+      color: #c0392b;
+      background-color: rgba(231, 76, 60, 0.12);
+    }
+    .rom-type-badge.type-inlined {
+      color: #2c3e50;
+      background-color: rgba(52, 73, 94, 0.12);
+    }
+
+    /* Phase 3bis-B — Badge "+N clones" sur les parents en vue merged */
+    .clone-count-badge {
+      display: inline-block;
+      font-size: 10px;
+      font-weight: 600;
+      padding: 1px 6px;
+      border-radius: 3px;
+      color: #c0392b;
+      background-color: rgba(231, 76, 60, 0.12);
+      margin-left: 6px;
+      cursor: help;
+      vertical-align: middle;
     }
 
     .file-hash {
@@ -1822,33 +2073,22 @@
     <!-- Zone des workflows -->
     <div class="header-workflows-zone">
       <div class="header-workflows">
-        <!-- Action rapide -->
-        <div class="workflow-group">
-          <button id="dat-quick-load" class="quick-action" title="Faire les étapes 1 et 2 automatiquement">
-            ⚡ Chargement rapide
-          </button>
-        </div>
-
         <!-- Workflow en 4 étapes -->
         <div class="workflow-group">
-          <button id="dat-select" title="📖 Étape 1 : Sélectionner un fichier DAT/XML">
-            📖 1. Sélectionner DAT/XML
+          <button id="dat-load" data-i18n="index.workflow.loadDat" data-i18n-title="index.workflow.loadDatTitle" title="📖 Étape 1 : Charger un fichier DAT/XML (local ou téléchargé) — la base de données est créée automatiquement. Si une base est déjà ouverte, ajoute un DAT complémentaire.">
+            📖 1. Charger DAT/XML
           </button>
           <span class="workflow-arrow">→</span>
-          <button id="db-create" disabled title="🗄️ Étape 2 : Créer la base de données et charger les données du DAT">
-            🗄️ 2. Créer base de données
+          <button id="rom-add-folder" disabled data-i18n="index.workflow.addFolder" data-i18n-title="index.workflow.addFolderTitle" title="📂 Étape 2 : Ajouter un dossier contenant des ROMs">
+            📂 2. Ajouter dossier ROMs
           </button>
           <span class="workflow-arrow">→</span>
-          <button id="rom-add-folder" disabled title="📂 Étape 3 : Ajouter un dossier contenant des ROMs">
-            📂 3. Ajouter dossier ROMs
+          <button id="match-roms" disabled class="match-action" data-i18n="index.workflow.match" data-i18n-title="index.workflow.matchTitle" title="🎯 Étape 3 : Analyser et matcher les ROMs">
+            🎯 3. Matcher les ROMs
           </button>
           <span class="workflow-arrow">→</span>
-          <button id="match-roms" disabled class="match-action" title="🎯 Étape 4 : Analyser et matcher les ROMs">
-            🎯 4. Matcher les ROMs
-          </button>
-          <span class="workflow-arrow">→</span>
-          <button id="consolidate-roms" disabled class="match-action" title="🧹 Étape 5 : Consolider les ROMs validées">
-            🧹 5. Consolider
+          <button id="consolidate-roms" disabled class="match-action" data-i18n="index.workflow.consolidate" data-i18n-title="index.workflow.consolidateTitle" title="🧹 Étape 4 : Consolider les ROMs validées">
+            🧹 4. Consolider
           </button>
         </div>
       </div>
@@ -1857,10 +2097,16 @@
     <!-- Zone du bandeau DB -->
     <div class="header-db-zone">
       <div id="db-info-banner" class="db-info-banner">
-        <span class="db-info-label">🎮 Système :</span>
+        <span class="db-info-label" data-i18n="index.dbBanner.system">🎮 Système :</span>
         <span id="db-info-system" class="db-info-value"></span>
-        <span class="db-info-label">🗄️ Base de données :</span>
+        <span class="db-info-label" data-i18n="index.dbBanner.database">🗄️ Base de données :</span>
         <span id="db-info-path" class="db-info-value db-info-path"></span>
+        <span class="db-info-label db-info-optional" id="db-info-mode-label" data-i18n="index.dbBanner.datMode" style="display:none;">🧩 Mode DAT :</span>
+        <span id="db-info-mode" class="db-info-value db-info-optional" style="display:none;"></span>
+        <span class="db-info-label db-info-optional" id="db-info-set-mode-label" data-i18n="index.dbBanner.setMode" style="display:none;">🧱 Mode set :</span>
+        <span id="db-info-set-mode" class="db-info-value db-info-optional" style="display:none;"></span>
+        <span class="db-info-label db-info-optional" id="db-info-chd-label" data-i18n="index.dbBanner.disks" style="display:none;">💿 Disques :</span>
+        <span id="db-info-chd" class="db-info-value db-info-optional" style="display:none;"></span>
       </div>
     </div>
   </div>
@@ -1871,20 +2117,20 @@
     <div class="sidebar-left" id="sidebar-left">
       <div class="sidebar-section">
         <div class="section-header">
-          <h3>📖 Fichier DAT/XML</h3>
-          <button id="dat-download-btn" class="add-btn" title="Télécharger un fichier DAT">⬇</button>
-          <button class="collapse-btn" data-target="dat-list" title="Replier/Déplier">
+          <h3 data-i18n="index.sidebar.datSection">📖 Fichier DAT/XML</h3>
+          <button id="dat-download-btn" class="add-btn" data-i18n-title="index.sidebar.datAddTitle" title="Charger un DAT/XML (local ou téléchargé). Premier DAT : crée la base de données. DAT suivants : fusionnés en complémentaire (ex : DAT CHDs, pack BIOS).">+</button>
+          <button class="collapse-btn" data-target="dat-list" data-i18n-title="index.sidebar.collapseTitle" title="Replier/Déplier">
             <span class="chevron">▲</span>
           </button>
         </div>
         <div id="dat-list" class="section-content"></div>
       </div>
-      
+
       <div class="sidebar-section">
         <div class="section-header">
-          <h3>📂 Dossiers ROMs</h3>
-          <button id="rom-add-folder-sidebar" class="add-btn" disabled title="Ajouter un ou plusieurs dossiers de ROMs">+</button>
-          <button class="collapse-btn" data-target="folder-list" title="Replier/Déplier">
+          <h3 data-i18n="index.sidebar.foldersSection">📂 Dossiers ROMs</h3>
+          <button id="rom-add-folder-sidebar" class="add-btn" disabled data-i18n-title="index.sidebar.foldersAddTitle" title="Ajouter un ou plusieurs dossiers de ROMs">+</button>
+          <button class="collapse-btn" data-target="folder-list" data-i18n-title="index.sidebar.collapseTitle" title="Replier/Déplier">
             <span class="chevron">▲</span>
           </button>
         </div>
@@ -1894,8 +2140,8 @@
       <!-- Section du rapport de matching -->
       <div class="sidebar-section">
         <div class="section-header">
-          <h3>📊 Rapport de matching</h3>
-          <button class="collapse-btn" data-target="matching-report" title="Replier/Déplier">
+          <h3 data-i18n="index.sidebar.matchingSection">📊 Rapport de matching</h3>
+          <button class="collapse-btn" data-target="matching-report" data-i18n-title="index.sidebar.collapseTitle" title="Replier/Déplier">
             <span class="chevron">▲</span>
           </button>
         </div>
@@ -1911,12 +2157,12 @@
     <div class="content-center" id="content-center">
       <!-- Barre de recherche -->
       <div class="search-bar" id="search-bar" style="display: none;">
-        <input type="text" id="search-input" placeholder="🔍 Rechercher dans les jeux, ROMs et archives..." />
+        <input type="text" id="search-input" data-i18n-placeholder="index.search.placeholder" placeholder="🔍 Rechercher dans les jeux, ROMs et archives..." />
         <select id="search-scope">
-          <option value="all">Tout</option>
-          <option value="games">Jeux DAT</option>
-          <option value="files">Fichiers ROMs</option>
-          <option value="archives">Contenu archives</option>
+          <option value="all" data-i18n="index.search.scopeAll">Tout</option>
+          <option value="games" data-i18n="index.search.scopeGames">Jeux DAT</option>
+          <option value="files" data-i18n="index.search.scopeFiles">Fichiers ROMs</option>
+          <option value="archives" data-i18n="index.search.scopeArchives">Contenu archives</option>
         </select>
         <button id="search-clear" style="display: none;">✕</button>
       </div>
@@ -1927,21 +2173,24 @@
           <div class="group-filter-content">
             <div class="group-filter-controls" id="group-filter-controls">
               <div class="group-control">
-                <label for="group-by">Grouper par :</label>
+                <label for="group-by" data-i18n="index.filters.groupBy">Grouper par :</label>
                 <select id="group-by">
-                  <option value="none">Aucun</option>
-                  <option value="letter">Première lettre</option>
-                  <option value="category">Catégorie</option>
-                  <option value="match-status">Statut de matching</option>
-                  <option value="selection">Sélection</option>
-                  <option value="change-status">Évolution DAT</option>
+                  <option value="none" data-i18n="index.filters.groupNone">Aucun</option>
+                  <option value="letter" data-i18n="index.filters.groupLetter">Première lettre</option>
+                  <option value="category" data-i18n="index.filters.groupCategory">Catégorie</option>
+                  <option value="match-status" data-i18n="index.filters.groupMatchStatus">Statut de matching</option>
+                  <option value="selection" data-i18n="index.filters.groupSelection">Sélection</option>
+                  <option value="change-status" data-i18n="index.filters.groupChangeStatus">Évolution DAT</option>
                 </select>
               </div>
-              <span class="filter-label">Filtres :</span>
+              <span class="filter-label" data-i18n="index.filters.label">Filtres :</span>
               <div id="category-filters-container"></div>
               <div id="match-status-filters-container"></div>
               <div id="selection-filters-container"></div>
               <div id="change-status-filters-container"></div>
+              <div id="chd-filters-container"></div>
+              <div id="driver-status-filters-container"></div>
+              <div id="mame-filters-container"></div>
             </div>
             </div>
           <div class="group-filter-actions">
@@ -1957,21 +2206,22 @@
       <div class="select-all-bar" id="select-all-bar">
         <div class="select-all-label">
           <input type="checkbox" id="select-all-checkbox" checked>
-          <span>Tout sélectionner</span>
+          <span data-i18n="index.selection.selectAll">Tout sélectionner</span>
         </div>
         <span class="selection-counter" id="selection-counter"></span>
+        <button id="auto-select-btn" class="auto-select-btn" data-i18n="index.selection.autoSelectBtn" data-i18n-title="index.selection.autoSelectTitle" title="Sélection automatique par règles d'inclusion/exclusion (nom, catégorie, statut driver, CHD, clones…)">⚙️ Sélection auto</button>
       </div>
 
       <!-- Contrôles de vue maintenant dans le volet central -->
       <div class="view-controls" id="view-controls" style="display: none;">
-        <span>Mode d'affichage :</span>
+        <span data-i18n="index.view.mode">Mode d'affichage :</span>
         <label>
           <input type="radio" name="view-mode" value="hierarchical" checked>
-          Vue hiérarchique
+          <span data-i18n="index.view.hierarchical">Vue hiérarchique</span>
         </label>
         <label>
           <input type="radio" name="view-mode" value="flat">
-          Vue à plat (tous les fichiers)
+          <span data-i18n="index.view.flat">Vue à plat (tous les fichiers)</span>
         </label>
       </div>
 
@@ -1979,14 +2229,14 @@
 
       <div id="game-list" class="content-area">
         <div style="padding: 40px; text-align: center; color: #7f8c8d;">
-          <h3>Bienvenue dans RUMCET</h3>
-          <p style="margin-top: 20px;">Pour commencer :</p>
+          <h3 data-i18n="index.welcome.title">Bienvenue dans RUMCET</h3>
+          <p style="margin-top: 20px;" data-i18n="index.welcome.intro">Pour commencer :</p>
           <ol style="text-align: left; display: inline-block; margin-top: 10px;">
-            <li>Sélectionnez un fichier DAT/XML ou ouvrez une base existante</li>
-            <li>Créez une base de données</li>
-            <li>Chargez les données</li>
-            <li>Ajoutez vos dossiers de ROMs</li>
-            <li>Matchez les ROMs pour identifier les manquantes</li>
+            <li data-i18n="index.welcome.step1">Sélectionnez un fichier DAT/XML ou ouvrez une base existante</li>
+            <li data-i18n="index.welcome.step2">Créez une base de données</li>
+            <li data-i18n="index.welcome.step3">Chargez les données</li>
+            <li data-i18n="index.welcome.step4">Ajoutez vos dossiers de ROMs</li>
+            <li data-i18n="index.welcome.step5">Matchez les ROMs pour identifier les manquantes</li>
           </ol>
         </div>
       </div>
@@ -1997,8 +2247,8 @@
     <!-- Volet droit -->
     <div class="sidebar-right" id="sidebar-right">
       <div id="detail-view">
-        <div class="detail-header">Détails</div>
-        <div style="padding: 10px; color: #7f8c8d;">
+        <div class="detail-header" data-i18n="index.details.header">Détails</div>
+        <div style="padding: 10px; color: #7f8c8d;" data-i18n="index.details.empty">
           Sélectionnez un élément pour voir ses détails
         </div>
       </div>
@@ -2009,7 +2259,7 @@
   <div class="log-panel collapsed" id="log-panel">
     <div class="log-header" id="log-header">
       <span class="log-chevron">▼</span>
-      <span class="log-title">Logs</span>
+      <span class="log-title" data-i18n="index.logs.title">Logs</span>
       <span class="log-last-message" id="log-last-message"></span>
     </div>
     <div class="log-container" id="log"></div>
@@ -2017,9 +2267,9 @@
 
   <!-- Menu contextuel -->
   <div id="context-menu" class="context-menu">
-    <div id="ctx-refresh-folder" class="context-menu-item">🔄 Re-scanner le dossier</div>
-    <div id="ctx-delete-folder-database" class="context-menu-item">❌ Retirer le dossier de la base</div>
-    <div id="ctx-delete-folder-physical" class="context-menu-item danger">🗑️ Supprimer le dossier</div>
+    <div id="ctx-refresh-folder" class="context-menu-item" data-i18n="index.contextMenu.rescan">🔄 Re-scanner le dossier</div>
+    <div id="ctx-delete-folder-database" class="context-menu-item" data-i18n="index.contextMenu.removeFromDb">❌ Retirer le dossier de la base</div>
+    <div id="ctx-delete-folder-physical" class="context-menu-item danger" data-i18n="index.contextMenu.deletePhysical">🗑️ Supprimer le dossier</div>
   </div>
 
   <!-- Fenêtre modale pour les rapports -->
@@ -2031,18 +2281,60 @@
     </div>
   </div>
 
+  <!-- Modale de sélection automatique par règles (Phase 10) -->
+  <div id="auto-select-modal" style="display:none; position:fixed; inset:0; background:rgba(0,0,0,0.65); z-index:9998; align-items:center; justify-content:center;">
+    <div style="background:#fff; border-radius:8px; padding:20px; max-width:900px; width:94%; max-height:88vh; display:flex; flex-direction:column; gap:12px; box-shadow:0 8px 32px rgba(0,0,0,0.25);">
+      <h2 style="margin:0; color:#2c3e50; font-size:18px;" data-i18n="index.autoSelect.title">⚙️ Sélection automatique</h2>
+      <p style="margin:0; color:#7f8c8d; font-size:12px; line-height:1.5;" data-i18n-html="index.autoSelect.description">
+        Les règles sont appliquées <strong>de haut en bas</strong> — pour chaque jeu, la dernière règle
+        qui correspond l'emporte. Les BIOS, devices et jeux disparus ne sont pas affectés
+        (ils sont gérés automatiquement par la cascade de dépendances).
+      </p>
+
+      <div class="asm-row">
+        <span class="asm-row-label" data-i18n="index.autoSelect.baseLabel">Partir de :</span>
+        <label><input type="radio" name="asm-base" value="all" checked> <span data-i18n="index.autoSelect.baseAll">Tout sélectionné</span></label>
+        <label><input type="radio" name="asm-base" value="none"> <span data-i18n="index.autoSelect.baseNone">Tout désélectionné</span></label>
+        <label><input type="radio" name="asm-base" value="current"> <span data-i18n="index.autoSelect.baseCurrent">Sélection actuelle</span></label>
+      </div>
+
+      <div class="asm-row asm-presets">
+        <span class="asm-row-label" data-i18n="index.autoSelect.presetsLabel">Modèles rapides :</span>
+        <button data-preset="no-proto" data-i18n="index.autoSelect.presetNoProto" data-i18n-title="index.autoSelect.presetNoProtoTitle" title="Ajoute des règles excluant les noms contenant (Proto, (Beta, (Demo, (Sample">🚫 Proto/Beta/Demo</button>
+        <button data-preset="no-bios" data-i18n="index.autoSelect.presetNoBios" data-i18n-title="index.autoSelect.presetNoBiosTitle" title="Ajoute une règle excluant les entrées [BIOS] (convention No-Intro/Redump — les BIOS MAME sont déjà gérés par la cascade de dépendances)">🚫 BIOS</button>
+        <button data-preset="no-aftermarket-unl" data-i18n="index.autoSelect.presetNoAftermarket" data-i18n-title="index.autoSelect.presetNoAftermarketTitle" title="Ajoute des règles excluant les noms contenant (Aftermarket) et (Unl) (convention No-Intro/Redump)">🚫 Aftermarket/Unl</button>
+        <button data-preset="no-clones" data-i18n="index.autoSelect.presetNoClones" data-i18n-title="index.autoSelect.presetNoClonesTitle" title="Ajoute une règle excluant les clones (jeux avec un parent)">🚫 Clones</button>
+        <button data-preset="good-only" data-i18n="index.autoSelect.presetGoodOnly" data-i18n-title="index.autoSelect.presetGoodOnlyTitle" title="Ajoute une règle excluant les jeux dont le driver MAME n'est pas « good »">🟢 Driver good uniquement</button>
+        <button data-preset="no-chd" data-i18n="index.autoSelect.presetNoChd" data-i18n-title="index.autoSelect.presetNoChdTitle" title="Ajoute une règle excluant les jeux nécessitant un CHD">🚫 CHD</button>
+        <button data-preset="complete-only" data-i18n="index.autoSelect.presetCompleteOnly" data-i18n-title="index.autoSelect.presetCompleteOnlyTitle" title="Ajoute une règle excluant les jeux non complets au matching">✅ Complets uniquement</button>
+      </div>
+
+      <div id="asm-rules" class="asm-rules"></div>
+      <div>
+        <button id="asm-add-rule" class="asm-btn-secondary" data-i18n="index.autoSelect.addRule">＋ Ajouter une règle</button>
+      </div>
+
+      <div id="asm-preview" class="asm-preview"></div>
+
+      <div style="display:flex; justify-content:flex-end; gap:10px;">
+        <button id="asm-cancel" class="asm-btn-secondary" data-i18n="common.cancel">Annuler</button>
+        <button id="asm-apply" class="asm-btn-primary" data-i18n="common.apply">Appliquer</button>
+      </div>
+    </div>
+  </div>
+
   <!-- Modale de sélection système (non fermable) -->
   <div id="system-selection-modal" style="display:none; position:fixed; inset:0; background:rgba(0,0,0,0.65); z-index:9999; align-items:center; justify-content:center;">
     <div style="background:#fff; border-radius:8px; padding:24px; max-width:540px; width:90%; max-height:80vh; display:flex; flex-direction:column; box-shadow:0 8px 32px rgba(0,0,0,0.25);">
-      <h2 style="margin:0 0 8px; color:#2c3e50;">🎮 Sélection du système</h2>
-      <p style="margin:0 0 16px; color:#7f8c8d; font-size:14px;">
+      <h2 style="margin:0 0 8px; color:#2c3e50;" data-i18n="index.systemSelect.title">🎮 Sélection du système</h2>
+      <p style="margin:0 0 16px; color:#7f8c8d; font-size:14px;" data-i18n="index.systemSelect.description">
         Le système n'a pas pu être détecté automatiquement à partir du nom du DAT.
         Sélectionnez-le manuellement pour continuer.
       </p>
       <select id="system-selection-dropdown" size="14" style="flex:1; min-height:300px; font-size:14px; padding:8px; border:1px solid #bdc3c7; border-radius:4px; margin-bottom:16px;">
       </select>
       <div style="display:flex; justify-content:flex-end;">
-        <button id="system-selection-validate" disabled style="padding:8px 24px; background:#3498db; color:#fff; border:none; border-radius:4px; font-size:14px; cursor:pointer; font-weight:600;">
+        <button id="system-selection-validate" disabled data-i18n="common.validate" style="padding:8px 24px; background:#3498db; color:#fff; border:none; border-radius:4px; font-size:14px; cursor:pointer; font-weight:600;">
           Valider
         </button>
       </div>

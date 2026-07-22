@@ -22,6 +22,7 @@ import { app, BrowserWindow, Menu, ipcMain, shell, dialog, MenuItemConstructorOp
 import path from 'path';
 import { fileURLToPath } from 'url';
 import { settingsManager } from '../helpers/settingsManager.js';
+import { initI18n, t, tEn, getLanguage, getMessages } from './i18n.js';
 import { logManager } from '../helpers/logManager.js';
 import { databaseService } from './services/database.service.js';
 import { sendLogToRenderer } from './utils/logger.js';
@@ -113,8 +114,10 @@ function createDatDownloadWindow(): void {
   }
 
   datDownloadWindow = new BrowserWindow({
-    width: 750,
-    height: 600,
+    width: 860,
+    height: 720,
+    minWidth: 720,
+    minHeight: 560,
     parent: mainWindow!,
     modal: true,
     webPreferences: {
@@ -145,17 +148,17 @@ let menuState = {
 function createMenu(): void {
   const template: MenuItemConstructorOptions[] = [
     {
-      label: 'Fichier',
+      label: t('menu.file.label'),
       submenu: [
         {
-          label: 'Ouvrir base de données...',
+          label: t('menu.file.openDatabase'),
           accelerator: 'CmdOrCtrl+O',
           click: () => {
             mainWindow?.webContents.send('menu-action', 'open-database');
           }
         },
         {
-          label: 'Télécharger un fichier DAT...',
+          label: t('menu.file.downloadDat'),
           accelerator: 'CmdOrCtrl+Shift+D',
           click: () => {
             createDatDownloadWindow();
@@ -164,7 +167,7 @@ function createMenu(): void {
         { type: 'separator' },
         {
           id: 'load-dat',
-          label: 'Charger DAT/XML',
+          label: t('menu.file.loadDat'),
           accelerator: 'CmdOrCtrl+D',
           enabled: menuState.canLoadDat,
           click: () => {
@@ -173,7 +176,7 @@ function createMenu(): void {
         },
         {
           id: 'add-folder',
-          label: 'Ajouter dossier ROMs',
+          label: t('menu.file.addFolder'),
           accelerator: 'CmdOrCtrl+R',
           enabled: menuState.canAddFolder,
           click: () => {
@@ -183,7 +186,7 @@ function createMenu(): void {
         { type: 'separator' },
         {
           id: 'close-database',
-          label: 'Fermer base de données',
+          label: t('menu.file.closeDatabase'),
           accelerator: 'CmdOrCtrl+Shift+Q',
           enabled: menuState.canCloseDatabase,
           click: () => {
@@ -192,7 +195,7 @@ function createMenu(): void {
         },
         { type: 'separator' },
         {
-          label: 'Quitter',
+          label: t('menu.file.quit'),
           accelerator: process.platform === 'darwin' ? 'Cmd+Q' : 'Ctrl+Q',
           click: () => {
             app.quit();
@@ -201,10 +204,10 @@ function createMenu(): void {
       ]
     },
     {
-      label: 'Analyse',
+      label: t('menu.analysis.label'),
       submenu: [
         {
-          label: 'Matcher les ROMs',
+          label: t('menu.analysis.matchRoms'),
           accelerator: 'CmdOrCtrl+M',
           click: () => {
             mainWindow?.webContents.send('menu-action', 'match-roms');
@@ -212,20 +215,20 @@ function createMenu(): void {
         },
         { type: 'separator' },
         {
-          label: 'Afficher les ROMs manquantes',
+          label: t('menu.analysis.showMissing'),
           click: () => {
             mainWindow?.webContents.send('menu-action', 'show-missing');
           }
         },
         {
-          label: 'Afficher les fichiers non matchés',
+          label: t('menu.analysis.showExtras'),
           click: () => {
             mainWindow?.webContents.send('menu-action', 'show-extras');
           }
         },
         { type: 'separator' },
         {
-          label: 'Exporter le rapport de matching...',
+          label: t('menu.analysis.exportReport'),
           click: () => {
             mainWindow?.webContents.send('menu-action', 'export-report');
           }
@@ -233,10 +236,10 @@ function createMenu(): void {
       ]
     },
     {
-      label: 'Affichage',
+      label: t('menu.view.label'),
       submenu: [
         {
-          label: 'Vue hiérarchique',
+          label: t('menu.view.hierarchical'),
           type: 'radio',
           checked: true,
           click: () => {
@@ -244,7 +247,7 @@ function createMenu(): void {
           }
         },
         {
-          label: 'Vue à plat',
+          label: t('menu.view.flat'),
           type: 'radio',
           click: () => {
             mainWindow?.webContents.send('view-mode', 'flat');
@@ -253,21 +256,21 @@ function createMenu(): void {
       ]
     },
     {
-      label: 'Édition',
+      label: t('menu.edit.label'),
       submenu: [
-        { label: 'Annuler', accelerator: 'CmdOrCtrl+Z', role: 'undo' },
-        { label: 'Rétablir', accelerator: 'CmdOrCtrl+Y', role: 'redo' },
+        { label: t('menu.edit.undo'), accelerator: 'CmdOrCtrl+Z', role: 'undo' },
+        { label: t('menu.edit.redo'), accelerator: 'CmdOrCtrl+Y', role: 'redo' },
         { type: 'separator' },
-        { label: 'Couper', accelerator: 'CmdOrCtrl+X', role: 'cut' },
-        { label: 'Copier', accelerator: 'CmdOrCtrl+C', role: 'copy' },
-        { label: 'Coller', accelerator: 'CmdOrCtrl+V', role: 'paste' }
+        { label: t('menu.edit.cut'), accelerator: 'CmdOrCtrl+X', role: 'cut' },
+        { label: t('menu.edit.copy'), accelerator: 'CmdOrCtrl+C', role: 'copy' },
+        { label: t('menu.edit.paste'), accelerator: 'CmdOrCtrl+V', role: 'paste' }
       ]
     },
     {
-      label: 'Outils',
+      label: t('menu.tools.label'),
       submenu: [
         {
-          label: 'Paramètres',
+          label: t('menu.tools.settings'),
           accelerator: 'CmdOrCtrl+,',
           click: () => {
             createSettingsWindow();
@@ -275,7 +278,7 @@ function createMenu(): void {
         },
         { type: 'separator' },
         {
-          label: 'Outils de développement',
+          label: t('menu.tools.devTools'),
           accelerator: 'F12',
           click: () => {
             mainWindow?.webContents.toggleDevTools();
@@ -284,23 +287,23 @@ function createMenu(): void {
       ]
     },
     {
-      label: 'Aide',
+      label: t('menu.help.label'),
       submenu: [
         {
-          label: 'Documentation',
+          label: t('menu.help.documentation'),
           click: () => {
             shell.openExternal('https://github.com/Nanaki59/rumcet');
           }
         },
         { type: 'separator' },
         {
-          label: 'À propos',
+          label: t('menu.help.about'),
           click: () => {
             dialog.showMessageBox(mainWindow!, {
               type: 'info',
-              title: 'À propos de RUMCET',
+              title: t('menu.help.aboutTitle'),
               message: 'RUMCET v1.0.0',
-              detail: "ROM's Ultimate Manager, Conversion and Editor Tool\n\nDéveloppé par Nanaki59",
+              detail: t('menu.help.aboutDetail'),
               buttons: ['OK']
             });
           }
@@ -318,10 +321,11 @@ function createMenu(): void {
 // ==========================================
 
 function registerLogHandlers(): void {
-  ipcMain.handle('log:write', async (_event, severity: string, context: string, message: string) => {
+  ipcMain.handle('log:write', async (_event, severity: string, context: string, key: string, params?: Record<string, string | number>) => {
     // Écrire UNIQUEMENT dans le fichier, PAS d'envoi au renderer ici
-    // sinon on crée une boucle infinie
-    await logManager.writeFormatted(severity, context, message);
+    // sinon on crée une boucle infinie.
+    // Le fichier est toujours résolu en anglais (clé inconnue → écrite telle quelle).
+    await logManager.writeFormatted(severity, context, tEn(key, params));
   });
 
   ipcMain.handle('log:get-history', async () => {
@@ -337,6 +341,31 @@ function registerMenuHandlers(): void {
   });
 }
 
+// ==========================================
+// Handlers IPC pour l'i18n
+// ==========================================
+
+function registerI18nHandlers(): void {
+  // Dictionnaire de traductions demandé par chaque page au chargement
+  ipcMain.handle('i18n:get', () => ({
+    language: getLanguage(),
+    messages: getMessages()
+  }));
+}
+
+/**
+ * Appelé quand la langue change dans les paramètres : recharge les
+ * traductions, reconstruit le menu et notifie toutes les fenêtres
+ * (qui se rechargent pour re-rendre leurs textes).
+ */
+function handleLanguageChanged(language: 'fr' | 'en'): void {
+  initI18n(language);
+  createMenu();
+  BrowserWindow.getAllWindows().forEach(win => {
+    win.webContents.send('i18n:language-changed', language);
+  });
+}
+
 function registerDatDownloadWindowHandlers(): void {
   ipcMain.handle('dat-download:open-window', () => {
     createDatDownloadWindow();
@@ -345,7 +374,7 @@ function registerDatDownloadWindowHandlers(): void {
   ipcMain.handle('dat-download:select-folder', async () => {
     const result = await dialog.showOpenDialog(datDownloadWindow || mainWindow!, {
       properties: ['openDirectory'],
-      title: 'Sélectionner le dossier de destination'
+      title: t('dialogs.selectDestinationFolder')
     });
     return result.canceled ? null : result.filePaths[0];
   });
@@ -365,35 +394,66 @@ async function setupTools() {
   // Si chdman n'existe pas, le copier depuis les ressources
   try {
     await fs.access(chdmanDest);
-    console.log('chdman.exe déjà présent');
+    console.log('chdman.exe already present');
   } catch {
     // Le fichier n'existe pas, essayer de le copier
     const chdmanSource = path.join(__dirname, '../../resources/chdman.exe');
     try {
       await fs.access(chdmanSource);
       await fs.copyFile(chdmanSource, chdmanDest);
-      console.log('chdman.exe copié avec succès');
+      console.log('chdman.exe copied successfully');
     } catch (error) {
-      console.log('chdman.exe non trouvé dans les ressources, l\'utilisateur devra le configurer');
+      console.log('chdman.exe not found in resources, the user will need to configure it');
     }
   }
 }
 
+/**
+ * Capture les console.log/warn/error du process main (helpers inclus) vers le
+ * fichier de logs, en plus de la console. Ces lignes techniques ne sont PAS
+ * envoyées au panneau du renderer — elles servent au support/débogage.
+ * Garde anti-réentrance : si l'écriture fichier logge elle-même en console,
+ * on n'écrit pas une seconde fois (pas de boucle).
+ */
+function setupConsoleCapture(): void {
+  const levels: Array<{ method: 'log' | 'warn' | 'error'; level: string }> = [
+    { method: 'log', level: 'debug' },
+    { method: 'warn', level: 'warning' },
+    { method: 'error', level: 'error' }
+  ];
+
+  let capturing = false;
+  for (const { method, level } of levels) {
+    const original = console[method].bind(console);
+    console[method] = (...args: unknown[]) => {
+      original(...args);
+      // Garde synchrone contre la ré-entrance (les erreurs internes du
+      // LogManager passent par rawConsoleError et n'arrivent jamais ici).
+      if (capturing) return;
+      capturing = true;
+      try {
+        const line = args
+          .map(a => (typeof a === 'string' ? a : a instanceof Error ? `${a.message}\n${a.stack}` : JSON.stringify(a)))
+          .join(' ');
+        void logManager.writeFormatted(level, 'console', line).catch(() => {});
+      } finally {
+        capturing = false;
+      }
+    };
+  }
+}
+
 async function initializeApp(): Promise<void> {
-  // Initialiser les logs AVANT de rediriger console.log
+  // Initialiser le fichier de logs, puis capturer les console.* vers ce fichier
   await logManager.initialize();
-  
-  // Sauvegarder les fonctions originales
-  const originalLog = console.log;
-  const originalError = console.error;
-  const originalWarn = console.warn;
-  
-  // NE PAS rediriger console.log/error/warn pour éviter les boucles
-  // Les logs de console restent dans la console uniquement
-  
+  setupConsoleCapture();
+
   // Charger les paramètres
   await settingsManager.load();
-  
+
+  // Charger les traductions AVANT la création du menu et des fenêtres
+  initI18n(settingsManager.get('language'));
+
   // Créer la fenêtre principale
   createMainWindow();
 
@@ -407,13 +467,14 @@ async function initializeApp(): Promise<void> {
     registerMatchingHandlers(ipcMain, mainWindow);
     registerConsolidationHandlers(ipcMain, mainWindow);
     registerNavigationHandlers(ipcMain);
-    registerSettingsHandlers(ipcMain, mainWindow);
+    registerSettingsHandlers(ipcMain, mainWindow, handleLanguageChanged);
     registerSearchHandlers(ipcMain);
-    registerDatDownloadHandlers();
+    registerDatDownloadHandlers(() => mainWindow);
     registerDatDownloadWindowHandlers();
     registerRomDownloadHandlers(ipcMain, mainWindow);
     registerLogHandlers();
     registerMenuHandlers();
+    registerI18nHandlers();
   }
 }
 
@@ -443,9 +504,9 @@ app.on('before-quit', async () => {
   if (databaseService.getDatabase()) {
     try {
       await databaseService.closeDatabase();
-      console.log('Base de données fermée proprement');
+      console.log('Database closed cleanly');
     } catch (error) {
-      console.error('Erreur lors de la fermeture de la base:', error);
+      console.error('Error while closing the database:', error);
     }
   }
   

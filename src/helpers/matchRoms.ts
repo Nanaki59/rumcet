@@ -47,7 +47,7 @@ export async function matchRomsWithFiles(db: Database): Promise<{
   gameStatuses: GameMatchStatus[],
   stats: MatchingStats
 }> {
-  console.log('🔍 Début du matching des ROMs...');
+  console.log('🔍 Starting ROM matching...');
 
   // Récupérer toutes les ROMs du DAT avec leurs jeux
   const datRoms = await db.all<{
@@ -72,7 +72,7 @@ export async function matchRomsWithFiles(db: Database): Promise<{
     ORDER BY g.name, dr.name
   `);
 
-  console.log(`📊 ${datRoms.length} ROMs à matcher`);
+  console.log(`📊 ${datRoms.length} ROMs to match`);
 
   // Récupérer tous les fichiers scannés non-archives (fichiers loose)
   const looseFiles = await db.all<{
@@ -94,7 +94,7 @@ export async function matchRomsWithFiles(db: Database): Promise<{
     WHERE sf.is_archive = 0
   `);
 
-  console.log(`📂 ${looseFiles.length} fichiers loose`);
+  console.log(`📂 ${looseFiles.length} loose files`);
 
   // Récupérer tous les contenus d'archives avec info de l'archive parente
   const archiveContents = await db.all<{
@@ -122,7 +122,7 @@ export async function matchRomsWithFiles(db: Database): Promise<{
     JOIN scanned_files sf ON ac.archive_id = sf.id
   `);
 
-  console.log(`🗜️ ${archiveContents.length} fichiers dans les archives`);
+  console.log(`🗜️ ${archiveContents.length} files inside archives`);
 
   const matches: RomMatch[] = [];
 
@@ -172,7 +172,7 @@ export async function matchRomsWithFiles(db: Database): Promise<{
   // contient TOUTES les ROMs du jeu
   computeArchiveIsPerfect(datRoms, matches);
 
-  console.log(`💾 ${matches.length} correspondances trouvées au total`);
+  console.log(`💾 ${matches.length} matches found in total`);
 
   // Sauvegarder les correspondances dans la base
   await saveMatches(db, matches);
@@ -183,12 +183,12 @@ export async function matchRomsWithFiles(db: Database): Promise<{
   // Calculer les statistiques globales (sans doublons)
   const stats = calculateStats(datRoms, db, looseFiles, archiveContents, gameStatuses, matches);
 
-  console.log('✅ Matching terminé !');
+  console.log('✅ Matching complete!');
   console.log(`📊 Statistiques :`);
-  console.log(`   - Jeux complets : ${stats.completeGames}/${stats.totalGames}`);
-  console.log(`   - Jeux partiels : ${stats.partialGames}/${stats.totalGames}`);
-  console.log(`   - Jeux manquants : ${stats.missingGames}/${stats.totalGames}`);
-  console.log(`   - ROMs matchées : ${stats.matchedRoms}/${stats.totalDatRoms}`);
+  console.log(`   - Complete games: ${stats.completeGames}/${stats.totalGames}`);
+  console.log(`   - Partial games: ${stats.partialGames}/${stats.totalGames}`);
+  console.log(`   - Missing games: ${stats.missingGames}/${stats.totalGames}`);
+  console.log(`   - Matched ROMs: ${stats.matchedRoms}/${stats.totalDatRoms}`);
   console.log(`   - ROMs manquantes : ${stats.missingRoms}/${stats.totalDatRoms}`);
 
   return { matches, gameStatuses, stats };
@@ -373,7 +373,7 @@ async function saveMatchesWithoutTransaction(db: Database, matches: RomMatch[]):
   }
 
   insertMatch.finalize();
-  console.log(`💾 ${matches.length} correspondances sauvegardées en base`);
+  console.log(`💾 ${matches.length} matches saved to the database`);
 }
 
 /**
@@ -391,7 +391,7 @@ async function saveMatches(db: Database, matches: RomMatch[]): Promise<void> {
     if (errorMsg.includes('cannot start a transaction') ||
         errorMsg.includes('transaction') ||
         error?.errno === 1) {
-      console.log('⚠️ Transaction déjà active, sauvegarde sans nouvelle transaction');
+      console.log('⚠️ Transaction already active, saving without a new transaction');
       await saveMatchesWithoutTransaction(db, matches);
       return;
     }
@@ -406,7 +406,7 @@ async function saveMatches(db: Database, matches: RomMatch[]): Promise<void> {
       try {
         await db.run('ROLLBACK');
       } catch (rollbackError) {
-        console.error('Erreur lors du ROLLBACK:', rollbackError);
+        console.error('Error during ROLLBACK:', rollbackError);
       }
     }
     throw error;

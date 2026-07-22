@@ -9,6 +9,7 @@ export type ArchiveFormat = '7z' | 'zip' | 'chd';
 export type CompressionLevel = 'fastest' | 'normal' | 'maximum';
 export type CleanupScope = 'used-only' | 'all-matched';
 export type RarTool = '7zip' | 'winrar' | 'unrar';
+export type ArcadeTargetSetMode = 'split' | 'non-merged' | 'merged';
 
 // Manufacturer (ex: 'Sony', 'Nintendo', 'Sega', 'Atari', 'Commodore'...).
 // Élargi à string pour suivre Recalbox qui couvre une centaine de constructeurs.
@@ -25,6 +26,28 @@ export interface SystemCompatibility {
   supportedFormats: ArchiveFormat[];
   warningFormats?: ArchiveFormat[];
   unsupportedFormats?: ArchiveFormat[];
+}
+
+// ─── Modèle d'extension téléchargement ─────────────────────────────
+// Catégorie d'origine de l'extension (utilisée pour le code couleur + lettre dans l'UI).
+export type DownloadExtensionSource = 'global' | 'sysCompressed' | 'datRaw' | 'extraRaw' | 'manual';
+
+export interface DownloadExtensionEntry {
+  /** L'extension sans le point (ex: '7z', 'bin'). */
+  ext: string;
+  /** Catégorie d'origine. Détermine la couleur/lettre dans l'UI et le mode par défaut. */
+  source: DownloadExtensionSource;
+  /**
+   * Mode de recherche :
+   *  - true (archive)  : on cherche `gameName.ext`
+   *  - false (raw)     : on cherche chaque `datRom.name` qui se termine par `.ext`
+   */
+  isArchive: boolean;
+}
+
+export interface ExtensionPickerData {
+  /** Liste ordonnée des extensions actives (ordre = priorité de recherche). */
+  activeExtensions: DownloadExtensionEntry[];
 }
 
 export interface AppSettings {
@@ -51,6 +74,39 @@ export interface AppSettings {
 
   // Mise à jour DAT
   autoSelectNewGames: boolean;
+
+  /**
+   * Mode du set arcade cible pour la consolidation (DAT MAME uniquement).
+   *  - 'split'      : chaque clone ne contient que ses ROMs propres (parent et BIOS en archives séparées)
+   *  - 'non-merged' : chaque clone est autonome (ROMs propres + ROMs partagées du parent inlinées)
+   *  - 'merged'     : l'archive du parent contient le parent et tous ses clones
+   * Ignoré pour les DAT non arcade (No-Intro / Redump).
+   */
+  arcadeTargetSetMode?: ArcadeTargetSetMode;
+
+  /**
+   * DAT MAME uniquement. Si activé, les sets BIOS (isbios="yes") sont rangés
+   * dans un sous-dossier `bios/` du dossier cible au lieu d'être à plat avec les
+   * jeux. Convention Recalbox. ⚠️ Le MAME standard attend les BIOS dans le même
+   * dossier que les ROMs — n'activer que si votre frontend gère un chemin BIOS séparé.
+   */
+  arcadeSeparateBios?: boolean;
+
+  /**
+   * DAT MAME uniquement. Si activé, chaque CHD est rangé dans un sous-dossier au
+   * nom du jeu (ex : `area51/area51.chd`), même quand le jeu ne contient qu'un
+   * seul CHD. Convention MAME/Recalbox. Si désactivé, un CHD unique reste à plat
+   * (les jeux multi-CHD utilisent toujours un sous-dossier).
+   */
+  arcadeChdSubfolder?: boolean;
+
+  /**
+   * DAT MAME uniquement. Si activé, un ZIP vide `<jeu>.zip` est créé pour les jeux
+   * dont toutes les ROMs sont des CHD (aucune ROM classique). Recalbox liste les
+   * jeux via les .zip présents ; le placeholder rend le jeu CHD-only visible.
+   * Implique le rangement du CHD en sous-dossier (disposition Recalbox).
+   */
+  arcadeChdEmptyZip?: boolean;
 
   // Autres paramètres
   theme: 'light' | 'dark';
@@ -91,14 +147,29 @@ export interface AppSettings {
     name: string;
     baseUrl: string;
     enabled: boolean;
-    extensions?: string[];
-    systemExtensions?: Record<string, string[]>;
+    /**
+     * Systèmes disponibles sur cette source. Pour chacun, l'utilisateur peut :
+     *  - définir un sous-dossier sur la source qui contient les ROMs
+     *  - optionnellement surcharger la liste des extensions actives (sinon résolution globale)
+     */
+    systems?: Array<{
+      systemId: string;
+      subfolder?: string;
+      /** Si défini, surcharge la résolution globale pour ce couple source × système. */
+      override?: ExtensionPickerData;
+    }>;
   }>;
+  /** Extensions globales par défaut testées sur toutes les sources/systèmes. */
   downloadExtensions?: string[];
+  /**
+   * Configuration par système pour la résolution globale des extensions de téléchargement.
+   * Chaque entrée contient une liste ordonnée d'extensions actives (avec leur catégorie source
+   * et leur mode archive/raw) plus une liste d'extensions retirées du pool (pour qu'elles
+   * ne réapparaissent pas automatiquement).
+   */
   downloadSystemExtensions?: Array<{
     systemId: string;
-    extensions: string[];
-  }>;
+  } & ExtensionPickerData>;
   incompleteRomsFolder?: string;
 
   settingsVersion?: number;
@@ -118,7 +189,7 @@ export const compressionLevelToZip = {
   maximum: 9     // DEFLATE level 9 (best)
 };
 
-const CURRENT_SETTINGS_VERSION = 9;
+const CURRENT_SETTINGS_VERSION = 16;
 
 /**
  * Valeurs par défaut de compatibilité archives par système.
@@ -160,6 +231,10 @@ class SettingsManager {
       protectFilesForUnselectedGames: true,
 
       autoSelectNewGames: true,
+      arcadeTargetSetMode: 'split',
+      arcadeSeparateBios: false,
+      arcadeChdSubfolder: false,
+      arcadeChdEmptyZip: false,
 
       theme: 'light',
       language: 'fr',
@@ -195,7 +270,7 @@ class SettingsManager {
 
       // Téléchargement de ROMs
       downloadSources: [],
-      downloadExtensions: ['7z', 'zip', 'chd', 'rar', 'iso', 'cso', 'pbp'],
+      downloadExtensions: ['7z', 'zip', 'rar'],
       downloadSystemExtensions: [],
       incompleteRomsFolder: path.join(documentsPath, 'ROMs', 'Incomplete'),
 
@@ -211,13 +286,13 @@ class SettingsManager {
   private migrateSettings(loadedSettings: any): AppSettings {
     const version = loadedSettings.settingsVersion || 1;
     
-    console.log(`Migration des paramètres depuis la version ${version} vers ${CURRENT_SETTINGS_VERSION}`);
+    console.log(`Migrating settings from version ${version} to ${CURRENT_SETTINGS_VERSION}`);
     
     let migratedSettings = { ...loadedSettings };
     
     // Migration v1 -> v2 : Ajout des paramètres de compression basiques
     if (version < 2) {
-      console.log('Migration v1 -> v2 : Ajout des paramètres de compression');
+      console.log('Migration v1 -> v2: Adding compression settings');
       migratedSettings = {
         ...migratedSettings,
         compressionLevel: this.defaultSettings.compressionLevel,
@@ -231,7 +306,7 @@ class SettingsManager {
     
     // Migration v2 -> v3 : Passage de preferredArchiveFormat à archiveFormatPriority
     if (version < 3) {
-      console.log('Migration v2 -> v3 : Passage à l\'ordre de priorité des formats');
+      console.log('Migration v2 -> v3: Switching to format priority order');
       
       // Convertir l'ancien format unique en liste ordonnée
       const oldFormat = migratedSettings.preferredArchiveFormat;
@@ -262,7 +337,7 @@ class SettingsManager {
 
     // Migration v3 -> v4 : Ajout des paramètres de consolidation
     if (version < 4) {
-      console.log('Migration v3 -> v4 : Ajout des paramètres de consolidation');
+      console.log('Migration v3 -> v4: Adding consolidation settings');
       migratedSettings = {
         ...migratedSettings,
         validatedRomsFolder: this.defaultSettings.validatedRomsFolder,
@@ -274,7 +349,7 @@ class SettingsManager {
 
     // Migration v4 -> v5 : Ajout des paramètres de nettoyage avancés
     if (version < 5) {
-      console.log('Migration v4 -> v5 : Ajout des paramètres de nettoyage avancés');
+      console.log('Migration v4 -> v5: Adding advanced cleanup settings');
       migratedSettings = {
         ...migratedSettings,
         cleanupScope: this.defaultSettings.cleanupScope,
@@ -285,7 +360,7 @@ class SettingsManager {
 
     // Migration v5 -> v6 : Ajout du paramètre de sélection des nouveaux jeux
     if (version < 6) {
-      console.log('Migration v5 -> v6 : Ajout du paramètre autoSelectNewGames');
+      console.log('Migration v5 -> v6: Adding the autoSelectNewGames setting');
       migratedSettings = {
         ...migratedSettings,
         autoSelectNewGames: this.defaultSettings.autoSelectNewGames,
@@ -295,7 +370,7 @@ class SettingsManager {
 
     // Migration v6 -> v7 : Ajout des paramètres par défaut No-Intro
     if (version < 7) {
-      console.log('Migration v6 -> v7 : Ajout des paramètres noIntroDefaults');
+      console.log('Migration v6 -> v7: Adding the noIntroDefaults settings');
       migratedSettings = {
         ...migratedSettings,
         noIntroDefaults: this.defaultSettings.noIntroDefaults,
@@ -305,7 +380,7 @@ class SettingsManager {
 
     // Migration v7 -> v8 : Ajout des paramètres de téléchargement de ROMs
     if (version < 8) {
-      console.log('Migration v7 -> v8 : Ajout des paramètres de téléchargement de ROMs');
+      console.log('Migration v7 -> v8: Adding ROM download settings');
       migratedSettings = {
         ...migratedSettings,
         downloadSources: this.defaultSettings.downloadSources,
@@ -318,11 +393,233 @@ class SettingsManager {
 
     // Migration v8 -> v9 : Ajout du mode multi-système pour le dossier cible
     if (version < 9) {
-      console.log('Migration v8 -> v9 : Ajout de validatedRomsMultiSystem');
+      console.log('Migration v8 -> v9: Adding validatedRomsMultiSystem');
       migratedSettings = {
         ...migratedSettings,
         validatedRomsMultiSystem: this.defaultSettings.validatedRomsMultiSystem,
         settingsVersion: 9
+      };
+    }
+
+    // Migration v9 -> v10 : Refonte du modèle de données téléchargement
+    //  - downloadSystemExtensions : passage de { systemId, extensions[] } vers
+    //    { systemId, useGlobalDefaults, useDatRawFormats, useExtraRawFormats, additionalExtensions[] }
+    //  - downloadSources[].extensions : supprimé (inutile)
+    //  - downloadSources[].systemExtensions (Record) : converti en systems[] (Array)
+    //  - downloadExtensions : réinitialisé si correspond à l'ancien défaut (chd/iso/cso/pbp)
+    if (version < 10) {
+      console.log('Migration v9 -> v10: reworking the download data model');
+
+      // Sources : reshape systemExtensions → systems
+      const sources = (migratedSettings.downloadSources || []) as any[];
+      const newSources = sources.map((s: any) => {
+        const systems: Array<{ systemId: string; subfolder?: string; overrideExtensions?: string[] }> = [];
+        const sysExt = s.systemExtensions as Record<string, string[]> | undefined;
+        if (sysExt) {
+          for (const [systemId, exts] of Object.entries(sysExt)) {
+            systems.push({
+              systemId,
+              subfolder: '',
+              // Si l'utilisateur avait défini des extensions spécifiques, on les conserve en override
+              overrideExtensions: Array.isArray(exts) && exts.length > 0 ? exts : undefined
+            });
+          }
+        }
+        return {
+          id: s.id,
+          name: s.name,
+          baseUrl: s.baseUrl,
+          enabled: s.enabled,
+          systems
+          // extensions: supprimé
+        };
+      });
+
+      // Per-système : passage du tableau d'extensions vers le modèle à cases à cocher
+      const oldSysExt = (migratedSettings.downloadSystemExtensions || []) as any[];
+      const newSysExt = oldSysExt.map((entry: any) => ({
+        systemId: entry.systemId,
+        useGlobalDefaults: true,
+        useSystemCompressedFormats: true,
+        useDatRawFormats: true,
+        useExtraRawFormats: true,
+        // Si l'utilisateur avait défini des extensions explicites, on les met en complémentaires
+        additionalExtensions: Array.isArray(entry.extensions) ? entry.extensions : []
+      }));
+
+      // Reset downloadExtensions si l'utilisateur avait l'ancien défaut
+      const oldDefault = ['7z', 'zip', 'chd', 'rar', 'iso', 'cso', 'pbp'];
+      const current = migratedSettings.downloadExtensions || [];
+      const isOldDefault =
+        current.length === oldDefault.length &&
+        current.every((e: string) => oldDefault.includes(e));
+      const newDownloadExts = isOldDefault ? this.defaultSettings.downloadExtensions : current;
+
+      migratedSettings = {
+        ...migratedSettings,
+        downloadSources: newSources,
+        downloadSystemExtensions: newSysExt,
+        downloadExtensions: newDownloadExts,
+        settingsVersion: 10
+      };
+    }
+
+    // Migration v10 -> v11 : ajout de useSystemCompressedFormats (par défaut true)
+    if (version < 11) {
+      console.log('Migration v10 -> v11: adding useSystemCompressedFormats');
+      const existing = (migratedSettings.downloadSystemExtensions || []) as any[];
+      const backfilled = existing.map((entry: any) => ({
+        ...entry,
+        useSystemCompressedFormats: entry.useSystemCompressedFormats ?? true
+      }));
+      migratedSettings = {
+        ...migratedSettings,
+        downloadSystemExtensions: backfilled,
+        settingsVersion: 11
+      };
+    }
+
+    // Migration v11 -> v12 : refonte vers le modèle "tags actifs + pool" (Phase 7)
+    // Convertit les cases à cocher (useGlobalDefaults, useSystemCompressedFormats,
+    // useDatRawFormats, useExtraRawFormats) + additionalExtensions vers une liste
+    // ordonnée d'extensions actives avec leur source et leur flag isArchive.
+    if (version < 12) {
+      console.log('Migration v11 -> v12: reworking to the active tags + pool model');
+      const oldEntries = (migratedSettings.downloadSystemExtensions || []) as any[];
+      const globalDefaults = (migratedSettings.downloadExtensions || []) as string[];
+
+      const newEntries = oldEntries.map((old: any) => {
+        const sysDef = SYSTEMS.find(s => s.systemId === old.systemId);
+        const active: DownloadExtensionEntry[] = [];
+
+        const addCategory = (
+          source: DownloadExtensionSource,
+          exts: string[],
+          enabled: boolean,
+          isArchive: boolean
+        ) => {
+          if (!enabled) return;
+          for (const e of exts) {
+            const norm = (e || '').replace(/^\./, '').toLowerCase().trim();
+            if (!norm) continue;
+            if (!active.some(a => a.ext === norm)) {
+              active.push({ ext: norm, source, isArchive });
+            }
+          }
+        };
+
+        addCategory('global', globalDefaults, old.useGlobalDefaults !== false, true);
+        if (sysDef) {
+          addCategory(
+            'sysCompressed',
+            [...sysDef.supportedFormats, ...sysDef.warningFormats],
+            old.useSystemCompressedFormats !== false,
+            true
+          );
+          addCategory('datRaw', sysDef.datRawFormats, old.useDatRawFormats !== false, false);
+          addCategory('extraRaw', sysDef.extraRawFormats, old.useExtraRawFormats !== false, false);
+        }
+        // additionalExtensions → tags 'manual' archive=true par défaut
+        for (const e of (old.additionalExtensions || []) as string[]) {
+          const norm = (e || '').replace(/^\./, '').toLowerCase().trim();
+          if (norm && !active.some(a => a.ext === norm)) {
+            active.push({ ext: norm, source: 'manual', isArchive: true });
+          }
+        }
+
+        return { systemId: old.systemId, activeExtensions: active };
+      });
+
+      // Convertir les override des sources : ancien overrideExtensions: string[] → override avec activeExtensions
+      const sources = (migratedSettings.downloadSources || []) as any[];
+      const newSources = sources.map((s: any) => ({
+        ...s,
+        systems: (s.systems || []).map((sysEntry: any) => {
+          const override = sysEntry.overrideExtensions;
+          if (Array.isArray(override) && override.length > 0) {
+            const activeExtensions: DownloadExtensionEntry[] = override.map((e: string) => ({
+              ext: (e || '').replace(/^\./, '').toLowerCase().trim(),
+              source: 'manual' as DownloadExtensionSource,
+              isArchive: true
+            })).filter((e: DownloadExtensionEntry) => e.ext);
+            return {
+              systemId: sysEntry.systemId,
+              subfolder: sysEntry.subfolder,
+              override: { activeExtensions }
+            };
+          }
+          return {
+            systemId: sysEntry.systemId,
+            subfolder: sysEntry.subfolder
+            // pas d'override → résolution globale utilisée
+          };
+        })
+      }));
+
+      migratedSettings = {
+        ...migratedSettings,
+        downloadSystemExtensions: newEntries,
+        downloadSources: newSources,
+        settingsVersion: 12
+      };
+    }
+
+    // Migration v12 -> v13 : suppression de removedFromPool (le pool ne peut plus
+    // être masqué définitivement, on n'a donc plus besoin de cette liste)
+    if (version < 13) {
+      console.log('Migration v12 -> v13: removing removedFromPool');
+      const sysExt = (migratedSettings.downloadSystemExtensions || []) as any[];
+      const cleanedSysExt = sysExt.map((e: any) => {
+        const { removedFromPool: _, ...rest } = e;
+        return rest;
+      });
+      const sources = (migratedSettings.downloadSources || []) as any[];
+      const cleanedSources = sources.map((s: any) => ({
+        ...s,
+        systems: (s.systems || []).map((sys: any) => {
+          if (sys.override) {
+            const { removedFromPool: _, ...overrideRest } = sys.override;
+            return { ...sys, override: overrideRest };
+          }
+          return sys;
+        })
+      }));
+      migratedSettings = {
+        ...migratedSettings,
+        downloadSystemExtensions: cleanedSysExt,
+        downloadSources: cleanedSources,
+        settingsVersion: 13
+      };
+    }
+
+    // Migration v13 -> v14 : ajout du mode arcade cible (split par défaut)
+    if (version < 14) {
+      console.log('Migration v13 -> v14: adding arcadeTargetSetMode (default split)');
+      migratedSettings = {
+        ...migratedSettings,
+        arcadeTargetSetMode: migratedSettings.arcadeTargetSetMode || this.defaultSettings.arcadeTargetSetMode,
+        settingsVersion: 14
+      };
+    }
+
+    // Migration v14 -> v15 : rangement BIOS / CHD en sous-dossiers (désactivé par défaut)
+    if (version < 15) {
+      console.log('Migration v14 -> v15: adding arcadeSeparateBios / arcadeChdSubfolder (default off)');
+      migratedSettings = {
+        ...migratedSettings,
+        arcadeSeparateBios: migratedSettings.arcadeSeparateBios ?? false,
+        arcadeChdSubfolder: migratedSettings.arcadeChdSubfolder ?? false,
+        settingsVersion: 15
+      };
+    }
+
+    // Migration v15 -> v16 : zip vide pour les jeux CHD-only (désactivé par défaut)
+    if (version < 16) {
+      console.log('Migration v15 -> v16: adding arcadeChdEmptyZip (default off)');
+      migratedSettings = {
+        ...migratedSettings,
+        arcadeChdEmptyZip: migratedSettings.arcadeChdEmptyZip ?? false,
+        settingsVersion: 16
       };
     }
 
@@ -336,14 +633,14 @@ class SettingsManager {
     // Vérifier que archiveFormatPriority est un tableau non vide
     if (!Array.isArray(settings.archiveFormatPriority) || 
         settings.archiveFormatPriority.length === 0) {
-      console.warn('archiveFormatPriority invalide, utilisation des valeurs par défaut');
+      console.warn('Invalid archiveFormatPriority, using default values');
       settings.archiveFormatPriority = this.defaultSettings.archiveFormatPriority;
     }
     
     // Vérifier qu'il n'y a pas de doublons
     const uniqueFormats = [...new Set(settings.archiveFormatPriority)];
     if (uniqueFormats.length !== settings.archiveFormatPriority.length) {
-      console.warn('Doublons détectés dans archiveFormatPriority, nettoyage...');
+      console.warn('Duplicates detected in archiveFormatPriority, cleaning up...');
       settings.archiveFormatPriority = uniqueFormats as ArchiveFormat[];
     }
     
@@ -354,7 +651,7 @@ class SettingsManager {
     ) as ArchiveFormat[];
     
     if (settings.archiveFormatPriority.length === 0) {
-      console.warn('Aucun format valide trouvé, utilisation des valeurs par défaut');
+      console.warn('No valid format found, using default values');
       settings.archiveFormatPriority = this.defaultSettings.archiveFormatPriority;
     }
     
@@ -374,11 +671,48 @@ class SettingsManager {
       
       // Fusionner avec les paramètres par défaut pour gérer les nouvelles clés
       this.settings = { ...this.defaultSettings, ...migratedSettings };
-      
-      // Sauvegarder si des migrations ont été appliquées
-      if (!loadedSettings.settingsVersion || 
-          loadedSettings.settingsVersion < CURRENT_SETTINGS_VERSION) {
-        console.log('Sauvegarde des paramètres migrés');
+
+      // ── Dédoublonnage + backfill de systemCompatibility ──
+      // Un ancien bug produisait des doublons (chaque systemId présent 2×) qui
+      // persistaient sur disque. Comme le rendu/save mémorisait "la dernière"
+      // entrée, une entrée vide dupliquée écrasait les formats réels de MAME
+      // (et d'autres), donnant l'impression d'une réinitialisation au restart.
+      //
+      // Règle de dédup : pour chaque systemId, on conserve l'entrée avec le PLUS
+      // de supportedFormats (l'entrée vide dupliquée perd donc face à l'entrée
+      // réelle). Puis on backfille les systèmes absents depuis le registre.
+      const loadedCompat = this.settings.systemCompatibility ?? [];
+      const bestById = new Map<string, SystemCompatibility>();
+      for (const entry of loadedCompat) {
+        const key = entry.systemId.toLowerCase();
+        const existing = bestById.get(key);
+        if (!existing || (entry.supportedFormats?.length ?? 0) > (existing.supportedFormats?.length ?? 0)) {
+          bestById.set(key, entry);
+        }
+      }
+      let backfilled = 0;
+      for (const def of DEFAULT_SYSTEM_COMPATIBILITY) {
+        if (!bestById.has(def.systemId.toLowerCase())) {
+          bestById.set(def.systemId.toLowerCase(), def);
+          backfilled++;
+        }
+      }
+      const dedupedCompat = [...bestById.values()];
+      const hadDuplicatesOrBackfill = dedupedCompat.length !== loadedCompat.length;
+      this.settings.systemCompatibility = dedupedCompat;
+      if (hadDuplicatesOrBackfill) {
+        console.log(
+          `systemCompatibility nettoyé : ${loadedCompat.length} → ${dedupedCompat.length} entrées ` +
+          `(${loadedCompat.length - dedupedCompat.length + backfilled} doublon(s) retiré(s), ${backfilled} backfill).`
+        );
+      }
+
+      // Sauvegarder si des migrations ont été appliquées OU si le dédoublonnage
+      // a modifié systemCompatibility (pour nettoyer le disque définitivement).
+      if (!loadedSettings.settingsVersion ||
+          loadedSettings.settingsVersion < CURRENT_SETTINGS_VERSION ||
+          hadDuplicatesOrBackfill) {
+        console.log('Saving migrated/cleaned settings');
         await this.save();
       }
       
@@ -387,7 +721,7 @@ class SettingsManager {
       
     } catch (error) {
       // Si le fichier n'existe pas, utiliser les paramètres par défaut
-      console.log('Paramètres non trouvés, utilisation des valeurs par défaut');
+      console.log('Settings not found, using default values');
       await this.save(); // Sauvegarder les paramètres par défaut
     }
   }
@@ -405,9 +739,9 @@ class SettingsManager {
         'utf8'
       );
       
-      console.log('Paramètres sauvegardés');
+      console.log('Settings saved');
     } catch (error) {
-      console.error('Erreur lors de la sauvegarde des paramètres:', error);
+      console.error('Error while saving settings:', error);
     }
   }
 
@@ -423,7 +757,7 @@ class SettingsManager {
       try {
         await fs.mkdir(folder, { recursive: true });
       } catch (error) {
-        console.error(`Erreur lors de la création du dossier ${folder}:`, error);
+        console.error(`Error while creating the folder ${folder}:`, error);
       }
     }
   }

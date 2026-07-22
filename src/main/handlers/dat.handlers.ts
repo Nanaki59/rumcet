@@ -1,6 +1,6 @@
 // src/main/handlers/dat.handlers.ts
 import { IpcMain, dialog, BrowserWindow } from 'electron';
-import { parseDatFile, insertGamesFromDat } from '../../database/insertGamesFromDat.js';
+import { parseDatFile, insertGamesFromDat, extractDatHeader } from '../../database/insertGamesFromDat.js';
 import { setMetadata, getMetadata, Database } from '../../database/init.js';
 import { databaseService } from '../services/database.service.js';
 import { settingsManager } from '../../helpers/settingsManager.js';
@@ -22,6 +22,55 @@ async function detectAndStoreSystem(database: Database, datName: string): Promis
     await setMetadata(database, 'system_name', '');
     settingsManager.setActiveSystemId(null);
   }
+}
+
+export interface ComplementaryLoadResult {
+  success: true;
+  datPath: string;
+  datName: string;
+  datVersion: string | null;
+  gamesCount: number;
+  romsCount: number;
+  disksCount: number;
+  relationshipsCount: number;
+  sourceId: number;
+}
+
+/**
+ * Phase 9 — Cœur du chargement d'un DAT complémentaire (sans dialog).
+ * Fusionne le DAT dans la base active : les jeux existants sont préservés,
+ * seuls les nouveaux jeux et les ROMs manquantes sont ajoutés.
+ * Utilisé par le handler `dat:load-complementary` et le flux unifié
+ * de l'écran de chargement DAT (`dat-download:load`).
+ */
+export async function loadComplementaryDatFromPath(datPath: string): Promise<ComplementaryLoadResult> {
+  const database = databaseService.getDatabase();
+  if (!database) throw new Error('Aucune base de données active.');
+
+  const parsed = await parseDatFile(datPath);
+  const result = await insertGamesFromDat(database, parsed, {
+    role: 'complementary',
+    sourceFilePath: datPath
+  });
+
+  const hdr = extractDatHeader(parsed);
+  console.log(
+    `[dat:load-complementary] "${hdr.name || path.basename(datPath)}" loaded — ` +
+    `${result.gamesCount} game(s) added, ${result.romsCount} ROM(s), ${result.disksCount} disk(s), ` +
+    `${result.relationshipsCount} relationship(s), source_id=${result.sourceId}`
+  );
+
+  return {
+    success: true,
+    datPath,
+    datName: hdr.name || path.basename(datPath),
+    datVersion: hdr.version || null,
+    gamesCount: result.gamesCount,
+    romsCount: result.romsCount,
+    disksCount: result.disksCount,
+    relationshipsCount: result.relationshipsCount,
+    sourceId: result.sourceId
+  };
 }
 
 export function registerDatHandlers(ipcMain: IpcMain, mainWindow: BrowserWindow) {
@@ -59,23 +108,23 @@ export function registerDatHandlers(ipcMain: IpcMain, mainWindow: BrowserWindow)
       }
 
       const parsed = await parseDatFile(datPath);
-      const { gamesCount, romsCount } = await insertGamesFromDat(database, parsed);
+      const { gamesCount, romsCount } = await insertGamesFromDat(database, parsed, { sourceFilePath: datPath });
 
       // Sauvegarder les métadonnées
       await setMetadata(database, 'dat_path', datPath);
-    
-      // Récupérer les informations du header
-      const header = parsed.datafile?.header?.[0];
 
-      const datName = header?.name?.[0] ||
-                      path.basename(datPath, path.extname(datPath));
-      const datDescription = header?.description?.[0] ||
-                      path.basename(datPath, path.extname(datPath));
-      const datVersion = header?.version?.[0] || 'N/A';
-      const datDate = header?.date?.[0] || 'N/A';
-      const datAuthor = header?.author?.[0] || 'N/A';
-      const datHomepage = header?.homepage?.[0] || 'N/A';
-      const datUrl = header?.url?.[0] || 'N/A';
+      // Récupérer les informations du header (gère Logiqx + MAME brut)
+      const hdr = extractDatHeader(parsed);
+      const lh = parsed.datafile?.header?.[0];
+      const fallbackName = path.basename(datPath, path.extname(datPath));
+
+      const datName = hdr.name || fallbackName;
+      const datDescription = hdr.description || fallbackName;
+      const datVersion = hdr.version || 'N/A';
+      const datDate = lh?.date?.[0] || 'N/A';
+      const datAuthor = lh?.author?.[0] || 'N/A';
+      const datHomepage = lh?.homepage?.[0] || 'N/A';
+      const datUrl = lh?.url?.[0] || 'N/A';
 
       await setMetadata(database, 'dat_name', datName);
       await setMetadata(database, 'dat_description', datDescription);
@@ -120,6 +169,48 @@ export function registerDatHandlers(ipcMain: IpcMain, mainWindow: BrowserWindow)
     }
   });
 
+  // Phase 9 : ajouter un DAT complémentaire (typiquement un DAT CHDs qui étend
+  // un DAT ROMs déjà chargé, ou un pack BIOS, ou un pack homebrew, etc.).
+  // - Sélectionne un fichier DAT/XML via dialog.
+  // - Insère les jeux/ROMs manquants sans écraser les entrées existantes.
+  // - Enregistre une entrée dat_sources(role='complementary').
+  ipcMain.handle('dat:load-complementary', async () => {
+    const database = databaseService.getDatabase();
+    if (!database) throw new Error('Aucune base de données active.');
+
+    const defaultPath = settingsManager.get('defaultDatFolder');
+    const filePicker = await dialog.showOpenDialog(mainWindow, {
+      title: 'Ajouter un DAT complémentaire',
+      defaultPath: defaultPath,
+      filters: [
+        { name: 'Fichiers DAT/XML', extensions: ['dat', 'xml'] },
+        { name: 'Tous les fichiers', extensions: ['*'] }
+      ],
+      properties: ['openFile']
+    });
+    if (filePicker.canceled || filePicker.filePaths.length === 0) return null;
+    return loadComplementaryDatFromPath(filePicker.filePaths[0]);
+  });
+
+  // Phase 9 : liste des sources DAT chargées dans la base courante.
+  // Utilisé par l'UI pour afficher un panneau "Sources DAT" et permettre
+  // à l'utilisateur de retirer un complémentaire (à venir).
+  ipcMain.handle('dat:list-sources', async () => {
+    const database = databaseService.getDatabase();
+    if (!database) return [];
+    try {
+      return await database.all(`
+        SELECT id, file_path, role, dat_name, dat_description, dat_version,
+               dat_set_mode, games_added, roms_added, loaded_at
+        FROM dat_sources
+        ORDER BY id
+      `);
+    } catch (error) {
+      console.error('[dat:list-sources] Error:', error);
+      return [];
+    }
+  });
+
   // Mettre à jour le DAT : snapshot ancien, import nouveau, comparaison
   ipcMain.handle('dat:update', async () => {
     const database = databaseService.getDatabase();
@@ -153,8 +244,8 @@ export function registerDatHandlers(ipcMain: IpcMain, mainWindow: BrowserWindow)
     // 1.bis Vérification de cohérence système : parser le DAT à l'avance pour extraire le nom
     // et comparer le système détecté avec celui actuellement enregistré en metadata.
     const previewParsed = await parseDatFile(newDatPath);
-    const previewHeader = previewParsed.datafile?.header?.[0];
-    const previewDatName = previewHeader?.name?.[0] || path.basename(newDatPath, path.extname(newDatPath));
+    const previewHdr = extractDatHeader(previewParsed);
+    const previewDatName = previewHdr.name || path.basename(newDatPath, path.extname(newDatPath));
     const newDatSystem = detectSystemFromDatName(previewDatName);
     const currentSystemId = (await getMetadata(database, 'system_id')) || '';
 
@@ -186,17 +277,19 @@ export function registerDatHandlers(ipcMain: IpcMain, mainWindow: BrowserWindow)
 
     // 3. Importer le nouveau DAT (insertGamesFromDat préserve les sélections)
     const parsed = previewParsed;
-    const { gamesCount, romsCount } = await insertGamesFromDat(database, parsed);
+    const { gamesCount, romsCount } = await insertGamesFromDat(database, parsed, { sourceFilePath: newDatPath });
 
-    // 4. Sauvegarder les nouvelles métadonnées
-    const header = parsed.datafile?.header?.[0];
-    const datName = header?.name?.[0] || path.basename(newDatPath, path.extname(newDatPath));
-    const datDescription = header?.description?.[0] || path.basename(newDatPath, path.extname(newDatPath));
-    const datVersion = header?.version?.[0] || 'N/A';
-    const datDate = header?.date?.[0] || 'N/A';
-    const datAuthor = header?.author?.[0] || 'N/A';
-    const datHomepage = header?.homepage?.[0] || 'N/A';
-    const datUrl = header?.url?.[0] || 'N/A';
+    // 4. Sauvegarder les nouvelles métadonnées (gère Logiqx + MAME brut)
+    const hdr = extractDatHeader(parsed);
+    const lh = parsed.datafile?.header?.[0];
+    const fallbackName = path.basename(newDatPath, path.extname(newDatPath));
+    const datName = hdr.name || fallbackName;
+    const datDescription = hdr.description || fallbackName;
+    const datVersion = hdr.version || 'N/A';
+    const datDate = lh?.date?.[0] || 'N/A';
+    const datAuthor = lh?.author?.[0] || 'N/A';
+    const datHomepage = lh?.homepage?.[0] || 'N/A';
+    const datUrl = lh?.url?.[0] || 'N/A';
 
     await setMetadata(database, 'dat_path', newDatPath);
     await setMetadata(database, 'dat_name', datName);
@@ -326,7 +419,7 @@ export function registerDatHandlers(ipcMain: IpcMain, mainWindow: BrowserWindow)
           if (prevSelected) {
             await database.run('UPDATE games SET is_selected = ? WHERE id = ?', [prevSelected.is_selected, newGame.id]);
           }
-          console.log(`[DAT Update] Jeu renommé détecté : "${bestPrev.name}" → "${newGame.name}"`);
+          console.log(`[DAT Update] Renamed game detected: "${bestPrev.name}" → "${newGame.name}"`);
         }
       }
     }

@@ -40,11 +40,20 @@ export type ArchiveFormat = 'zip' | '7z' | 'rar' | 'chd' | 'iso' | 'cso';
  * Options pour créer une archive
  */
 export interface ArchiveCreateOptions {
-  files: string[];              // Fichiers à archiver (chemins absolus)
+  files: string[];              // Fichiers à archiver (chemins absolus ou relatifs à workingDirectory)
   outputPath: string;           // Chemin de sortie de l'archive
   compressionLevel?: number;    // Niveau de compression (si applicable)
   solidArchive?: boolean;       // Archive solide (7z uniquement)
   multithreading?: boolean;     // Utiliser le multithreading
+  /**
+   * Répertoire de travail pour l'opération 7z (option `$cwd`). Quand défini,
+   * les chemins dans `files` doivent être RELATIFS à ce répertoire — 7z
+   * préservera la structure des sous-dossiers dans l'archive. Sans ça, 7z
+   * strippe les chemins et deux fichiers portant le même nom dans des sous-dossiers
+   * différents provoquent une erreur "Duplicate filename on disk".
+   * Nécessaire pour Phase 6 (consolidation merged avec sous-dossiers {clone}/).
+   */
+  workingDirectory?: string;
 }
 
 /**

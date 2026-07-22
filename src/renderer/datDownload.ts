@@ -17,6 +17,19 @@
  */
 
 // src/renderer/datDownload.ts
+//
+// Écran unifié de chargement d'un DAT/XML :
+//  1. Choix du fichier — local (Parcourir) ou téléchargement en ligne
+//     (No-Intro « ouvrir la page », Redump, MAME Progetto-Snaps / Pleasuredome).
+//  2. Base de données — chemin auto dérivé du nom du DAT, personnalisable.
+//  3. « Charger le DAT/XML » — crée la base + charge le DAT (primaire), ou
+//     fusionne dans la base active (complémentaire) si une base est ouverte.
+
+import { initI18n, t } from './i18n.js';
+import { setupConsoleCapture } from './consoleCapture.js';
+
+// Capturer les console.* de cette page vers le fichier de logs dès le chargement
+setupConsoleCapture();
 
 interface DatSystemInfo {
   name: string;
@@ -35,15 +48,53 @@ interface MameVersion {
   downloadUrl: string;
 }
 
+interface PleasuredomeDatEntry {
+  name: string;
+  url: string;
+}
+
+interface DatDownloadContext {
+  dbOpen: boolean;
+  dbPath: string | null;
+  datName: string | null;
+  defaultDatFolder: string;
+}
+
+// ==========================================
 // État
+// ==========================================
+
+let context: DatDownloadContext = { dbOpen: false, dbPath: null, datName: null, defaultDatFolder: '' };
+
+/** Fichier DAT retenu (local ou fraîchement téléchargé). */
+let selectedDatPath: string | null = null;
+/** Chemin .sqlite proposé automatiquement (mode primaire). */
+let dbAutoPath: string | null = null;
+
+// Téléchargement en ligne
 let allSystems: DatSystemInfo[] = [];
 let allMameVersions: MameVersion[] = [];
+let allPleasuredomeDats: PleasuredomeDatEntry[] = [];
 let selectedSystem: DatSystemInfo | null = null;
 let selectedSource: 'no-intro' | 'redump' | null = null;
 let selectedMameVersion: MameVersion | null = null;
-let currentTab: 'systems' | 'mame' = 'systems';
+let selectedPleasuredome: PleasuredomeDatEntry | null = null;
+let currentOnlineTab: 'systems' | 'mame' = 'systems';
+let mameSource: 'progetto' | 'pleasuredome' = 'progetto';
 
+// ==========================================
 // Éléments DOM
+// ==========================================
+
+const modeBanner = document.getElementById('mode-banner') as HTMLDivElement;
+const modeBannerDat = document.getElementById('mode-banner-dat') as HTMLSpanElement;
+const windowSubtitle = document.getElementById('window-subtitle') as HTMLParagraphElement;
+
+const srcLocalBtn = document.getElementById('src-local') as HTMLButtonElement;
+const srcOnlineBtn = document.getElementById('src-online') as HTMLButtonElement;
+const paneLocal = document.getElementById('pane-local') as HTMLDivElement;
+const paneOnline = document.getElementById('pane-online') as HTMLDivElement;
+
 const systemList = document.getElementById('system-list') as HTMLDivElement;
 const mameList = document.getElementById('mame-list') as HTMLDivElement;
 const systemSearch = document.getElementById('system-search') as HTMLInputElement;
@@ -52,48 +103,220 @@ const systemCounter = document.getElementById('system-counter') as HTMLDivElemen
 const mameCounter = document.getElementById('mame-counter') as HTMLDivElement;
 const sourceSelection = document.getElementById('source-selection') as HTMLDivElement;
 const sourceRadioGroup = document.getElementById('source-radio-group') as HTMLDivElement;
-const nointroParams = document.getElementById('nointro-params') as HTMLDivElement;
+const nointroNotice = document.getElementById('nointro-notice') as HTMLDivElement;
+const pleasuredomeNotice = document.getElementById('pleasuredome-notice') as HTMLDivElement;
 const destFolderInput = document.getElementById('dest-folder') as HTMLInputElement;
 const btnDownload = document.getElementById('btn-download') as HTMLButtonElement;
-const statusMessage = document.getElementById('status-message') as HTMLSpanElement;
+const btnOpenPage = document.getElementById('btn-open-page') as HTMLButtonElement;
 const systemLoading = document.getElementById('system-loading') as HTMLDivElement;
 const mameLoading = document.getElementById('mame-loading') as HTMLDivElement;
+
+const selectedDatBar = document.getElementById('selected-dat') as HTMLDivElement;
+const selectedDatIcon = document.getElementById('selected-dat-icon') as HTMLSpanElement;
+const selectedDatPathEl = document.getElementById('selected-dat-path') as HTMLSpanElement;
+
+const stepDb = document.getElementById('step-db') as HTMLDivElement;
+const dbCustomize = document.getElementById('db-customize') as HTMLInputElement;
+const dbPathInput = document.getElementById('db-path') as HTMLInputElement;
+const btnBrowseDb = document.getElementById('btn-browse-db') as HTMLButtonElement;
+
+const statusMessage = document.getElementById('status-message') as HTMLSpanElement;
+const btnLoad = document.getElementById('btn-load') as HTMLButtonElement;
 
 // ==========================================
 // Initialisation
 // ==========================================
 
 async function init() {
-  // Charger le dossier par défaut depuis les settings
   try {
-    const settings = await window.api.getSettings();
-    destFolderInput.value = settings.defaultDatFolder || '';
-
-    // Charger les paramètres No-Intro par défaut
-    if (settings.noIntroDefaults) {
-      (document.getElementById('param-bios') as HTMLInputElement).checked = settings.noIntroDefaults.includeBios;
-      (document.getElementById('param-proto') as HTMLInputElement).checked = settings.noIntroDefaults.includeProto;
-      (document.getElementById('param-beta') as HTMLInputElement).checked = settings.noIntroDefaults.includeBeta;
-      (document.getElementById('param-demo') as HTMLInputElement).checked = settings.noIntroDefaults.includeDemo;
-      (document.getElementById('param-sample') as HTMLInputElement).checked = settings.noIntroDefaults.includeSample;
-    }
+    context = await window.api.getDatDownloadContext();
   } catch {
-    // Pas de settings disponibles
+    // Contexte indisponible — on reste en mode primaire par défaut
   }
 
-  // Charger la liste des systèmes
-  loadSystems();
+  if (context.dbOpen) {
+    // Mode complémentaire : bannière + pas de section base de données
+    modeBanner.classList.add('visible');
+    const datName = context.datName || context.dbPath || t('datDownload.activeDb');
+    modeBanner.innerHTML = t('datDownload.modeBanner', { dat: escapeHtml(datName) });
+    stepDb.style.display = 'none';
+    windowSubtitle.textContent = t('datDownload.subtitleComplementary');
+  }
 
-  // Setup des événements
-  setupTabSwitching();
+  destFolderInput.value = context.defaultDatFolder || '';
+
+  setupSourceToggle();
+  setupOnlineTabs();
+  setupMameSourceRadios();
   setupSearch();
   setupBrowseFolder();
-  setupDownloadButton();
+  setupLocalBrowse();
+  setupDbSection();
+  setupDownloadButtons();
+  setupLoadButton();
   setupCloseButton();
+
+  // Charger la liste des systèmes en arrière-plan (pane online affiché à la demande)
+  loadSystems();
 }
 
 // ==========================================
-// Chargement des données
+// Bascule Fichier local / En ligne
+// ==========================================
+
+function setupSourceToggle() {
+  srcLocalBtn.addEventListener('click', () => {
+    srcLocalBtn.classList.add('active');
+    srcOnlineBtn.classList.remove('active');
+    paneLocal.classList.add('active');
+    paneOnline.classList.remove('active');
+  });
+  srcOnlineBtn.addEventListener('click', () => {
+    srcOnlineBtn.classList.add('active');
+    srcLocalBtn.classList.remove('active');
+    paneOnline.classList.add('active');
+    paneLocal.classList.remove('active');
+  });
+}
+
+// ==========================================
+// Fichier local
+// ==========================================
+
+function setupLocalBrowse() {
+  document.getElementById('btn-browse-local')?.addEventListener('click', async () => {
+    const filePath = await window.api.selectLocalDat();
+    if (filePath) {
+      await setSelectedDat(filePath);
+      setStatus('', '');
+    }
+  });
+}
+
+// ==========================================
+// Fichier DAT retenu (commun)
+// ==========================================
+
+async function setSelectedDat(datPath: string) {
+  selectedDatPath = datPath;
+  selectedDatBar.classList.add('has-file');
+  selectedDatIcon.textContent = '✅';
+  selectedDatPathEl.textContent = datPath;
+  selectedDatPathEl.title = datPath;
+
+  // Mode primaire : proposer automatiquement le chemin de la base
+  if (!context.dbOpen) {
+    try {
+      dbAutoPath = await window.api.getDefaultDbPath(datPath);
+    } catch {
+      dbAutoPath = null;
+    }
+    // Ne pas écraser un chemin personnalisé par l'utilisateur
+    if (!dbCustomize.checked) {
+      dbPathInput.value = dbAutoPath || '';
+    }
+  }
+
+  updateLoadButton();
+}
+
+function updateLoadButton() {
+  if (!selectedDatPath) {
+    btnLoad.disabled = true;
+    return;
+  }
+  if (context.dbOpen) {
+    btnLoad.disabled = false;
+    return;
+  }
+  btnLoad.disabled = !dbPathInput.value.trim();
+}
+
+// ==========================================
+// Section base de données (mode primaire)
+// ==========================================
+
+function setupDbSection() {
+  dbCustomize.addEventListener('change', () => {
+    const custom = dbCustomize.checked;
+    if (custom) {
+      dbPathInput.removeAttribute('readonly');
+      btnBrowseDb.disabled = false;
+    } else {
+      dbPathInput.setAttribute('readonly', '');
+      btnBrowseDb.disabled = true;
+      // Revenir au chemin automatique
+      dbPathInput.value = dbAutoPath || '';
+    }
+    updateLoadButton();
+  });
+
+  dbPathInput.addEventListener('input', updateLoadButton);
+
+  btnBrowseDb.addEventListener('click', async () => {
+    const chosen = await window.api.browseDbPath(dbPathInput.value || dbAutoPath || undefined);
+    if (chosen) {
+      dbPathInput.value = chosen;
+      updateLoadButton();
+    }
+  });
+}
+
+// ==========================================
+// Chargement final
+// ==========================================
+
+function setupLoadButton() {
+  btnLoad.addEventListener('click', async () => {
+    if (!selectedDatPath) return;
+
+    btnLoad.disabled = true;
+    setStatus(context.dbOpen ? t('datDownload.status.merging') : t('datDownload.status.creating'), 'loading');
+
+    try {
+      const dbPath = context.dbOpen ? undefined : (dbPathInput.value.trim() || undefined);
+      let result = await window.api.loadDatUnified({ datPath: selectedDatPath, dbPath });
+
+      // La base cible existe déjà → demander confirmation avant écrasement
+      if (result?.fileExists) {
+        const ok = window.confirm(t('datDownload.status.dbExistsConfirm', { path: result.dbPath }));
+        if (!ok) {
+          setStatus(t('datDownload.status.cancelled'), '');
+          btnLoad.disabled = false;
+          return;
+        }
+        setStatus(t('datDownload.status.creating'), 'loading');
+        result = await window.api.loadDatUnified({ datPath: selectedDatPath, dbPath, overwrite: true });
+      }
+
+      if (result?.mode === 'complementary') {
+        setStatus(
+          t('datDownload.status.mergedSuccess', {
+            games: result.gamesCount,
+            roms: result.romsCount,
+            disks: result.disksCount
+          }),
+          'success'
+        );
+      } else {
+        setStatus(
+          t('datDownload.status.createdSuccess', { games: result.gamesCount, roms: result.romsCount }),
+          'success'
+        );
+      }
+
+      // Laisser le temps de lire le statut, puis fermer — la fenêtre principale
+      // a été notifiée via l'événement 'dat-download:loaded'.
+      setTimeout(() => window.close(), 1400);
+    } catch (error: any) {
+      setStatus(t('datDownload.status.error', { error: error?.message || String(error) }), 'error');
+      btnLoad.disabled = false;
+    }
+  });
+}
+
+// ==========================================
+// Téléchargement en ligne — chargement des listes
 // ==========================================
 
 async function loadSystems() {
@@ -102,126 +325,183 @@ async function loadSystems() {
     allSystems = await window.api.getDownloadSystems();
     renderSystems(allSystems);
   } catch (error: any) {
-    systemList.innerHTML = `<div style="padding: 20px; text-align: center; color: #e74c3c;">Erreur de chargement: ${error.message}</div>`;
+    systemList.innerHTML = `<div style="padding: 20px; text-align: center; color: #e74c3c;">${escapeHtml(t('datDownload.status.loadError', { error: error.message }))}</div>`;
   }
   systemLoading.classList.remove('visible');
 }
 
 async function loadMameVersions() {
-  if (allMameVersions.length > 0) return; // Déjà chargées
-
+  if (allMameVersions.length > 0) {
+    renderMameList();
+    return;
+  }
   mameLoading.classList.add('visible');
   try {
     allMameVersions = await window.api.getMameVersions();
-    renderMameVersions(allMameVersions);
+    renderMameList();
   } catch (error: any) {
-    mameList.innerHTML = `<div style="padding: 20px; text-align: center; color: #e74c3c;">Erreur de chargement: ${error.message}</div>`;
+    mameList.innerHTML = `<div style="padding: 20px; text-align: center; color: #e74c3c;">${escapeHtml(t('datDownload.status.loadError', { error: error.message }))}</div>`;
+  }
+  mameLoading.classList.remove('visible');
+}
+
+async function loadPleasuredomeDats() {
+  if (allPleasuredomeDats.length > 0) {
+    renderMameList();
+    return;
+  }
+  mameLoading.classList.add('visible');
+  try {
+    allPleasuredomeDats = await window.api.getPleasuredomeDats();
+    renderMameList();
+  } catch (error: any) {
+    mameList.innerHTML = `<div style="padding: 20px; text-align: center; color: #e74c3c;">${escapeHtml(t('datDownload.status.loadError', { error: error.message }))}</div>`;
   }
   mameLoading.classList.remove('visible');
 }
 
 // ==========================================
-// Rendu
+// Rendu des listes
 // ==========================================
 
 function renderSystems(systems: DatSystemInfo[]) {
-  // Supprimer les anciens items (garder le loader)
-  const existingItems = systemList.querySelectorAll('.system-item');
-  existingItems.forEach(item => item.remove());
+  systemList.querySelectorAll('.list-item').forEach(item => item.remove());
 
   systems.forEach(sys => {
     const item = document.createElement('div');
-    item.className = 'system-item';
+    item.className = 'list-item';
     if (selectedSystem && selectedSystem.name === sys.name) {
       item.classList.add('selected');
     }
 
     const nameSpan = document.createElement('span');
-    nameSpan.className = 'system-name';
+    nameSpan.className = 'item-name';
     nameSpan.textContent = sys.name;
 
-    const sourcesDiv = document.createElement('span');
-    sourcesDiv.className = 'system-sources';
-
+    const badges = document.createElement('span');
+    badges.className = 'item-badges';
     sys.sources.forEach(src => {
       const badge = document.createElement('span');
-      badge.className = `source-badge ${src.type}${src.recommended ? ' recommended' : ''}`;
+      badge.className = `badge ${src.type}${src.recommended ? ' recommended' : ''}`;
       badge.textContent = src.type === 'no-intro' ? 'No-Intro' : 'Redump';
-      sourcesDiv.appendChild(badge);
+      badges.appendChild(badge);
     });
 
     item.appendChild(nameSpan);
-    item.appendChild(sourcesDiv);
-
+    item.appendChild(badges);
     item.addEventListener('click', () => selectSystem(sys));
     systemList.appendChild(item);
   });
 
-  systemCounter.textContent = `${systems.length} système${systems.length > 1 ? 's' : ''}`;
+  systemCounter.textContent = systems.length > 1
+    ? t('datDownload.counter.systemsPlural', { count: systems.length })
+    : t('datDownload.counter.systemSingular', { count: systems.length });
 }
 
-function renderMameVersions(versions: MameVersion[]) {
-  const existingItems = mameList.querySelectorAll('.mame-item');
-  existingItems.forEach(item => item.remove());
+/** Rendu de la liste MAME selon la source active (Progetto-Snaps ou Pleasuredome). */
+function renderMameList() {
+  mameList.querySelectorAll('.list-item').forEach(item => item.remove());
 
-  versions.forEach(ver => {
-    const item = document.createElement('div');
-    item.className = 'mame-item';
-    if (selectedMameVersion && selectedMameVersion.version === ver.version) {
-      item.classList.add('selected');
-    }
+  const query = mameSearch.value.toLowerCase().trim();
 
-    const leftDiv = document.createElement('div');
-    const versionSpan = document.createElement('span');
-    versionSpan.className = 'mame-version';
-    versionSpan.textContent = `MAME ${ver.version}`;
-    leftDiv.appendChild(versionSpan);
+  if (mameSource === 'progetto') {
+    const versions = query
+      ? allMameVersions.filter(v =>
+          v.version.includes(query) ||
+          (v.date && v.date.toLowerCase().includes(query)) ||
+          (v.recalboxTag && v.recalboxTag.toLowerCase().includes(query)))
+      : allMameVersions;
 
-    if (ver.date) {
-      const dateSpan = document.createElement('span');
-      dateSpan.className = 'mame-date';
-      dateSpan.textContent = ` (${ver.date})`;
-      leftDiv.appendChild(dateSpan);
-    }
+    versions.forEach(ver => {
+      const item = document.createElement('div');
+      item.className = 'list-item';
+      if (selectedMameVersion && selectedMameVersion.version === ver.version) {
+        item.classList.add('selected');
+      }
 
-    item.appendChild(leftDiv);
+      const leftDiv = document.createElement('div');
+      const versionSpan = document.createElement('span');
+      versionSpan.className = 'item-name';
+      versionSpan.textContent = `MAME ${ver.version}`;
+      leftDiv.appendChild(versionSpan);
+      if (ver.date) {
+        const dateSpan = document.createElement('span');
+        dateSpan.className = 'item-meta';
+        dateSpan.textContent = ` (${ver.date})`;
+        leftDiv.appendChild(dateSpan);
+      }
+      item.appendChild(leftDiv);
 
-    const rightDiv = document.createElement('div');
-    if (ver.isLatest) {
-      const badge = document.createElement('span');
-      badge.className = 'mame-badge';
-      badge.textContent = 'Dernière version';
-      rightDiv.appendChild(badge);
-    }
-    if (ver.recalboxTag) {
-      const badge = document.createElement('span');
-      badge.className = 'mame-badge recalbox';
-      badge.textContent = ver.recalboxTag;
-      rightDiv.appendChild(badge);
-    }
-    item.appendChild(rightDiv);
+      const badges = document.createElement('span');
+      badges.className = 'item-badges';
+      if (ver.isLatest) {
+        const badge = document.createElement('span');
+        badge.className = 'badge latest';
+        badge.textContent = t('datDownload.badgeLatest');
+        badges.appendChild(badge);
+      }
+      if (ver.recalboxTag) {
+        const badge = document.createElement('span');
+        badge.className = 'badge recalbox';
+        badge.textContent = ver.recalboxTag;
+        badges.appendChild(badge);
+      }
+      item.appendChild(badges);
 
-    item.addEventListener('click', () => selectMameVersion(ver));
-    mameList.appendChild(item);
-  });
+      item.addEventListener('click', () => {
+        selectedMameVersion = ver;
+        selectedPleasuredome = null;
+        renderMameList();
+        updateOnlineButtons();
+      });
+      mameList.appendChild(item);
+    });
 
-  mameCounter.textContent = `${versions.length} version${versions.length > 1 ? 's' : ''}`;
+    mameCounter.textContent = versions.length > 1
+      ? t('datDownload.counter.versionsPlural', { count: versions.length })
+      : t('datDownload.counter.versionSingular', { count: versions.length });
+  } else {
+    const entries = query
+      ? allPleasuredomeDats.filter(e => e.name.toLowerCase().includes(query))
+      : allPleasuredomeDats;
+
+    entries.forEach(entry => {
+      const item = document.createElement('div');
+      item.className = 'list-item';
+      if (selectedPleasuredome && selectedPleasuredome.url === entry.url) {
+        item.classList.add('selected');
+      }
+
+      const nameSpan = document.createElement('span');
+      nameSpan.className = 'item-name';
+      nameSpan.textContent = entry.name;
+      item.appendChild(nameSpan);
+
+      item.addEventListener('click', () => {
+        selectedPleasuredome = entry;
+        selectedMameVersion = null;
+        renderMameList();
+        updateOnlineButtons();
+      });
+      mameList.appendChild(item);
+    });
+
+    mameCounter.textContent = t('datDownload.counter.dats', { count: entries.length, plural: entries.length > 1 ? 's' : '' });
+  }
 }
 
 // ==========================================
-// Sélection
+// Sélection système + boutons
 // ==========================================
 
 function selectSystem(sys: DatSystemInfo) {
   selectedSystem = sys;
 
-  // Mettre à jour la sélection visuelle
-  systemList.querySelectorAll('.system-item').forEach(item => {
-    const name = item.querySelector('.system-name')?.textContent;
+  systemList.querySelectorAll('.list-item').forEach(item => {
+    const name = item.querySelector('.item-name')?.textContent;
     item.classList.toggle('selected', name === sys.name);
   });
 
-  // Afficher la sélection de source si plusieurs sources
   if (sys.sources.length > 1) {
     sourceSelection.classList.add('visible');
     sourceRadioGroup.innerHTML = '';
@@ -241,15 +521,14 @@ function selectSystem(sys: DatSystemInfo) {
       if (src.recommended) {
         const tag = document.createElement('span');
         tag.className = 'recommended-tag';
-        tag.textContent = ' (recommandé)';
+        tag.textContent = ' ' + t('datDownload.recommendedTag');
         label.appendChild(tag);
         selectedSource = src.type;
       }
 
       radio.addEventListener('change', () => {
         selectedSource = src.type;
-        updateNoIntroParamsVisibility();
-        updateDownloadButton();
+        updateOnlineButtons();
       });
 
       sourceRadioGroup.appendChild(label);
@@ -259,57 +538,62 @@ function selectSystem(sys: DatSystemInfo) {
     selectedSource = sys.sources[0]?.type || null;
   }
 
-  updateNoIntroParamsVisibility();
-  updateDownloadButton();
+  updateOnlineButtons();
 }
 
-function selectMameVersion(ver: MameVersion) {
-  selectedMameVersion = ver;
-
-  mameList.querySelectorAll('.mame-item').forEach(item => {
-    const versionText = item.querySelector('.mame-version')?.textContent;
-    item.classList.toggle('selected', versionText === `MAME ${ver.version}`);
-  });
-
-  updateDownloadButton();
-}
-
-function updateNoIntroParamsVisibility() {
-  const showParams = selectedSource === 'no-intro';
-  nointroParams.classList.toggle('visible', showParams);
-}
-
-function updateDownloadButton() {
-  if (currentTab === 'systems') {
-    btnDownload.disabled = !selectedSystem || !selectedSource;
+function updateOnlineButtons() {
+  if (currentOnlineTab === 'systems') {
+    const hasSelection = !!selectedSystem && !!selectedSource;
+    btnOpenPage.disabled = !hasSelection;
+    // No-Intro : téléchargement direct désactivé (risque de ban IP)
+    btnDownload.disabled = !hasSelection || selectedSource === 'no-intro';
+    nointroNotice.classList.toggle('visible', selectedSource === 'no-intro' && hasSelection);
   } else {
-    btnDownload.disabled = !selectedMameVersion;
+    if (mameSource === 'progetto') {
+      btnOpenPage.disabled = !selectedMameVersion;
+      btnDownload.disabled = !selectedMameVersion;
+    } else {
+      // Pleasuredome : « Ouvrir la page » toujours possible (page d'index)
+      btnOpenPage.disabled = false;
+      btnDownload.disabled = !selectedPleasuredome;
+    }
+    nointroNotice.classList.remove('visible');
   }
 }
 
 // ==========================================
-// Gestion des onglets
+// Onglets en ligne + source MAME
 // ==========================================
 
-function setupTabSwitching() {
-  document.querySelectorAll('.tab-btn').forEach(btn => {
+function setupOnlineTabs() {
+  document.querySelectorAll('.online-tab-btn').forEach(btn => {
     btn.addEventListener('click', () => {
       const tabId = (btn as HTMLElement).dataset.tab as 'systems' | 'mame';
-      currentTab = tabId;
+      currentOnlineTab = tabId;
 
-      // Activer l'onglet
-      document.querySelectorAll('.tab-btn').forEach(b => b.classList.remove('active'));
+      document.querySelectorAll('.online-tab-btn').forEach(b => b.classList.remove('active'));
       btn.classList.add('active');
+      document.querySelectorAll('.online-tab-content').forEach(t => t.classList.remove('active'));
+      document.getElementById(`online-tab-${tabId}`)?.classList.add('active');
 
-      document.querySelectorAll('.tab-content').forEach(t => t.classList.remove('active'));
-      document.getElementById(`tab-${tabId}`)?.classList.add('active');
-
-      // Charger les données MAME au premier accès
-      if (tabId === 'mame' && allMameVersions.length === 0) {
-        loadMameVersions();
+      if (tabId === 'mame') {
+        if (mameSource === 'progetto') loadMameVersions();
+        else loadPleasuredomeDats();
       }
 
-      updateDownloadButton();
+      updateOnlineButtons();
+    });
+  });
+}
+
+function setupMameSourceRadios() {
+  document.querySelectorAll<HTMLInputElement>('input[name="mame-source"]').forEach(radio => {
+    radio.addEventListener('change', () => {
+      mameSource = radio.value as 'progetto' | 'pleasuredome';
+      pleasuredomeNotice.classList.toggle('visible', mameSource === 'pleasuredome');
+      if (mameSource === 'progetto') loadMameVersions();
+      else loadPleasuredomeDats();
+      updateOnlineButtons();
     });
   });
 }
@@ -325,23 +609,10 @@ function setupSearch() {
       renderSystems(allSystems);
       return;
     }
-    const filtered = allSystems.filter(sys => sys.name.toLowerCase().includes(query));
-    renderSystems(filtered);
+    renderSystems(allSystems.filter(sys => sys.name.toLowerCase().includes(query)));
   });
 
-  mameSearch.addEventListener('input', () => {
-    const query = mameSearch.value.toLowerCase().trim();
-    if (!query) {
-      renderMameVersions(allMameVersions);
-      return;
-    }
-    const filtered = allMameVersions.filter(ver =>
-      ver.version.includes(query) ||
-      (ver.date && ver.date.toLowerCase().includes(query)) ||
-      (ver.recalboxTag && ver.recalboxTag.toLowerCase().includes(query))
-    );
-    renderMameVersions(filtered);
-  });
+  mameSearch.addEventListener('input', () => renderMameList());
 }
 
 // ==========================================
@@ -361,71 +632,113 @@ function setupBrowseFolder() {
 // Téléchargement
 // ==========================================
 
-function setupDownloadButton() {
+function setupDownloadButtons() {
+  // « Ouvrir la page » — No-Intro (obligatoire), Redump/MAME/Pleasuredome (fallback)
+  btnOpenPage.addEventListener('click', async () => {
+    btnOpenPage.disabled = true;
+    try {
+      let result;
+      if (currentOnlineTab === 'systems' && selectedSystem && selectedSource) {
+        const sourceInfo = selectedSystem.sources.find(s => s.type === selectedSource);
+        if (!sourceInfo) return;
+        result = await window.api.openDatPage({
+          type: 'system',
+          source: selectedSource,
+          systemId: sourceInfo.id,
+          destFolder: ''
+        });
+      } else if (currentOnlineTab === 'mame' && mameSource === 'progetto' && selectedMameVersion) {
+        result = await window.api.openDatPage({
+          type: 'mame',
+          mameVersion: selectedMameVersion.version,
+          destFolder: ''
+        });
+      } else if (currentOnlineTab === 'mame' && mameSource === 'pleasuredome') {
+        // Ouvre la page d'index Pleasuredome (téléchargement manuel possible)
+        result = await window.api.openDatPage({
+          type: 'pleasuredome',
+          destFolder: ''
+        });
+      } else {
+        return;
+      }
+      if (result?.success) {
+        setStatus(t('datDownload.status.pageOpened'), 'success');
+      } else {
+        setStatus(result?.error || t('datDownload.status.pageOpenFailed'), 'error');
+      }
+    } finally {
+      updateOnlineButtons();
+    }
+  });
+
+  // « Télécharger et utiliser » — télécharge puis retient le fichier comme DAT sélectionné
   btnDownload.addEventListener('click', async () => {
     const destFolder = destFolderInput.value;
     if (!destFolder) {
-      setStatus('Veuillez sélectionner un dossier de destination', 'error');
+      setStatus(t('datDownload.status.noDestFolder'), 'error');
       return;
     }
 
     btnDownload.disabled = true;
 
-    if (currentTab === 'systems' && selectedSystem && selectedSource) {
-      const sourceInfo = selectedSystem.sources.find(s => s.type === selectedSource);
-      if (!sourceInfo) return;
-
-      setStatus(`Téléchargement du DAT ${selectedSystem.name} depuis ${selectedSource === 'no-intro' ? 'No-Intro' : 'Redump'}...`, 'loading');
-
-      const noIntroParams = selectedSource === 'no-intro' ? {
-        includeBios: (document.getElementById('param-bios') as HTMLInputElement).checked,
-        includeProto: (document.getElementById('param-proto') as HTMLInputElement).checked,
-        includeBeta: (document.getElementById('param-beta') as HTMLInputElement).checked,
-        includeDemo: (document.getElementById('param-demo') as HTMLInputElement).checked,
-        includeSample: (document.getElementById('param-sample') as HTMLInputElement).checked,
-      } : undefined;
-
-      const result = await window.api.downloadDat({
-        type: 'system',
-        source: selectedSource,
-        systemId: sourceInfo.id,
-        destFolder,
-        noIntroParams
-      });
-
-      if (result.success) {
-        setStatus(`DAT téléchargé : ${result.filePath}`, 'success');
+    try {
+      let result;
+      if (currentOnlineTab === 'systems' && selectedSystem && selectedSource) {
+        const sourceInfo = selectedSystem.sources.find(s => s.type === selectedSource);
+        if (!sourceInfo) return;
+        setStatus(t('datDownload.status.downloadingSystem', {
+          name: selectedSystem.name,
+          source: selectedSource === 'no-intro' ? 'No-Intro' : 'Redump'
+        }), 'loading');
+        result = await window.api.downloadDat({
+          type: 'system',
+          source: selectedSource,
+          systemId: sourceInfo.id,
+          destFolder
+        });
+      } else if (currentOnlineTab === 'mame' && mameSource === 'progetto' && selectedMameVersion) {
+        setStatus(t('datDownload.status.downloadingMame', { version: selectedMameVersion.version }), 'loading');
+        result = await window.api.downloadDat({
+          type: 'mame',
+          mameVersion: selectedMameVersion.version,
+          destFolder
+        });
+      } else if (currentOnlineTab === 'mame' && mameSource === 'pleasuredome' && selectedPleasuredome) {
+        setStatus(t('datDownload.status.downloadingPleasuredome', { name: selectedPleasuredome.name }), 'loading');
+        result = await window.api.downloadDat({
+          type: 'pleasuredome',
+          url: selectedPleasuredome.url,
+          destFolder
+        });
       } else {
-        setStatus(result.error || 'Erreur inconnue', 'error');
+        return;
       }
-    } else if (currentTab === 'mame' && selectedMameVersion) {
-      setStatus(`Téléchargement MAME ${selectedMameVersion.version}...`, 'loading');
 
-      const result = await window.api.downloadDat({
-        type: 'mame',
-        mameVersion: selectedMameVersion.version,
-        destFolder
-      });
-
-      if (result.success) {
-        setStatus(`DAT MAME téléchargé : ${result.filePath}`, 'success');
+      if (result.success && result.filePath) {
+        await setSelectedDat(result.filePath);
+        setStatus(t('datDownload.status.downloaded', { path: result.filePath }), 'success');
       } else {
-        setStatus(result.error || 'Erreur inconnue', 'error');
+        setStatus(result.error || t('common.unknownError'), 'error');
       }
+    } finally {
+      updateOnlineButtons();
     }
-
-    updateDownloadButton();
   });
 }
+
+// ==========================================
+// Statut + fermeture
+// ==========================================
 
 function setStatus(message: string, type: '' | 'success' | 'error' | 'loading' = '') {
   statusMessage.textContent = message;
   statusMessage.className = `status-message ${type}`;
 }
 
-// ==========================================
-// Fermeture
-// ==========================================
+function escapeHtml(str: string): string {
+  return str.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+}
 
 function setupCloseButton() {
   document.getElementById('btn-close')?.addEventListener('click', () => {
@@ -437,4 +750,8 @@ function setupCloseButton() {
 // Lancement
 // ==========================================
 
-document.addEventListener('DOMContentLoaded', init);
+document.addEventListener('DOMContentLoaded', async () => {
+  // Traductions d'abord : le DOM statique et tous les textes dynamiques en dépendent
+  await initI18n();
+  await init();
+});

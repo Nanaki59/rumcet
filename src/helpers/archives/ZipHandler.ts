@@ -47,10 +47,10 @@ export class ZipHandler implements IArchiveHandler {
       const hasGlobalComment = !!(globalComment && globalComment.trim().length > 0);
       //const hasComment = !!zip.getZipComment();
           
-      // DEBUG: Logger pour chaque fichier
-      /*console.log(`[ZipHandler DEBUG] Fichier: ${filePath}`, {
-        'entry.comment existe': !!globalComment,
-        'entry.comment valeur': globalComment,
+      // DEBUG: Log for each file
+      /*console.log(`[ZipHandler DEBUG] File: ${filePath}`, {
+        'entry.comment exists': !!globalComment,
+        'entry.comment value': globalComment,
         'entry.comment type': typeof globalComment,
         'entry.comment length': globalComment ? globalComment.length : 0,
         hasGlobalComment
@@ -90,15 +90,15 @@ export class ZipHandler implements IArchiveHandler {
           const fileComment = entry.comment;
           const hasFileComment = !!(fileComment && fileComment.trim().length > 0);
           
-          // DEBUG: Logger pour chaque fichier
-          /*console.log(`[ZipHandler DEBUG] Fichier: ${entry.entryName}`, {
-            'entry.comment existe': !!fileComment,
-            'entry.comment valeur': fileComment,
+          // DEBUG: Log for each file
+          /*console.log(`[ZipHandler DEBUG] File: ${entry.entryName}`, {
+            'entry.comment exists': !!fileComment,
+            'entry.comment value': fileComment,
             'entry.comment type': typeof fileComment,
             'entry.comment length': fileComment ? fileComment.length : 0,
             hasFileComment,
-            'toutes les clés entry': Object.keys(entry),
-            'toutes les clés header': Object.keys(entry.header)
+            'all entry keys': Object.keys(entry),
+            'all header keys': Object.keys(entry.header)
           });*/
 
           contents.push({
@@ -166,7 +166,7 @@ export class ZipHandler implements IArchiveHandler {
     // Niveau de compression : 1 (fastest) à 9 (maximum), défaut 5
     const mx = options.compressionLevel?.toString() || '5';
 
-    console.log(`[ZIP] compression mx=${mx}, mt=${options.multithreading}`);
+    console.log(`[ZIP] compression mx=${mx}, mt=${options.multithreading}${options.workingDirectory ? ', cwd=' + options.workingDirectory : ''}`);
 
     return new Promise((resolve, reject) => {
       const addOptions: any = {
@@ -178,10 +178,24 @@ export class ZipHandler implements IArchiveHandler {
         ]
       };
 
-      const myStream = Seven.add(options.outputPath, options.files, addOptions);
+      // Phase 6 : node-7z 3.0.0 ignore silencieusement l'option $cwd — la variable
+      // _spawnOptions est utilisée dans lifecycle.js mais jamais peuplée par le
+      // factory. Contournement : changer process.cwd() juste avant Seven.add (qui
+      // appelle spawn() synchroniquement) et restaurer immédiatement après. Le
+      // processus 7z hérite du cwd à sa création, indépendant des changements
+      // ultérieurs. Nécessaire pour préserver la structure des sous-dossiers
+      // {cloneName}/ dans les archives merged.
+      const originalCwd = process.cwd();
+      let myStream: any;
+      try {
+        if (options.workingDirectory) process.chdir(options.workingDirectory);
+        myStream = Seven.add(options.outputPath, options.files, addOptions);
+      } finally {
+        if (options.workingDirectory) process.chdir(originalCwd);
+      }
 
       myStream.on('end', () => {
-        console.log(`[ZIP] ✓ archive créée : ${options.outputPath}`);
+        console.log(`[ZIP] ✓ archive created: ${options.outputPath}`);
         resolve();
       });
 
@@ -223,7 +237,7 @@ export class ZipHandler implements IArchiveHandler {
       // Sauvegarder (écrase l'archive originale)
       newZip.writeZip(archivePath);
       
-      console.log(`✅ Commentaires effacés de: ${archivePath}`);
+      console.log(`✅ Comments cleared from: ${archivePath}`);
     } catch (error) {
       console.error(`Error clearing comments from ZIP file ${archivePath}:`, error);
       throw error;
@@ -251,7 +265,7 @@ export class ZipHandler implements IArchiveHandler {
       // Sauvegarder les modifications
       zip.writeZip(options.archivePath);
       
-      console.log(`✅ Fichiers ajoutés à: ${options.archivePath}`);
+      console.log(`✅ Files added to: ${options.archivePath}`);
     } catch (error) {
       console.error(`Error adding files to ZIP file ${options.archivePath}:`, error);
       throw error;
@@ -272,7 +286,7 @@ export class ZipHandler implements IArchiveHandler {
       // Sauvegarder les modifications
       zip.writeZip(options.archivePath);
       
-      console.log(`✅ Fichiers supprimés de: ${options.archivePath}`);
+      console.log(`✅ Files removed from: ${options.archivePath}`);
     } catch (error) {
       console.error(`Error deleting files from ZIP file ${options.archivePath}:`, error);
       throw error;

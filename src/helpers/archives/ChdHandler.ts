@@ -7,14 +7,15 @@ import path from 'path';
 import fs from 'fs/promises';
 import os from 'os';
 import { app } from 'electron';
-import { 
-  IArchiveHandler, 
-  ArchiveContent, 
-  ArchiveCreateOptions, 
-  ArchiveExtractOptions 
+import {
+  IArchiveHandler,
+  ArchiveContent,
+  ArchiveCreateOptions,
+  ArchiveExtractOptions
 } from './types.js';
 import { calculateFileHashes } from '../hashCalculator.js';
 import { settingsManager } from '../settingsManager.js';
+import { getSystemById } from '../../config/systems.js';
 
 // ============================================
 // INTERFACES ET TYPES
@@ -124,24 +125,91 @@ export class ChdHandler extends EventEmitter implements IArchiveHandler {
   }
   
   /**
-   * Liste le contenu d'un CHD en l'extrayant temporairement
+   * Liste le "contenu" d'un CHD. Retourne DEUX natures d'entrées, car les deux
+   * sont utiles selon le type de romset :
+   *
+   *  1. Une entrée « disque » portant le SHA1 de l'en-tête du CHD (celui que
+   *     rapporte `chdman info`, la somme canonique du disque). C'est ce SHA1 que
+   *     référencent les balises <disk sha1="..."> des DAT MAME. Sans elle, les CHD
+   *     MAME n'étaient jamais matchés. Lecture de l'en-tête uniquement (rapide).
+   *
+   *  2. Les fichiers réellement contenus (bin/cue/gdi/iso), extraits puis hachés.
+   *     Indispensable pour les romsets type Redump (PS1, Saturn, Dreamcast…) dont
+   *     le DAT décrit ces pistes par leur hash, pas le CHD en tant que tel.
+   *
+   * L'entrée « disque » est ajoutée en premier et de façon robuste : si
+   * l'extraction du contenu échoue (CHD exotique, HD volumineux…), on conserve au
+   * moins l'identité MAME pour le matching.
    */
   async list(filePath: string): Promise<ArchiveContent[]> {
     const isAvailable = await this.isAvailable();
     if (!isAvailable) {
       throw new Error('chdman not available. Please configure chdman path in settings.');
     }
-    
+
     const chdInfo = await this.info(filePath);
+    const contents: ArchiveContent[] = [];
+
+    // 1) Entrée « disque » : SHA1 de l'en-tête (identité MAME <disk>). MD5 aussi
+    //    pour les vieux CHD v3/v4 qui en portent un.
+    const diskName = path.basename(filePath, path.extname(filePath));
+    if (!chdInfo.sha1) {
+      console.warn(`⚠️ CHD without a readable header SHA1 (MAME matching impossible): ${filePath}`);
+    }
+    contents.push({
+      fileName: diskName,
+      size: chdInfo.logicalSize || 0,
+      hashes: {
+        crc32: '',
+        md5: chdInfo.md5 || '',
+        sha1: chdInfo.sha1 || ''
+      }
+    });
+
+    // 2) Contenu extrait (bin/cue/gdi/iso) pour les romsets Redump. Non bloquant.
+    //    Inutile pour les systèmes arcade (MAME) : un <disk> n'est identifié que par
+    //    le SHA1 d'en-tête, et l'extraction des CHD MAME (souvent des HD) est à la
+    //    fois coûteuse et peu fiable. On ne l'exécute donc que hors arcade.
+    if (this.isArcadeSystem()) {
+      console.log(`📀 CHD (arcade system): header SHA1 only, no content extraction — ${path.basename(filePath)}`);
+    } else {
+      try {
+        const extracted = await this.listExtractedContents(filePath, chdInfo);
+        contents.push(...extracted);
+      } catch (error) {
+        console.warn(`⚠️ CHD content extraction failed (header SHA1 kept for matching): ${filePath}: ${error}`);
+      }
+    }
+
+    return contents;
+  }
+
+  /**
+   * Indique si le système actif est de type arcade (MAME, FBNeo, Naomi…). Pour ces
+   * systèmes, un CHD est uniquement identifié par le SHA1 de son en-tête ; on
+   * n'extrait pas son contenu. Si aucun système n'est détecté, on considère que ce
+   * n'est PAS de l'arcade (fallback sûr : on extrait, comportement Redump).
+   */
+  private isArcadeSystem(): boolean {
+    const systemId = settingsManager.getActiveSystemId();
+    if (!systemId) return false;
+    return getSystemById(systemId)?.type === 'arcade';
+  }
+
+  /**
+   * Extrait temporairement le CHD et calcule le hash des fichiers de données
+   * (bin/cue/gdi/iso). Utilisé pour le matching des romsets Redump.
+   */
+  private async listExtractedContents(filePath: string, chdInfo: ChdInfo): Promise<ArchiveContent[]> {
     // Respecte le mode "Dossier multi-système" : ajoute le sous-dossier system_id si activé.
     const baseDir = settingsManager.getEffectiveFolderSync('tempExtractionFolder') || os.tmpdir();
     const tempDir = path.join(baseDir, 'chd_list_' + Date.now());
     await fs.mkdir(tempDir, { recursive: true });
-    
+
     try {
       const baseName = path.basename(filePath, '.chd');
       const outputBase = path.join(tempDir, baseName);
-      
+
       if (chdInfo.mediaType === 'DVD') {
         await this.extractDVD(filePath, outputBase);
       } else if (chdInfo.mediaType === 'HD') {
@@ -149,36 +217,19 @@ export class ChdHandler extends EventEmitter implements IArchiveHandler {
       } else {
         await this.extractCD(filePath, outputBase + '.cue', chdInfo);
       }
-      
-      /*const files = await fs.readdir(tempDir);
-      const contents: ArchiveContent[] = [];
-      
-      for (const file of files) {
-        const fullPath = path.join(tempDir, file);
-        const stats = await fs.stat(fullPath);
-        
-        if (stats.isFile()) {
-          const hashes = await calculateFileHashes(fullPath);
-          contents.push({
-            fileName: file,
-            size: stats.size,
-            hashes: hashes
-          });
-        }
-      }*/
 
       const files = await fs.readdir(tempDir);
-      console.log(`📀 CHD extraits : ${files.length} fichiers détectés`);
+      console.log(`📀 CHD extracted: ${files.length} files detected`);
 
       const contents: ArchiveContent[] = [];
 
       for (const file of files) {
         const fullPath = path.join(tempDir, file);
         const stats = await fs.stat(fullPath);
-        
+
         if (stats.isFile()) {
           console.log(`  - ${file} (${(stats.size / 1024 / 1024).toFixed(2)} MB)`);
-          
+
           // Calculer les hashes uniquement pour les fichiers BIN, CUE, GDI et ISO
           // Les autres fichiers (comme .ccd, .sub) ne sont pas hashés pour des raisons de performance
           const ext = path.extname(file).toLowerCase();
@@ -203,9 +254,9 @@ export class ChdHandler extends EventEmitter implements IArchiveHandler {
           }
         }
       }
-      
+
       return contents;
-      
+
     } finally {
       try {
         await fs.rm(tempDir, { recursive: true, force: true });
@@ -274,7 +325,7 @@ export class ChdHandler extends EventEmitter implements IArchiveHandler {
     const stats = await fs.stat(inputFile);
     const mediaType = detectMediaType(inputFile, stats.size);
 
-    console.log(`[CHD] création de l'archive (type ${mediaType}) à partir de "${path.basename(inputFile)}"`);
+    console.log(`[CHD] creating archive (type ${mediaType}) from "${path.basename(inputFile)}"`);
 
     let result;
 
@@ -290,7 +341,7 @@ export class ChdHandler extends EventEmitter implements IArchiveHandler {
       throw new Error(`CHD creation failed: ${result.message}`);
     }
 
-    console.log(`[CHD] ✓ archive créée : ${options.outputPath}`);
+    console.log(`[CHD] ✓ archive created: ${options.outputPath}`);
   }
   
   getSupportedExtensions(): string[] {
@@ -636,7 +687,7 @@ export class ChdHandler extends EventEmitter implements IArchiveHandler {
         expectedBinCount = this.getExpectedBinCount(info);
         needsMultipleBins = expectedBinCount > 1;
       } catch (error) {
-        console.warn('Impossible de récupérer les infos CHD, utilisation du mode par défaut');
+        console.warn('Unable to retrieve CHD info, using the default mode');
       }
     }
 
@@ -657,14 +708,14 @@ export class ChdHandler extends EventEmitter implements IArchiveHandler {
         // Si on n'a qu'un seul BIN attendu, spécifier le nom du fichier bin
         if (!needsMultipleBins) {
           args.push('-ob', binPath);
-          console.log(`[CHD] extraction mono-BIN de "${path.basename(chdPath)}" → ${path.basename(binPath)}`);
+          console.log(`[CHD] single-BIN extraction of "${path.basename(chdPath)}" → ${path.basename(binPath)}`);
         }
       }
 
       // Extract multiple bins if necessary
       if (needsMultipleBins) {
         args.push('-sb');
-        console.log(`[CHD] extraction multi-BIN de "${path.basename(chdPath)}" (${expectedBinCount} fichiers attendus)`);
+        console.log(`[CHD] multi-BIN extraction of "${path.basename(chdPath)}" (${expectedBinCount} files expected)`);
       }
 
       // Force overwrite
@@ -1196,7 +1247,7 @@ export class ChdHandler extends EventEmitter implements IArchiveHandler {
       
       return track as ChdTrackInfo;
     } catch (error) {
-      console.error('Erreur parsing track:', error);
+      console.error('Track parsing error:', error);
       return null;
     }
   }
