@@ -116,9 +116,11 @@ const selectedDatIcon = document.getElementById('selected-dat-icon') as HTMLSpan
 const selectedDatPathEl = document.getElementById('selected-dat-path') as HTMLSpanElement;
 
 const stepDb = document.getElementById('step-db') as HTMLDivElement;
-const dbCustomize = document.getElementById('db-customize') as HTMLInputElement;
 const dbPathInput = document.getElementById('db-path') as HTMLInputElement;
 const btnBrowseDb = document.getElementById('btn-browse-db') as HTMLButtonElement;
+// Vrai si l'utilisateur a explicitement choisi un emplacement via « Parcourir » : on ne
+// réécrase alors plus le chemin par la valeur automatique lors d'un changement de DAT.
+let dbPathCustomized = false;
 
 const statusMessage = document.getElementById('status-message') as HTMLSpanElement;
 const btnLoad = document.getElementById('btn-load') as HTMLButtonElement;
@@ -211,8 +213,8 @@ async function setSelectedDat(datPath: string) {
     } catch {
       dbAutoPath = null;
     }
-    // Ne pas écraser un chemin personnalisé par l'utilisateur
-    if (!dbCustomize.checked) {
+    // Ne pas écraser un chemin choisi manuellement par l'utilisateur
+    if (!dbPathCustomized) {
       dbPathInput.value = dbAutoPath || '';
     }
   }
@@ -237,26 +239,14 @@ function updateLoadButton() {
 // ==========================================
 
 function setupDbSection() {
-  dbCustomize.addEventListener('change', () => {
-    const custom = dbCustomize.checked;
-    if (custom) {
-      dbPathInput.removeAttribute('readonly');
-      btnBrowseDb.disabled = false;
-    } else {
-      dbPathInput.setAttribute('readonly', '');
-      btnBrowseDb.disabled = true;
-      // Revenir au chemin automatique
-      dbPathInput.value = dbAutoPath || '';
-    }
-    updateLoadButton();
-  });
-
   dbPathInput.addEventListener('input', updateLoadButton);
 
+  // Le chemin par défaut vient des paramètres ; « Parcourir » permet de le changer.
   btnBrowseDb.addEventListener('click', async () => {
     const chosen = await window.api.browseDbPath(dbPathInput.value || dbAutoPath || undefined);
     if (chosen) {
       dbPathInput.value = chosen;
+      dbPathCustomized = true;
       updateLoadButton();
     }
   });

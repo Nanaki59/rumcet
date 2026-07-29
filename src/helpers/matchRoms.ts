@@ -1,5 +1,8 @@
 // src/helpers/matchRoms.ts
 import { Database } from '../database/init';
+import { settingsManager } from './settingsManager.js';
+import { systemProfileManager } from './systemProfiles/index.js';
+import { hashesMatch } from './systemProfiles/rules.js';
 
 export interface RomMatch {
   datRomId: number;
@@ -48,6 +51,11 @@ export async function matchRomsWithFiles(db: Database): Promise<{
   stats: MatchingStats
 }> {
   console.log('🔍 Starting ROM matching...');
+
+  // Profil système : porte la règle de correspondance des hash. Par défaut (toutes
+  // les familles actuelles) c'est l'égalité CRC/MD5/SHA1 ; un système futur pourra
+  // la surcharger (ex : matching par nom).
+  const profile = systemProfileManager.forSystem(settingsManager.getActiveSystemId() ?? 'default');
 
   // Récupérer toutes les ROMs du DAT avec leurs jeux
   const datRoms = await db.all<{
@@ -131,8 +139,7 @@ export async function matchRomsWithFiles(db: Database): Promise<{
 
     // Chercher dans les fichiers loose
     for (const file of looseFiles) {
-      const hashMatch = compareHashes(datRom, file);
-      if (hashMatch.matched) {
+      if (profile.matchesHashes(datRom, file)) {
         matches.push({
           datRomId: datRom.rom_id,
           datRomName: datRom.rom_name,
@@ -149,8 +156,7 @@ export async function matchRomsWithFiles(db: Database): Promise<{
 
     // Chercher dans les contenus d'archives
     for (const content of archiveContents) {
-      const hashMatch = compareHashes(datRom, content);
-      if (hashMatch.matched) {
+      if (profile.matchesHashes(datRom, content)) {
         matches.push({
           datRomId: datRom.rom_id,
           datRomName: datRom.rom_name,
@@ -239,23 +245,16 @@ function computeArchiveIsPerfect(
 }
 
 /**
- * Compare les hashes entre une ROM du DAT et un fichier
- * Retourne true si AU MOINS UN hash correspond
+ * Compare les hashes entre une ROM du DAT et un fichier.
+ * Retourne { matched } — true si au moins un hash correspond. Conservé pour
+ * compatibilité (utilisé par downloadRoms) ; délègue à la règle canonique
+ * `hashesMatch` (systemProfiles/rules), la même que celle utilisée via le profil.
  */
 export function compareHashes(
   datRom: { crc32: string | null; md5: string | null; sha1: string | null },
   file: { crc32: string | null; md5: string | null; sha1: string | null }
 ): { matched: boolean } {
-  if (datRom.crc32 && file.crc32 && datRom.crc32.toUpperCase() === file.crc32.toUpperCase()) {
-    return { matched: true };
-  }
-  if (datRom.md5 && file.md5 && datRom.md5.toUpperCase() === file.md5.toUpperCase()) {
-    return { matched: true };
-  }
-  if (datRom.sha1 && file.sha1 && datRom.sha1.toUpperCase() === file.sha1.toUpperCase()) {
-    return { matched: true };
-  }
-  return { matched: false };
+  return { matched: hashesMatch(datRom, file) };
 }
 
 /**

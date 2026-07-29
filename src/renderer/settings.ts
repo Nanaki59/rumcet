@@ -48,7 +48,6 @@ interface AppSettings {
   autoSelectNewGames: boolean;
   arcadeTargetSetMode?: ArcadeTargetSetMode;
   arcadeSeparateBios?: boolean;
-  arcadeChdSubfolder?: boolean;
   arcadeChdEmptyZip?: boolean;
   theme: 'light' | 'dark';
   language: 'fr' | 'en';
@@ -225,7 +224,6 @@ async function loadSettings(): Promise<void> {
 
     // Onglet Arcade — organisation des dossiers (BIOS / CHD)
     (document.getElementById('arcadeSeparateBios') as HTMLInputElement).checked = !!currentSettings.arcadeSeparateBios;
-    (document.getElementById('arcadeChdSubfolder') as HTMLInputElement).checked = !!currentSettings.arcadeChdSubfolder;
     (document.getElementById('arcadeChdEmptyZip') as HTMLInputElement).checked = !!currentSettings.arcadeChdEmptyZip;
 
     // Onglet Archives
@@ -1337,7 +1335,6 @@ async function saveSettings(): Promise<void> {
       // Arcade — mode du set cible (MAME uniquement, ignoré pour les autres systèmes)
       arcadeTargetSetMode: ((document.querySelector('input[name="arcadeTargetSetMode"]:checked') as HTMLInputElement | null)?.value as ArcadeTargetSetMode) || 'split',
       arcadeSeparateBios: (document.getElementById('arcadeSeparateBios') as HTMLInputElement).checked,
-      arcadeChdSubfolder: (document.getElementById('arcadeChdSubfolder') as HTMLInputElement).checked,
       arcadeChdEmptyZip: (document.getElementById('arcadeChdEmptyZip') as HTMLInputElement).checked,
 
       // Compression

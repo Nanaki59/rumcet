@@ -158,7 +158,14 @@
     "game": {
       "loadDatFirst": "Load a DAT first to use automatic selection.",
       "autoSelectApplied": "Automatic selection applied: {selected} selected, {deselected} deselected.",
-      "autoSelectError": "Error during automatic selection: {error}"
+      "autoSelectError": "Error during automatic selection: {error}",
+      "defaultPresetsSaved": "Rules saved as default for this kind of DAT.",
+      "defaultPresetsRestored": "Default rules restored.",
+      "defaultPresetsNone": "No default rules saved for this kind of DAT yet.",
+      "customPresetSaved": "Custom preset saved.",
+      "customPresetDeleted": "Custom preset deleted.",
+      "customPresetNameRequired": "Please enter a name for the preset.",
+      "customPresetNeedsRules": "Add at least one rule before saving a preset."
     }
   },
   "common": {
@@ -187,11 +194,11 @@
   "menu": {
     "file": {
       "label": "File",
-      "openDatabase": "Open database...",
+      "openDatabase": "Open Rumcet DB...",
       "downloadDat": "Download a DAT file...",
       "loadDat": "Load DAT/XML",
       "addFolder": "Add ROMs folder",
-      "closeDatabase": "Close database",
+      "closeDatabase": "Close Rumcet DB",
       "quit": "Quit"
     },
     "analysis": {
@@ -231,7 +238,7 @@
     "selectDestinationFolder": "Select the destination folder",
     "selectFolder": "Select a folder",
     "selectFolderDat": "Select the default folder for DAT/XML files",
-    "selectFolderDatabase": "Select the default folder for databases",
+    "selectFolderDatabase": "Select the default Rumcet DB folder",
     "selectFolderRoms": "Select the default folder for ROMs",
     "selectFolderUnmatched": "Select the folder for unmatched ROMs",
     "selectFolderValidated": "Select the folder for validated ROMs",
@@ -289,7 +296,10 @@
   },
   "index": {
     "workflow": {
+      "openDatabase": "📂 Open Rumcet DB",
+      "openDatabaseTitle": "Open an existing Rumcet DB (quick loading).",
       "loadDat": "📖 1. Load DAT/XML",
+      "loadDatComplementary": "📖 1. Load complementary DAT/XML",
       "loadDatTitle": "📖 Step 1: Load a DAT/XML file (local or downloaded) — the database is created automatically. If a database is already open, adds a complementary DAT.",
       "addFolder": "📂 2. Add ROMs folder",
       "addFolderTitle": "📂 Step 2: Add a folder containing ROMs",
@@ -300,7 +310,7 @@
     },
     "dbBanner": {
       "system": "🎮 System:",
-      "database": "🗄️ Database:",
+      "database": "🗄️ Rumcet DB:",
       "datMode": "🧩 DAT mode:",
       "setMode": "🧱 Set mode:",
       "disks": "💿 Disks:"
@@ -331,12 +341,22 @@
       "label": "Filters:",
       "matching": "Matching",
       "uncategorized": "Uncategorized",
-      "withDisk": "With disk",
+      "withDisk": "With disk & roms",
       "withoutDisk": "Without disk",
+      "diskNoRom": "With disc, no rom",
       "disks": "Disks",
       "emulation": "Emulation",
       "mame": "MAME",
       "bios": "BIOS",
+      "device": "Device",
+      "mechanical": "Mechanical",
+      "games": "Games",
+      "type": "Type",
+      "manufacturer": "Manufacturer",
+      "clone": "Clone",
+      "notClone": "Original (parent)",
+      "cloneFilter": "Clone",
+      "driverUnset": "Not specified",
       "chdNoRom": "CHD without ROM",
       "clearAll": "Clear all"
     },
@@ -467,6 +487,7 @@
     },
     "chdInfo": {
       "hasDisksTitle": "The DAT references {disks} disk(s) (CHD) spread over {games} game(s).",
+      "hasDisksInline": "{disks} across {games} game(s)",
       "noDisksTitle": "The DAT does not reference any disk (CHD)."
     },
     "systemInfo": {
@@ -498,7 +519,13 @@
       "cloneBadgeTitle": "{count} clone(s) merged into this parent (merged view)",
       "categoryLabel": "Category:",
       "fileCount": "{count} file(s)",
-      "diskCount": "{count} disk(s)"
+      "diskCount": "{count} disk(s)",
+      "cloneOfTitle": "Clone of {parent}",
+      "collapseAll": "Collapse all",
+      "expandAll": "Expand all"
+    },
+    "emulation": {
+      "markerTitle": "Emulation: {status}"
     },
     "autoReasons": {
       "autoSelected": "Auto-selected",
@@ -535,7 +562,14 @@
       "category": "Category:",
       "matching": "Matching:",
       "romFiles": "ROM file(s):",
+      "romsLabel": "ROM(s):",
       "noRoms": "No ROM defined",
+      "totalSize": "Total size:",
+      "manufacturer": "Manufacturer:",
+      "emulation": "Emulation:",
+      "cloneOf": "Clone of:",
+      "romOf": "ROM of:",
+      "dependents": "Machines requiring it ({count}):",
       "size": "Size:",
       "path": "Path:",
       "type": "Type:",
@@ -623,11 +657,11 @@
       "baseCurrent": "Current selection",
       "presetsLabel": "Quick presets:",
       "presetNoProto": "🚫 Proto/Beta/Demo",
-      "presetNoProtoTitle": "Adds rules excluding names containing (Proto, (Beta, (Demo, (Sample",
+      "presetNoProtoTitle": "Adds rules excluding entries whose name or description contains (Proto, (Beta, (Demo, (Sample, Prototype",
       "presetNoBios": "🚫 BIOS",
       "presetNoBiosTitle": "Adds a rule excluding [BIOS] entries (No-Intro/Redump convention — MAME BIOSes are already handled by the dependency cascade)",
       "presetNoAftermarket": "🚫 Aftermarket/Unl",
-      "presetNoAftermarketTitle": "Adds rules excluding names containing (Aftermarket) and (Unl) (No-Intro/Redump convention)",
+      "presetNoAftermarketTitle": "Adds rules excluding entries whose name or description contains (Aftermarket) and (Unl) (No-Intro/Redump convention)",
       "presetNoClones": "🚫 Clones",
       "presetNoClonesTitle": "Adds a rule excluding clones (games with a parent)",
       "presetGoodOnly": "🟢 Good drivers only",
@@ -636,15 +670,40 @@
       "presetNoChdTitle": "Adds a rule excluding games requiring a CHD",
       "presetCompleteOnly": "✅ Complete only",
       "presetCompleteOnlyTitle": "Adds a rule excluding games not complete in the matching",
-      "addRule": "＋ Add a rule"
+      "presetNoMechanical": "🚫 Mechanical",
+      "presetNoMechanicalTitle": "Adds a rule excluding electromechanical machines (pinball, slot machines… — not playable with a gamepad, e.g. for a Recalbox set)",
+      "presetPlayable": "✅ Playable (good+imperfect)",
+      "presetPlayableTitle": "Keeps only playable games: excludes the \"preliminary\" and \"not specified\" emulation statuses (keeps good + imperfect)",
+      "saveDefault": "💾 Save as default",
+      "saveDefaultTitle": "Save the current rules as the default template for this kind of DAT",
+      "restoreDefault": "↩️ Restore default",
+      "restoreDefaultTitle": "Reload the default template saved for this kind of DAT",
+      "addRule": "＋ Add a rule",
+      "clearRules": "🗑 Clear all",
+      "clearRulesTitle": "Remove all current rules",
+      "customPresetsLabel": "My presets:",
+      "customEmpty": "No custom preset yet.",
+      "customNamePlaceholder": "Preset name…",
+      "customSave": "💾 Save as preset",
+      "customSaveTitle": "Save the current rules as a custom preset",
+      "customApplyTitle": "Add this preset's rules to the current rules",
+      "customDeleteTitle": "Delete this preset",
+      "customDragTitle": "Drag to reorder",
+      "customMoveUpTitle": "Move up",
+      "customMoveDownTitle": "Move down",
+      "scopeArcade": "Arcade",
+      "scopeNoIntroRedump": "No-Intro + Redump",
+      "scopeGlobal": "Global (all)"
     },
     "asm": {
       "fieldName": "Name",
       "fieldDescription": "Description",
+      "fieldNameOrDescription": "Name or description",
       "fieldCategory": "Category",
       "fieldDriverStatus": "Driver status",
       "fieldHasChd": "Has a CHD",
       "fieldIsClone": "Is a clone",
+      "fieldMechanical": "Is mechanical",
       "fieldMatchStatus": "Matching status",
       "opContains": "contains",
       "opNotContains": "does not contain",
@@ -722,8 +781,8 @@
       "notConfigured": "Not configured",
       "datFolder": "DAT/XML files folder:",
       "datFolderInfo": "Default folder when opening the dialog to load a DAT",
-      "databaseFolder": "Databases folder:",
-      "databaseFolderInfo": "Location where SQLite databases will be stored",
+      "databaseFolder": "Rumcet DB folder:",
+      "databaseFolderInfo": "Location where Rumcet DB files will be stored",
       "romsFolder": "ROMs source folder:",
       "romsFolderInfo": "Default folder when adding ROMs folders",
       "targetsSection": "Target folders",
@@ -811,8 +870,6 @@
       "separateBios": "Store BIOS in a <code>bios/</code> subfolder",
       "separateBiosInfo": "BIOS sets (isbios) are stored in <code>bios/</code> instead of flat alongside games.",
       "separateBiosWarning": "<strong>⚠️ Incompatible with standard MAME</strong><p>Original MAME expects BIOS archives in the same folder as the ROMs. If you move them into <code>bios/</code>, games that depend on them will not launch, unless your frontend supports a separate BIOS path (Recalbox convention).</p>",
-      "chdSubfolder": "Store each CHD in a subfolder named after the game",
-      "chdSubfolderInfo": "MAME/Recalbox convention: a CHD for <code>area51</code> goes into <code>area51/area51.chd</code>. If disabled, a single CHD stays flat (multi-CHD games always use a subfolder).",
       "chdEmptyZip": "Create an empty <code>.zip</code> for CHD-only games",
       "chdEmptyZipInfo": "For a game with no regular ROMs (CHD only), creates an empty <code>&lt;game&gt;.zip</code> placeholder next to the <code>&lt;game&gt;/</code> subfolder. Recalbox lists games via the <code>.zip</code> files present. Implies storing the CHD in a subfolder."
     },
@@ -903,19 +960,19 @@
       "sourceLabel": "Source:",
       "progettoRecommended": "(recommended — complete parent/clone relationships)",
       "noIntroNotice": "⚠️ <strong>No-Intro</strong> — automatic download is disabled (IP ban on the DAT-o-MATIC side). Use <strong>\"Open the page\"</strong> to download the DAT manually in your browser, then come back and select it via the <em>Local file</em> tab.",
-      "pleasuredomeNotice": "ℹ️ <strong>Pleasuredome</strong> DATs are pre-organized by mode (split / merged / non-merged / CHDs) but do not contain parent/clone relationships. RUMCET's advanced arcade features (dependency cascade, mode conversion, parent/clone consolidation) require a Progetto-Snaps DAT.",
+      "pleasuredomeNotice": "ℹ️ <strong>Pleasuredome</strong> DATs are pre-organized by mode (split / merged / non-merged / CHDs) but do not contain parent/clone relationships, nor the emulation (driver) status. RUMCET's advanced arcade features (dependency cascade, mode conversion, parent/clone consolidation) require a Progetto-Snaps DAT.",
       "downloadTo": "Download to:",
       "openPage": "🌐 Open the page",
       "downloadAndUse": "⬇ Download and use",
       "noDatSelected": "No DAT/XML file selected"
     },
     "step2": {
-      "title": "Database",
+      "title": "Rumcet DB",
       "subtitle": "Created automatically — customizable if needed",
-      "autoNote": "RUMCET creates a <code>.sqlite</code> database to store the DAT information, scanned ROMs and matching results. By default, it is named after the DAT and placed in your databases folder.",
+      "autoNote": "RUMCET creates a database to store the DAT information, scanned ROMs and matching results. By default, it is named after the DAT and placed in your Rumcet DB folder (configurable in the settings). You can also pick another location below.",
       "customize": "Customize the database location and name",
       "dbPathPlaceholder": "Select a DAT file first…",
-      "browseDbTitle": "Choose the database location and name"
+      "browseDbTitle": "Choose the Rumcet DB location and name"
     },
     "actions": {
       "load": "📖 Load the DAT/XML"

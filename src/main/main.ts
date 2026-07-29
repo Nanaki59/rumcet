@@ -157,19 +157,13 @@ function createMenu(): void {
             mainWindow?.webContents.send('menu-action', 'open-database');
           }
         },
-        {
-          label: t('menu.file.downloadDat'),
-          accelerator: 'CmdOrCtrl+Shift+D',
-          click: () => {
-            createDatDownloadWindow();
-          }
-        },
         { type: 'separator' },
         {
           id: 'load-dat',
           label: t('menu.file.loadDat'),
           accelerator: 'CmdOrCtrl+D',
-          enabled: menuState.canLoadDat,
+          // Toujours disponible : sans base → DAT primaire (crée la base),
+          // avec base → DAT complémentaire. Ouvre l'écran unifié de chargement.
           click: () => {
             mainWindow?.webContents.send('menu-action', 'load-dat');
           }

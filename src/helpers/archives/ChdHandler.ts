@@ -15,7 +15,8 @@ import {
 } from './types.js';
 import { calculateFileHashes } from '../hashCalculator.js';
 import { settingsManager } from '../settingsManager.js';
-import { getSystemById } from '../../config/systems.js';
+import { systemProfileManager } from '../systemProfiles/index.js';
+import type { ChdIdentityMode } from '../systemProfiles/types.js';
 
 // ============================================
 // INTERFACES ET TYPES
@@ -170,8 +171,8 @@ export class ChdHandler extends EventEmitter implements IArchiveHandler {
     //    Inutile pour les systèmes arcade (MAME) : un <disk> n'est identifié que par
     //    le SHA1 d'en-tête, et l'extraction des CHD MAME (souvent des HD) est à la
     //    fois coûteuse et peu fiable. On ne l'exécute donc que hors arcade.
-    if (this.isArcadeSystem()) {
-      console.log(`📀 CHD (arcade system): header SHA1 only, no content extraction — ${path.basename(filePath)}`);
+    if (this.chdIdentity() === 'header') {
+      console.log(`📀 CHD (header identity): header SHA1 only, no content extraction — ${path.basename(filePath)}`);
     } else {
       try {
         const extracted = await this.listExtractedContents(filePath, chdInfo);
@@ -185,15 +186,14 @@ export class ChdHandler extends EventEmitter implements IArchiveHandler {
   }
 
   /**
-   * Indique si le système actif est de type arcade (MAME, FBNeo, Naomi…). Pour ces
-   * systèmes, un CHD est uniquement identifié par le SHA1 de son en-tête ; on
-   * n'extrait pas son contenu. Si aucun système n'est détecté, on considère que ce
-   * n'est PAS de l'arcade (fallback sûr : on extrait, comportement Redump).
+   * Mode d'identification des CHD pour le système actif, délégué au profil système :
+   *  - 'header'   : SHA1 d'en-tête uniquement, pas d'extraction (arcade/MAME) ;
+   *  - 'contents' : hash du contenu extrait (romsets Redump — comportement par défaut).
+   * Si aucun système n'est détecté, le profil par défaut retombe sur 'contents'.
    */
-  private isArcadeSystem(): boolean {
-    const systemId = settingsManager.getActiveSystemId();
-    if (!systemId) return false;
-    return getSystemById(systemId)?.type === 'arcade';
+  private chdIdentity(): ChdIdentityMode {
+    const systemId = settingsManager.getActiveSystemId() ?? 'default';
+    return systemProfileManager.forSystem(systemId).chdIdentity();
   }
 
   /**
@@ -304,9 +304,17 @@ export class ChdHandler extends EventEmitter implements IArchiveHandler {
     if (options.files.length > 1) {
       throw new Error('CHD can only be created from a single source file (.cue, .gdi, .iso, etc.)');
     }
-    
-    const inputFile = options.files[0];
-    
+
+    // La consolidation passe le point d'entrée en chemin RELATIF avec un
+    // workingDirectory (convention partagée avec ZIP/7z). chdman, lui, résout un
+    // chemin relatif contre le CWD du process : sans cette résolution, un
+    // "<jeu>.cue" relatif est introuvable (« Input file not found »). On résout
+    // donc un chemin relatif contre workingDirectory ; un chemin absolu passe tel quel.
+    const rawInput = options.files[0];
+    const inputFile = options.workingDirectory && !path.isAbsolute(rawInput)
+      ? path.resolve(options.workingDirectory, rawInput)
+      : rawInput;
+
     try {
       await fs.access(inputFile);
     } catch (error) {

@@ -903,12 +903,12 @@
         </div>
 
         <div class="setting-row">
-          <label for="defaultDatabaseFolder" data-i18n="settings.folders.databaseFolder">Dossier des bases de données :</label>
+          <label for="defaultDatabaseFolder" data-i18n="settings.folders.databaseFolder">Dossier Rumcet DB :</label>
           <div class="setting-row-inline">
             <input type="text" id="defaultDatabaseFolder" readonly data-i18n-placeholder="settings.folders.notConfigured" placeholder="Non configuré">
             <button class="btn-browse" onclick="browseFolder('defaultDatabaseFolder')" data-i18n="common.browse">Parcourir</button>
           </div>
-          <p class="info-text" data-i18n="settings.folders.databaseFolderInfo">Emplacement où seront stockées les bases de données SQLite</p>
+          <p class="info-text" data-i18n="settings.folders.databaseFolderInfo">Emplacement où seront stockées les Rumcet DB</p>
         </div>
 
         <div class="setting-row">
@@ -1288,17 +1288,6 @@
           </div>
           <p class="info-text" data-i18n="settings.arcade.separateBiosInfo">
             Les sets BIOS (isbios) sont rangés dans <code>bios/</code> au lieu d'être à plat avec les jeux.
-          </p>
-        </div>
-
-        <div class="setting-row">
-          <label>
-            <input type="checkbox" id="arcadeChdSubfolder">
-            <span data-i18n="settings.arcade.chdSubfolder">Ranger chaque CHD dans un sous-dossier au nom du jeu</span>
-          </label>
-          <p class="info-text" data-i18n-html="settings.arcade.chdSubfolderInfo">
-            Convention MAME/Recalbox : un CHD de <code>area51</code> va dans <code>area51/area51.chd</code>.
-            Si désactivé, un CHD unique reste à plat (les jeux multi-CHD utilisent toujours un sous-dossier).
           </p>
         </div>
 

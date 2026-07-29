@@ -3,7 +3,7 @@ import sqlite3 from 'sqlite3';
 import fs from 'fs/promises';
 import path from 'path';
 
-const currentSchemaVersion = '1.8';
+const currentSchemaVersion = '2.0';
 
 export class Database {
   private db: sqlite3.Database;
@@ -129,8 +129,11 @@ async function initSchema(db: Database): Promise<void> {
     -- Colonnes arcade :
     --   is_bios     : 1 si <machine isbios="yes"> (set BIOS partagé, non jouable)
     --   is_device   : 1 si <machine isdevice="yes"> (device matériel partagé)
+    --   is_mechanical : 1 si <machine ismechanical="yes"> (flipper, machine à sous… — non jouable au pad)
     --   parent_name_ref : nom textuel du parent référencé via cloneof/romof, conservé
     --                     même si le parent n'est pas présent dans le DAT (cas DAT pré-filtré)
+    --   cloneof_ref : valeur brute de l'attribut cloneof (parent « jeu » : variante/hack). NULL si absent.
+    --   romof_ref   : valeur brute de l'attribut romof (parent technique de partage de ROMs / BIOS). NULL si absent.
     --   driver_status   : valeur de <driver status="good|imperfect|preliminary"/>.
     --                     NULL pour les DAT qui ne portent pas cette info (Pleasuredome, Logiqx).
     --   source_id       : ID de la source DAT qui a introduit ce jeu.
@@ -144,7 +147,10 @@ async function initSchema(db: Database): Promise<void> {
       system_id INTEGER,
       is_bios INTEGER DEFAULT 0,
       is_device INTEGER DEFAULT 0,
+      is_mechanical INTEGER DEFAULT 0,
       parent_name_ref TEXT,
+      cloneof_ref TEXT,
+      romof_ref TEXT,
       driver_status TEXT,
       source_id INTEGER,
       created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
@@ -351,6 +357,7 @@ async function initSchema(db: Database): Promise<void> {
   await db.exec(`
     CREATE INDEX IF NOT EXISTS idx_games_is_bios ON games(is_bios);
     CREATE INDEX IF NOT EXISTS idx_games_is_device ON games(is_device);
+    CREATE INDEX IF NOT EXISTS idx_games_is_mechanical ON games(is_mechanical);
     CREATE INDEX IF NOT EXISTS idx_games_parent_name_ref ON games(parent_name_ref);
     CREATE INDEX IF NOT EXISTS idx_games_driver_status ON games(driver_status);
     CREATE INDEX IF NOT EXISTS idx_games_source ON games(source_id);
@@ -418,6 +425,12 @@ async function migrateSchemaIfNeeded(db: Database, currentVersion: string): Prom
   }
   if (currentVersion < '1.8') {
     await migrateToV1_8(db);
+  }
+  if (currentVersion < '1.9') {
+    await migrateToV1_9(db);
+  }
+  if (currentVersion < '2.0') {
+    await migrateToV2_0(db);
   }
 }
 
@@ -690,6 +703,46 @@ async function migrateToV1_8(db: Database): Promise<void> {
   );
 
   console.log('✅ Migration to schema v1.8 complete');
+}
+
+async function migrateToV1_9(db: Database): Promise<void> {
+  console.log('Migrating to schema v1.9 (games.is_mechanical — MAME electromechanical machines)...');
+
+  // Nouvelle colonne is_mechanical (<machine ismechanical="yes">). Vaut 0 pour les
+  // jeux existants : la valeur réelle n'est renseignée qu'au (re)chargement d'un DAT.
+  const gamesCols = await db.all<{ name: string }>('PRAGMA table_info(games)');
+  if (!gamesCols.some(c => c.name === 'is_mechanical')) {
+    await db.run('ALTER TABLE games ADD COLUMN is_mechanical INTEGER DEFAULT 0');
+  }
+
+  await db.run(
+    'UPDATE metadata SET value = ?, updated_at = CURRENT_TIMESTAMP WHERE key = ?',
+    [currentSchemaVersion, 'schema_version']
+  );
+
+  console.log('✅ Migration to schema v1.9 complete');
+}
+
+async function migrateToV2_0(db: Database): Promise<void> {
+  console.log('Migrating to schema v2.0 (games.cloneof_ref / romof_ref — separate MAME parent references)...');
+
+  // Nouvelles colonnes cloneof_ref / romof_ref (valeurs brutes des attributs MAME
+  // cloneof / romof). Valent NULL pour les jeux existants : renseignées au
+  // (re)chargement d'un DAT. parent_name_ref (cloneof||romof) est conservé tel quel.
+  const gamesCols = await db.all<{ name: string }>('PRAGMA table_info(games)');
+  if (!gamesCols.some(c => c.name === 'cloneof_ref')) {
+    await db.run('ALTER TABLE games ADD COLUMN cloneof_ref TEXT');
+  }
+  if (!gamesCols.some(c => c.name === 'romof_ref')) {
+    await db.run('ALTER TABLE games ADD COLUMN romof_ref TEXT');
+  }
+
+  await db.run(
+    'UPDATE metadata SET value = ?, updated_at = CURRENT_TIMESTAMP WHERE key = ?',
+    [currentSchemaVersion, 'schema_version']
+  );
+
+  console.log('✅ Migration to schema v2.0 complete');
 }
 
 async function migrateToV1_6(db: Database): Promise<void> {

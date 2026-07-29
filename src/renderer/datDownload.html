@@ -735,22 +735,18 @@
     <div class="step" id="step-db">
       <div class="step-header">
         <span class="step-number">2</span>
-        <span class="step-title" data-i18n="datDownload.step2.title">Base de données</span>
+        <span class="step-title" data-i18n="datDownload.step2.title">Rumcet DB</span>
         <span class="step-subtitle" data-i18n="datDownload.step2.subtitle">Créée automatiquement — personnalisable si besoin</span>
       </div>
       <div class="step-body">
         <p class="db-auto-note" data-i18n-html="datDownload.step2.autoNote">
-          RUMCET crée une base de données <code>.sqlite</code> pour stocker les informations du DAT,
-          des ROMs scannées et du matching. Par défaut, elle est nommée d'après le DAT et placée dans
-          votre dossier de bases de données.
+          RUMCET crée une base pour stocker les informations du DAT, des ROMs scannées et du matching.
+          Par défaut, elle est nommée d'après le DAT et placée dans votre dossier Rumcet DB
+          (modifiable dans les paramètres). Vous pouvez aussi choisir un autre emplacement ci-dessous.
         </p>
-        <label class="db-customize-label">
-          <input type="checkbox" id="db-customize">
-          <span data-i18n="datDownload.step2.customize">Personnaliser l'emplacement et le nom de la base de données</span>
-        </label>
         <div class="db-custom-row">
           <input type="text" id="db-path" readonly data-i18n-placeholder="datDownload.step2.dbPathPlaceholder" placeholder="Sélectionnez d'abord un fichier DAT…">
-          <button id="btn-browse-db" disabled data-i18n-title="datDownload.step2.browseDbTitle" title="Choisir l'emplacement et le nom de la base de données">📁</button>
+          <button id="btn-browse-db" data-i18n-title="datDownload.step2.browseDbTitle" title="Choisir l'emplacement et le nom de la base de données">📁</button>
         </div>
       </div>
     </div>

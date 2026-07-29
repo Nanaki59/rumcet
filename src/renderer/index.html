@@ -764,13 +764,16 @@
 
     .group-filter-main {
       display: flex;
-      align-items: center;
+      /* Aligné en haut : quand les filtres passent à la ligne, le compteur reste en
+         haut à droite et n'est jamais recouvert. */
+      align-items: flex-start;
       padding: 10px 15px;
+      gap: 15px;
     }
 
     .group-filter-content {
       display: flex;
-      align-items: center;
+      align-items: flex-start;
       flex-grow: 1;
       min-width: 0;
     }
@@ -778,7 +781,10 @@
     .group-filter-controls {
       display: flex;
       align-items: center;
-      gap: 15px;
+      /* Les filtres s'enroulent sur plusieurs lignes plutôt que de déborder et de
+         chevaucher le compteur quand la fenêtre est trop étroite. */
+      flex-wrap: wrap;
+      gap: 10px 15px;
       flex: 1;
       min-width: 0;
     }
@@ -789,6 +795,9 @@
       gap: 10px;
       flex-shrink: 0;
       margin-left: auto;
+      /* Aligné avec la 1ère rangée de filtres. */
+      padding-top: 6px;
+      white-space: nowrap;
     }
 
     .global-counters {
@@ -1008,6 +1017,22 @@
       border-bottom: none;
     }
 
+    /* Sous-en-tête de groupe dans un dropdown de filtrage (ex : « Fabricant » pour
+       les catégories MAME). Non cliquable, purement visuel. */
+    .filter-dropdown-subheader {
+      padding: 6px 12px 4px;
+      font-size: 11px;
+      font-weight: 700;
+      text-transform: uppercase;
+      letter-spacing: 0.04em;
+      color: #7f8c8d;
+      background-color: #f8f9fa;
+      border-bottom: 1px solid #f0f0f0;
+      user-select: none;
+      position: sticky;
+      top: 0;
+    }
+
     .filter-dropdown-menu label:hover {
       background-color: #f0f8ff;
     }
@@ -1034,6 +1059,7 @@
       display: none;
       align-items: center;
       justify-content: space-between;
+      gap: 12px;
       padding: 6px 15px;
       background-color: #f0f4f8;
       border-bottom: 1px solid #dee2e6;
@@ -1122,6 +1148,92 @@
     .asm-presets button:hover {
       background: #eaf4fd;
       border-color: #3498db;
+    }
+
+    /* Presets personnalisés */
+    .asm-custom-presets {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 6px;
+      flex: 1;
+    }
+
+    .asm-custom-empty {
+      color: #95a5a6;
+      font-size: 12px;
+      font-style: italic;
+    }
+
+    .asm-custom-chip {
+      display: inline-flex;
+      align-items: center;
+      gap: 4px;
+      background: #f8f9fa;
+      border: 1px solid #ced4da;
+      border-radius: 12px;
+      padding: 2px 4px 2px 10px;
+      cursor: grab;
+    }
+
+    .asm-custom-chip:active {
+      cursor: grabbing;
+    }
+
+    .asm-custom-chip.asm-dragging {
+      opacity: 0.45;
+    }
+
+    .asm-custom-chip.asm-drag-over {
+      border-color: #3498db;
+      box-shadow: 0 0 0 2px rgba(52, 152, 219, 0.25);
+    }
+
+    .asm-custom-chip .asm-custom-apply {
+      background: none;
+      border: none;
+      font-size: 12px;
+      font-family: inherit;
+      cursor: pointer;
+      color: #2c3e50;
+      padding: 2px 2px;
+    }
+
+    .asm-custom-chip .asm-custom-apply:hover {
+      color: #2980b9;
+    }
+
+    .asm-custom-chip .asm-scope-badge {
+      font-size: 10px;
+      font-weight: 600;
+      color: #5a6a7a;
+      background: #e6ecf2;
+      border-radius: 8px;
+      padding: 1px 6px;
+    }
+
+    .asm-custom-create {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      flex-wrap: wrap;
+    }
+
+    .asm-custom-create input[type="text"] {
+      flex: 1;
+      min-width: 160px;
+      padding: 6px 10px;
+      border: 1px solid #ced4da;
+      border-radius: 4px;
+      font-size: 13px;
+      font-family: inherit;
+    }
+
+    .asm-custom-create select {
+      padding: 6px 8px;
+      border: 1px solid #ced4da;
+      border-radius: 4px;
+      font-size: 13px;
+      font-family: inherit;
     }
 
     .asm-rules {
@@ -1464,6 +1576,51 @@
       font-weight: 500;
     }
 
+    /* Bloc « fabricant + état d'émulation » (DAT arcade). Frère du badge de matching :
+       centré verticalement (via .list-item align-items:center) et jamais recouvert par
+       les infos du jeu (flex-shrink:0). Marge droite = espace avant le statut matching. */
+    .list-item-arcade-info {
+      display: flex;
+      flex-direction: column;
+      align-items: flex-end;
+      justify-content: center;
+      gap: 5px;
+      flex-shrink: 0;
+      margin-right: 12px;
+      text-align: right;
+    }
+
+    /* Fabricant affiché à droite du nom (DAT arcade) */
+    .list-item-manufacturer {
+      font-size: 12px;
+      font-weight: 400;
+      color: #7f8c8d;
+      max-width: 240px;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+
+    /* Marqueur de qualité d'émulation (DAT arcade progettosnaps/MAME) */
+    .emulation-marker {
+      font-size: 11px;
+      font-weight: 600;
+      padding: 2px 7px;
+      border-radius: 4px;
+      white-space: nowrap;
+      flex-shrink: 0;
+    }
+    .emulation-marker.emu-good { color: #1e8449; background-color: rgba(46, 204, 113, 0.14); }
+    .emulation-marker.emu-imperfect { color: #b9770e; background-color: rgba(241, 196, 15, 0.16); }
+    .emulation-marker.emu-preliminary { color: #c0392b; background-color: rgba(231, 76, 60, 0.12); }
+
+    /* Petit marqueur « clone » (DAT arcade) */
+    .clone-marker {
+      font-size: 12px;
+      cursor: help;
+      user-select: none;
+    }
+
     .list-item-info {
       font-size: 12px;
       color: #7f8c8d;
@@ -1512,6 +1669,20 @@
       font-weight: bold;
       margin-bottom: 15px;
       color: #2c3e50;
+    }
+
+    /* Rapproché du nom complet quand celui-ci est affiché juste en dessous */
+    .detail-header:has(+ .detail-subtitle) {
+      margin-bottom: 6px;
+    }
+
+    /* Nom complet du jeu (titre lisible) sous l'en-tête du volet droit */
+    .detail-subtitle {
+      font-size: 13px;
+      font-weight: 500;
+      color: #34495e;
+      margin-bottom: 12px;
+      line-height: 1.35;
     }
 
     .file-item {
@@ -2073,6 +2244,12 @@
     <!-- Zone des workflows -->
     <div class="header-workflows-zone">
       <div class="header-workflows">
+        <!-- Chargement rapide : ouvrir une base existante -->
+        <div class="workflow-group">
+          <button id="open-database-btn" class="quick-action" data-i18n="index.workflow.openDatabase" data-i18n-title="index.workflow.openDatabaseTitle" title="Ouvrir une Rumcet DB existante (chargement rapide).">
+            📂 Ouvrir Rumcet DB
+          </button>
+        </div>
         <!-- Workflow en 4 étapes -->
         <div class="workflow-group">
           <button id="dat-load" data-i18n="index.workflow.loadDat" data-i18n-title="index.workflow.loadDatTitle" title="📖 Étape 1 : Charger un fichier DAT/XML (local ou téléchargé) — la base de données est créée automatiquement. Si une base est déjà ouverte, ajoute un DAT complémentaire.">
@@ -2099,7 +2276,7 @@
       <div id="db-info-banner" class="db-info-banner">
         <span class="db-info-label" data-i18n="index.dbBanner.system">🎮 Système :</span>
         <span id="db-info-system" class="db-info-value"></span>
-        <span class="db-info-label" data-i18n="index.dbBanner.database">🗄️ Base de données :</span>
+        <span class="db-info-label" data-i18n="index.dbBanner.database">🗄️ Rumcet DB :</span>
         <span id="db-info-path" class="db-info-value db-info-path"></span>
         <span class="db-info-label db-info-optional" id="db-info-mode-label" data-i18n="index.dbBanner.datMode" style="display:none;">🧩 Mode DAT :</span>
         <span id="db-info-mode" class="db-info-value db-info-optional" style="display:none;"></span>
@@ -2184,12 +2361,16 @@
                 </select>
               </div>
               <span class="filter-label" data-i18n="index.filters.label">Filtres :</span>
+              <!-- Base commune (même ordre qu'un DAT non-arcade) -->
               <div id="category-filters-container"></div>
               <div id="match-status-filters-container"></div>
               <div id="selection-filters-container"></div>
               <div id="change-status-filters-container"></div>
+              <!-- Filtres spécifiques aux DAT Arcade, ajoutés à la suite -->
+              <div id="manufacturer-filters-container"></div>
               <div id="chd-filters-container"></div>
               <div id="driver-status-filters-container"></div>
+              <div id="clone-filters-container"></div>
               <div id="mame-filters-container"></div>
             </div>
             </div>
@@ -2208,8 +2389,8 @@
           <input type="checkbox" id="select-all-checkbox" checked>
           <span data-i18n="index.selection.selectAll">Tout sélectionner</span>
         </div>
-        <span class="selection-counter" id="selection-counter"></span>
         <button id="auto-select-btn" class="auto-select-btn" data-i18n="index.selection.autoSelectBtn" data-i18n-title="index.selection.autoSelectTitle" title="Sélection automatique par règles d'inclusion/exclusion (nom, catégorie, statut driver, CHD, clones…)">⚙️ Sélection auto</button>
+        <span class="selection-counter" id="selection-counter"></span>
       </div>
 
       <!-- Contrôles de vue maintenant dans le volet central -->
@@ -2300,25 +2481,51 @@
 
       <div class="asm-row asm-presets">
         <span class="asm-row-label" data-i18n="index.autoSelect.presetsLabel">Modèles rapides :</span>
-        <button data-preset="no-proto" data-i18n="index.autoSelect.presetNoProto" data-i18n-title="index.autoSelect.presetNoProtoTitle" title="Ajoute des règles excluant les noms contenant (Proto, (Beta, (Demo, (Sample">🚫 Proto/Beta/Demo</button>
-        <button data-preset="no-bios" data-i18n="index.autoSelect.presetNoBios" data-i18n-title="index.autoSelect.presetNoBiosTitle" title="Ajoute une règle excluant les entrées [BIOS] (convention No-Intro/Redump — les BIOS MAME sont déjà gérés par la cascade de dépendances)">🚫 BIOS</button>
-        <button data-preset="no-aftermarket-unl" data-i18n="index.autoSelect.presetNoAftermarket" data-i18n-title="index.autoSelect.presetNoAftermarketTitle" title="Ajoute des règles excluant les noms contenant (Aftermarket) et (Unl) (convention No-Intro/Redump)">🚫 Aftermarket/Unl</button>
-        <button data-preset="no-clones" data-i18n="index.autoSelect.presetNoClones" data-i18n-title="index.autoSelect.presetNoClonesTitle" title="Ajoute une règle excluant les clones (jeux avec un parent)">🚫 Clones</button>
-        <button data-preset="good-only" data-i18n="index.autoSelect.presetGoodOnly" data-i18n-title="index.autoSelect.presetGoodOnlyTitle" title="Ajoute une règle excluant les jeux dont le driver MAME n'est pas « good »">🟢 Driver good uniquement</button>
-        <button data-preset="no-chd" data-i18n="index.autoSelect.presetNoChd" data-i18n-title="index.autoSelect.presetNoChdTitle" title="Ajoute une règle excluant les jeux nécessitant un CHD">🚫 CHD</button>
-        <button data-preset="complete-only" data-i18n="index.autoSelect.presetCompleteOnly" data-i18n-title="index.autoSelect.presetCompleteOnlyTitle" title="Ajoute une règle excluant les jeux non complets au matching">✅ Complets uniquement</button>
+        <!-- Communs / non-arcade -->
+        <button data-preset="no-proto" data-preset-scope="both" data-i18n="index.autoSelect.presetNoProto" data-i18n-title="index.autoSelect.presetNoProtoTitle" title="Ajoute des règles excluant les noms/descriptions contenant (Proto, (Beta, (Demo, (Sample">🚫 Proto/Beta/Demo</button>
+        <button data-preset="no-bios" data-preset-scope="nonarcade" data-i18n="index.autoSelect.presetNoBios" data-i18n-title="index.autoSelect.presetNoBiosTitle" title="Ajoute une règle excluant les entrées [BIOS] (convention No-Intro/Redump — les BIOS MAME sont déjà gérés par la cascade de dépendances)">🚫 BIOS</button>
+        <button data-preset="no-aftermarket-unl" data-preset-scope="nonarcade" data-i18n="index.autoSelect.presetNoAftermarket" data-i18n-title="index.autoSelect.presetNoAftermarketTitle" title="Ajoute des règles excluant les noms/descriptions contenant (Aftermarket) et (Unl) (convention No-Intro/Redump)">🚫 Aftermarket/Unl</button>
+        <button data-preset="complete-only" data-preset-scope="both" data-i18n="index.autoSelect.presetCompleteOnly" data-i18n-title="index.autoSelect.presetCompleteOnlyTitle" title="Ajoute une règle excluant les jeux non complets au matching">✅ Complets uniquement</button>
+        <!-- Spécifiques arcade -->
+        <button data-preset="no-clones" data-preset-scope="arcade" data-i18n="index.autoSelect.presetNoClones" data-i18n-title="index.autoSelect.presetNoClonesTitle" title="Ajoute une règle excluant les clones (jeux avec un parent)">🚫 Clones</button>
+        <button data-preset="good-only" data-preset-scope="arcade" data-i18n="index.autoSelect.presetGoodOnly" data-i18n-title="index.autoSelect.presetGoodOnlyTitle" title="Ajoute une règle excluant les jeux dont le driver MAME n'est pas « good »">🟢 Driver good uniquement</button>
+        <button data-preset="playable-only" data-preset-scope="arcade" data-i18n="index.autoSelect.presetPlayable" data-i18n-title="index.autoSelect.presetPlayableTitle" title="Ne garde que les jeux jouables : exclut les statuts d'émulation « preliminary » et « non spécifié » (garde good + imperfect)">✅ Jouables (good+imperfect)</button>
+        <button data-preset="no-chd" data-preset-scope="arcade" data-i18n="index.autoSelect.presetNoChd" data-i18n-title="index.autoSelect.presetNoChdTitle" title="Ajoute une règle excluant les jeux nécessitant un CHD">🚫 CHD</button>
+        <button data-preset="no-mechanical" data-preset-scope="arcade" data-i18n="index.autoSelect.presetNoMechanical" data-i18n-title="index.autoSelect.presetNoMechanicalTitle" title="Ajoute une règle excluant les machines électromécaniques (flippers, machines à sous… — non jouables au pad, ex : pour un set Recalbox)">🚫 Mécaniques</button>
+      </div>
+
+      <!-- Presets personnalisés créés par l'utilisateur -->
+      <div class="asm-row asm-custom-presets-row">
+        <span class="asm-row-label" data-i18n="index.autoSelect.customPresetsLabel">Mes modèles :</span>
+        <div id="asm-custom-presets" class="asm-custom-presets"></div>
+      </div>
+      <div class="asm-custom-create">
+        <input type="text" id="asm-custom-name" data-i18n-placeholder="index.autoSelect.customNamePlaceholder" placeholder="Nom du modèle…">
+        <select id="asm-custom-scope" title="Type de DAT pour lequel ce modèle est disponible">
+          <option value="arcade" data-i18n="index.autoSelect.scopeArcade">Arcade</option>
+          <option value="nointro-redump" data-i18n="index.autoSelect.scopeNoIntroRedump">No-Intro + Redump</option>
+          <option value="global" data-i18n="index.autoSelect.scopeGlobal">Global (tous)</option>
+        </select>
+        <button id="asm-custom-save-btn" class="asm-btn-secondary" data-i18n="index.autoSelect.customSave" data-i18n-title="index.autoSelect.customSaveTitle" title="Enregistrer les règles en cours comme modèle personnalisé">💾 Enregistrer comme modèle</button>
       </div>
 
       <div id="asm-rules" class="asm-rules"></div>
-      <div>
+      <div style="display:flex; align-items:center; gap:10px;">
         <button id="asm-add-rule" class="asm-btn-secondary" data-i18n="index.autoSelect.addRule">＋ Ajouter une règle</button>
+        <button id="asm-clear-rules" class="asm-btn-secondary" style="margin-left:auto;" data-i18n="index.autoSelect.clearRules" data-i18n-title="index.autoSelect.clearRulesTitle" title="Retirer toutes les règles en cours">🗑 Tout effacer</button>
       </div>
 
       <div id="asm-preview" class="asm-preview"></div>
 
-      <div style="display:flex; justify-content:flex-end; gap:10px;">
-        <button id="asm-cancel" class="asm-btn-secondary" data-i18n="common.cancel">Annuler</button>
-        <button id="asm-apply" class="asm-btn-primary" data-i18n="common.apply">Appliquer</button>
+      <div style="display:flex; justify-content:space-between; gap:10px; align-items:center; flex-wrap:wrap;">
+        <div style="display:flex; gap:8px; flex-wrap:wrap;">
+          <button id="asm-save-default" class="asm-btn-secondary" data-i18n="index.autoSelect.saveDefault" data-i18n-title="index.autoSelect.saveDefaultTitle" title="Enregistrer les règles actuelles comme modèle par défaut pour ce type de DAT">💾 Enregistrer par défaut</button>
+          <button id="asm-restore-default" class="asm-btn-secondary" data-i18n="index.autoSelect.restoreDefault" data-i18n-title="index.autoSelect.restoreDefaultTitle" title="Recharger le modèle par défaut enregistré pour ce type de DAT">↩️ Restaurer par défaut</button>
+        </div>
+        <div style="display:flex; gap:10px;">
+          <button id="asm-cancel" class="asm-btn-secondary" data-i18n="common.cancel">Annuler</button>
+          <button id="asm-apply" class="asm-btn-primary" data-i18n="common.apply">Appliquer</button>
+        </div>
       </div>
     </div>
   </div>

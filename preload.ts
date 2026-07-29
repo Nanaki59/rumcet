@@ -208,6 +208,7 @@ contextBridge.exposeInMainWorld('api', {
 
   listGames: (systemId?: number) => ipcRenderer.invoke('games:list', systemId),
   listRomsByGame: (gameId: number) => ipcRenderer.invoke('roms:list-by-game', gameId),
+  listDependents: (gameId: number) => ipcRenderer.invoke('games:list-dependents', gameId),
   updateGameSelection: (gameId: number, isSelected: boolean) => ipcRenderer.invoke('games:update-selection', gameId, isSelected),
   updateGameSelectionBulk: (gameIds: number[], isSelected: boolean) => ipcRenderer.invoke('games:update-selection-bulk', gameIds, isSelected),
   resolveDependencies: () => ipcRenderer.invoke('dependencies:resolve'),

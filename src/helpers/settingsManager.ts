@@ -93,20 +93,27 @@ export interface AppSettings {
   arcadeSeparateBios?: boolean;
 
   /**
-   * DAT MAME uniquement. Si activé, chaque CHD est rangé dans un sous-dossier au
-   * nom du jeu (ex : `area51/area51.chd`), même quand le jeu ne contient qu'un
-   * seul CHD. Convention MAME/Recalbox. Si désactivé, un CHD unique reste à plat
-   * (les jeux multi-CHD utilisent toujours un sous-dossier).
-   */
-  arcadeChdSubfolder?: boolean;
-
-  /**
    * DAT MAME uniquement. Si activé, un ZIP vide `<jeu>.zip` est créé pour les jeux
    * dont toutes les ROMs sont des CHD (aucune ROM classique). Recalbox liste les
    * jeux via les .zip présents ; le placeholder rend le jeu CHD-only visible.
    * Implique le rangement du CHD en sous-dossier (disposition Recalbox).
    */
   arcadeChdEmptyZip?: boolean;
+
+  /**
+   * Modèles de règles d'auto-sélection enregistrés « par défaut », indexés par type
+   * de DAT (clé « sys:<systemId> », repli « arcade » / « generic »). Permet de
+   * réappliquer rapidement le même jeu de règles à une nouvelle base du même type.
+   */
+  defaultSelectionRules?: Record<string, { base: string; rules: any[] }>;
+
+  /**
+   * Presets d'auto-sélection personnalisés (créés par l'utilisateur), globaux et
+   * disponibles pour tous les DAT. Chaque preset porte un scope (arcade /
+   * nointro-redump / global) qui pilote sa visibilité selon le type de DAT.
+   * Miroir per-base stocké dans la metadata 'custom_selection_presets'.
+   */
+  customSelectionPresets?: Array<{ id: string; name: string; scope: string; rules: any[] }>;
 
   // Autres paramètres
   theme: 'light' | 'dark';
@@ -233,8 +240,9 @@ class SettingsManager {
       autoSelectNewGames: true,
       arcadeTargetSetMode: 'split',
       arcadeSeparateBios: false,
-      arcadeChdSubfolder: false,
       arcadeChdEmptyZip: false,
+
+      customSelectionPresets: [],
 
       theme: 'light',
       language: 'fr',
@@ -604,11 +612,10 @@ class SettingsManager {
 
     // Migration v14 -> v15 : rangement BIOS / CHD en sous-dossiers (désactivé par défaut)
     if (version < 15) {
-      console.log('Migration v14 -> v15: adding arcadeSeparateBios / arcadeChdSubfolder (default off)');
+      console.log('Migration v14 -> v15: adding arcadeSeparateBios (default off)');
       migratedSettings = {
         ...migratedSettings,
         arcadeSeparateBios: migratedSettings.arcadeSeparateBios ?? false,
-        arcadeChdSubfolder: migratedSettings.arcadeChdSubfolder ?? false,
         settingsVersion: 15
       };
     }

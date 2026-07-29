@@ -62,12 +62,14 @@ export function registerNavigationHandlers(ipcMain: IpcMain) {
           g.*,
           CASE WHEN COALESCE(d.disk_count, 0) > 0 THEN 1 ELSE 0 END AS has_chd,
           COALESCE(d.rom_count, 0) AS rom_count,
-          COALESCE(d.disk_count, 0) AS disk_count
+          COALESCE(d.disk_count, 0) AS disk_count,
+          COALESCE(d.total_size, 0) AS total_size
         FROM games g
         LEFT JOIN (
           SELECT game_id,
             SUM(CASE WHEN is_disk = 0 THEN 1 ELSE 0 END) AS rom_count,
-            SUM(CASE WHEN is_disk = 1 THEN 1 ELSE 0 END) AS disk_count
+            SUM(CASE WHEN is_disk = 1 THEN 1 ELSE 0 END) AS disk_count,
+            SUM(COALESCE(size, 0)) AS total_size
           FROM dat_roms
           GROUP BY game_id
         ) d ON d.game_id = g.id
@@ -109,6 +111,41 @@ export function registerNavigationHandlers(ipcMain: IpcMain) {
       return roms;
     } catch (error) {
       console.error('Error while retrieving ROMs:', error);
+      return [];
+    }
+  });
+
+  // Lister les machines qui dépendent d'un jeu donné (utile pour un BIOS / device /
+  // mechanical : quelles machines l'activent). S'appuie sur game_relationships
+  // (parent_game_id = ce jeu). Retourne le nom, la description et le type de relation.
+  ipcMain.handle('games:list-dependents', async (_event, gameId: number) => {
+    let database = databaseService.getDatabase();
+    const dbPath = databaseService.getDbPath();
+
+    if (!database && dbPath) {
+      try {
+        database = await initDatabase(dbPath, false);
+        databaseService.setDatabase(database);
+      } catch (error) {
+        console.error('Error while reopening the database:', error);
+        return [];
+      }
+    }
+
+    if (!database) return [];
+
+    try {
+      const dependents = await database.all(
+        `SELECT g.name, g.description, gr.relationship_type
+         FROM game_relationships gr
+         JOIN games g ON g.id = gr.child_game_id
+         WHERE gr.parent_game_id = ?
+         ORDER BY g.name`,
+        [gameId]
+      );
+      return dependents;
+    } catch (error) {
+      console.error('Error while retrieving dependents:', error);
       return [];
     }
   });

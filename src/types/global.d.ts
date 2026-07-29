@@ -30,6 +30,18 @@ export interface AppSettings {
   // ========================================
   theme: Theme;
   language: Language;
+
+  /**
+   * Modèles de règles d'auto-sélection enregistrés « par défaut », indexés par type
+   * de DAT (clé « sys:<systemId> », repli « arcade » / « generic »).
+   */
+  defaultSelectionRules?: Record<string, { base: string; rules: any[] }>;
+
+  /**
+   * Presets d'auto-sélection personnalisés (créés par l'utilisateur), globaux, avec
+   * un scope (arcade / nointro-redump / global) pilotant leur visibilité.
+   */
+  customSelectionPresets?: Array<{ id: string; name: string; scope: string; rules: any[] }>;
   
   // ========================================
   // ONGLET GÉNÉRAL - Démarrage
@@ -60,8 +72,6 @@ export interface AppSettings {
   arcadeTargetSetMode?: 'split' | 'non-merged' | 'merged';
   /** Ranger les sets BIOS dans un sous-dossier bios/ (DAT MAME). */
   arcadeSeparateBios?: boolean;
-  /** Ranger chaque CHD dans un sous-dossier au nom du jeu (DAT MAME). */
-  arcadeChdSubfolder?: boolean;
   /** Créer un .zip vide pour les jeux CHD-only (visibilité Recalbox). */
   arcadeChdEmptyZip?: boolean;
 
@@ -737,6 +747,7 @@ declare global {
        * @returns La liste des ROMs.
        */
       listRomsByGame: (gameId: number) => Promise<any[]>;
+      listDependents: (gameId: number) => Promise<Array<{ name: string; description: string | null; relationship_type: 'cloneof' | 'romof' | 'device_ref' }>>;
 
       /**
        * Met à jour la sélection d'un jeu.
@@ -979,7 +990,7 @@ declare global {
       
       selectSettingsFolder: (folderType: string) => Promise<string | null>;
       getSettings: () => Promise<AppSettings>;
-      updateSettings: (settings: AppSettings) => Promise<boolean>;
+      updateSettings: (settings: Partial<AppSettings>) => Promise<boolean>;
       resetSettings: () => Promise<AppSettings>;
       
       // ========================================

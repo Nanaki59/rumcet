@@ -40,6 +40,8 @@ interface GameEntry {
     isbios?: string;
     /** MAME : 'yes' si la machine est un device matériel partagé (non jouable). */
     isdevice?: string;
+    /** MAME : 'yes' si la machine est électromécanique (flipper, machine à sous… — non jouable au pad). */
+    ismechanical?: string;
   };
   description?: string[];
   category?: string[];
@@ -276,11 +278,11 @@ export async function insertGamesFromDat(
     const insertGame = db.prepare(
       isComplementary
         ? `INSERT OR IGNORE INTO games
-           (name, description, category, is_selected, is_bios, is_device, parent_name_ref, driver_status, source_id)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`
+           (name, description, category, is_selected, is_bios, is_device, is_mechanical, parent_name_ref, cloneof_ref, romof_ref, driver_status, source_id)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
         : `INSERT OR REPLACE INTO games
-           (name, description, category, is_selected, is_bios, is_device, parent_name_ref, driver_status, source_id)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`
+           (name, description, category, is_selected, is_bios, is_device, is_mechanical, parent_name_ref, cloneof_ref, romof_ref, driver_status, source_id)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
     );
     const getGameId = db.prepare('SELECT id FROM games WHERE name = ?');
     const insertRom = db.prepare(
@@ -313,6 +315,7 @@ export async function insertGamesFromDat(
       const romof = game.$?.romof || null;
       const isBios = game.$?.isbios === 'yes' ? 1 : 0;
       const isDevice = game.$?.isdevice === 'yes' ? 1 : 0;
+      const isMechanical = game.$?.ismechanical === 'yes' ? 1 : 0;
       // parent_name_ref = cloneof (priorité) ou romof (fallback). Pour la traçabilité
       // textuelle même quand le parent n'existe pas dans le DAT (cas DAT pré-filtré).
       const parentNameRef = cloneof || romof || null;
@@ -334,7 +337,7 @@ export async function insertGamesFromDat(
       // Le compteur gamesCount ne s'incrémente que pour les jeux réellement nouveaux.
       const wasNewGame = await new Promise<boolean>((resolve, reject) => {
         insertGame.run(
-          gameName, description, category, isSelected, isBios, isDevice, parentNameRef, driverStatus, sourceId,
+          gameName, description, category, isSelected, isBios, isDevice, isMechanical, parentNameRef, cloneof, romof, driverStatus, sourceId,
           function (this: import('sqlite3').RunResult, err: Error | null) {
             if (err) return reject(err);
             resolve((this.changes ?? 0) > 0);

@@ -33,7 +33,8 @@ let currentSearchScope: 'all' | 'games' | 'files' | 'archives' = 'all';
 let originalContent: HTMLElement[] = [];
 
 // Variables pour le groupement et le filtrage
-let currentGroupBy: 'none' | 'category' | 'letter' | 'match-status' | 'selection' | 'change-status' = 'none';
+type GroupByMode = 'none' | 'category' | 'letter' | 'match-status' | 'selection' | 'change-status' | 'type' | 'manufacturer' | 'emulation';
+let currentGroupBy: GroupByMode = 'none';
 let activeFilters: Set<string> = new Set();
 let activeMatchFilters: Set<string> = new Set();
 let activeSelectionFilters: Set<string> = new Set();
@@ -41,9 +42,30 @@ let activeChangeFilters: Set<string> = new Set();
 // Phase 3.5 — filtres arcade
 let activeChdFilters: Set<string> = new Set();
 let activeDriverFilters: Set<string> = new Set();
-// Filtres spécifiques MAME : 'bios' (le jeu est un set BIOS) et 'chd-no-rom'
-// (jeu avec un CHD mais aucune ROM — disque orphelin).
+// Filtre « Fabricant » (arcade uniquement) : valeurs = game.category (= <manufacturer>).
+let activeManufacturerFilters: Set<string> = new Set();
+// Filtre « Clone » (arcade uniquement) : 'clone' (cloneof présent) / 'parent' (absent).
+let activeCloneFilters: Set<string> = new Set();
+// Filtres spécifiques MAME : conservé pour compatibilité (l'ancien dropdown « MAME »
+// a été démantelé). Reste vidé au reset.
 let activeMameFilters: Set<string> = new Set();
+// Vrai si le DAT courant est un DAT arcade (MAME/FBNeo). Déterminé au chargement des
+// jeux d'après la présence de marqueurs arcade (bios/device/mechanical/parent/driver).
+let currentDatIsArcade = false;
+// Clés pseudo-catégorie des entrées « type de machine » du filtre Catégorie en mode
+// arcade (Games / BIOS / Device / Mechanical). Distinctes de toute catégorie réelle.
+const CATEGORY_GAMES_KEY = '__games__';
+const CATEGORY_BIOS_KEY = '__bios__';
+const CATEGORY_DEVICE_KEY = '__device__';
+const CATEGORY_MECHANICAL_KEY = '__mechanical__';
+const CATEGORY_TYPE_KEYS = [CATEGORY_GAMES_KEY, CATEGORY_BIOS_KEY, CATEGORY_DEVICE_KEY, CATEGORY_MECHANICAL_KEY];
+// Renvoie le type de machine d'un jeu (pour les pseudo-catégories et le groupement).
+function gameMachineType(g: GameInfo): 'games' | 'bios' | 'device' | 'mechanical' {
+  if (g.is_bios) return 'bios';
+  if (g.is_device) return 'device';
+  if (g.is_mechanical) return 'mechanical';
+  return 'games';
+}
 // Phase 3.5 — résolution des dépendances : IDs auto-sélectionnés et raisons (tooltips).
 let autoSelectedIds: Set<number> = new Set();
 let autoSelectedReasons: Record<number, Array<{ type: string; requiredBy: number; requiredByName: string }>> = {};
@@ -75,14 +97,19 @@ interface GameInfo {
   // Phase 3.5 — métadonnées arcade
   is_bios?: number;
   is_device?: number;
+  is_mechanical?: number;
   driver_status?: string | null;
   has_chd?: number;
   parent_name_ref?: string | null;
+  cloneof_ref?: string | null;
+  romof_ref?: string | null;
   // Phase 4 — nombre de ROMs « fichiers » (is_disk = 0). Les CHD ne sont pas comptés ici.
   rom_count?: number;
   // Nombre de disques CHD (is_disk = 1) liés au jeu. La visibilité d'un jeu se base
   // sur rom_count + disk_count > 0 (un disque orphelin reste visible).
   disk_count?: number;
+  // Somme des tailles (octets) des ROMs/disques du jeu telle que déclarée dans le DAT.
+  total_size?: number;
   // Phase 3bis-B — flags dérivés en mémoire (pas en DB)
   hasParentInDb?: boolean;
   cloneCount?: number;
@@ -961,11 +988,13 @@ async function updateDbInfoBanner() {
     if (dbChd) dbChd.style.display = display;
     if (dbChd && visible) {
       if (gamesWithDisks > 0) {
-        dbChd.textContent = t('common.yes');
-        dbChd.title = t('index.chdInfo.hasDisksTitle', { disks: totalDisks, games: gamesWithDisks });
+        // Détail affiché directement dans le bandeau (nb de disques / nb de jeux)
+        // plutôt qu'en infobulle.
+        dbChd.textContent = t('index.chdInfo.hasDisksInline', { disks: totalDisks, games: gamesWithDisks });
+        dbChd.title = '';
       } else {
         dbChd.textContent = t('common.no');
-        dbChd.title = t('index.chdInfo.noDisksTitle');
+        dbChd.title = '';
       }
     }
   };
@@ -1151,6 +1180,13 @@ function updateWorkflowButtons() {
   // Sans base → charge un DAT primaire (crée la base). Avec base → DAT complémentaire.
   if (elements.datLoad) {
     elements.datLoad.disabled = false;
+    // Quand un DAT est déjà chargé en base, le prochain chargement est complémentaire :
+    // adapter l'intitulé du bouton en conséquence.
+    const hasDatLoaded = currentDatInfo !== null;
+    elements.datLoad.textContent = hasDatLoaded
+      ? t('index.workflow.loadDatComplementary')
+      : t('index.workflow.loadDat');
+    elements.datLoad.title = t('index.workflow.loadDatTitle');
   }
 
   // Boutons "Ajouter dossier ROMs" : disponibles si une base est ouverte avec un DAT chargé
@@ -1213,7 +1249,10 @@ function resetInterface() {
   activeChangeFilters.clear();
   activeChdFilters.clear();
   activeDriverFilters.clear();
+  activeManufacturerFilters.clear();
+  activeCloneFilters.clear();
   activeMameFilters.clear();
+  currentDatIsArcade = false;
 
   // Masquer les barres liées à la vue DAT (réaffichées au prochain chargement)
   const groupFilterBar = document.getElementById('group-filter-bar');
@@ -1226,9 +1265,10 @@ function resetInterface() {
   if (activeFiltersBar) activeFiltersBar.classList.remove('visible');
 
   // Vider les dropdowns de filtres (reconstruits au prochain chargement)
-  for (const id of ['category-filters-container', 'match-status-filters-container',
-                    'selection-filters-container', 'change-status-filters-container',
-                    'chd-filters-container', 'driver-status-filters-container',
+  for (const id of ['category-filters-container', 'manufacturer-filters-container',
+                    'match-status-filters-container', 'selection-filters-container',
+                    'change-status-filters-container', 'chd-filters-container',
+                    'clone-filters-container', 'driver-status-filters-container',
                     'mame-filters-container']) {
     const el = document.getElementById(id);
     if (el) el.innerHTML = '';
@@ -1351,7 +1391,15 @@ function updateLeftSidebar() {
   
   if (folderList) {
     folderList.innerHTML = '';
-    loadedFolders.forEach(folder => {
+    // Le dossier cible (ROMs consolidées) est toujours épinglé en tête de liste,
+    // quelle que soit son ordre d'ajout. Tri stable : les autres gardent leur ordre.
+    const sortedFolders = [...loadedFolders].sort((a, b) => {
+      const aTarget = targetFolderPath !== null && a.path === targetFolderPath;
+      const bTarget = targetFolderPath !== null && b.path === targetFolderPath;
+      if (aTarget === bTarget) return 0;
+      return aTarget ? -1 : 1;
+    });
+    sortedFolders.forEach(folder => {
       const div = document.createElement('div');
       const isTarget = targetFolderPath !== null && folder.path === targetFolderPath;
       div.className = 'sidebar-item' + (isTarget ? ' target-folder' : '');
@@ -1543,6 +1591,11 @@ async function updateCenterContent(type: 'dat' | 'folder', path: string) {
       categoryCounts = extractCategoryCounts(visibleGames);
       matchStatusCounts = extractMatchStatusCounts(visibleGames);
 
+      // Détection « DAT arcade » (MAME/FBNeo) : présence de marqueurs arcade. Les DAT
+      // No-Intro/Redump n'en ont aucun. Pilote l'affichage des filtres/groupements/icônes.
+      currentDatIsArcade = visibleGames.some((g: GameInfo) =>
+        !!g.is_bios || !!g.is_device || !!g.is_mechanical || !!g.parent_name_ref || !!g.driver_status);
+
       // Phase 3bis-B : pré-calculer hasParentInDb + cloneCount (utilisés en vue merged)
       // et rafraîchir le mode cible depuis settings.
       computeParentCloneRelations(allGames);
@@ -1554,7 +1607,14 @@ async function updateCenterContent(type: 'dat' | 'folder', path: string) {
       // Nettoyer les filtres qui ne correspondent plus aux données actuelles
       // (basés sur visibleGames car les entrées sans ROM sont masquées de la liste).
       for (const f of activeFilters) {
+        // Les pseudo-catégories type de machine ne sont pas dans categoryCounts :
+        // ne pas les purger.
+        if (CATEGORY_TYPE_KEYS.includes(f)) continue;
         if (!categoryCounts.has(f)) activeFilters.delete(f);
+      }
+      // Le filtre Fabricant cible game.category → purger contre categoryCounts.
+      for (const f of activeManufacturerFilters) {
+        if (!categoryCounts.has(f)) activeManufacturerFilters.delete(f);
       }
       for (const f of activeMatchFilters) {
         if (!matchStatusCounts.has(f)) activeMatchFilters.delete(f);
@@ -1578,16 +1638,17 @@ async function updateCenterContent(type: 'dat' | 'folder', path: string) {
 
       // Générer les filtres (en restaurant l'état actif)
       generateCategoryFilters();
+      generateManufacturerFilters();
       generateMatchStatusFilters();
       generateSelectionFilters();
       generateChangeStatusFilters();
       generateChdFilter();
+      generateCloneFilter();
       generateDriverStatusFilter();
-      generateMameFilter();
 
-      // Restaurer la valeur du select de groupement
-      const groupBySelect = document.getElementById('group-by') as HTMLSelectElement;
-      if (groupBySelect) groupBySelect.value = currentGroupBy;
+      // Reconstruire les options de groupement selon le contexte (arcade vs non-arcade)
+      // — restaure aussi la valeur courante si elle est encore valide.
+      rebuildGroupByOptions();
 
       // Afficher les jeux
       applyFiltersAndGrouping();
@@ -1784,11 +1845,45 @@ function getIconGameCategory(category: string | undefined) {
 function getGameContentInfoHtml(game: GameInfo): string {
   const romCount = game.rom_count ?? 0;
   const diskCount = game.disk_count ?? 0;
+  const totalSize = game.total_size ?? 0;
   const romPart = `📄 ${t('index.gamesView.fileCount', { count: romCount })}`;
   const diskPart = diskCount > 0
     ? ` &nbsp;·&nbsp; 💿 ${t('index.gamesView.diskCount', { count: diskCount })}`
     : '';
-  return `<div class="list-item-info">${romPart}${diskPart}</div>`;
+  // Taille totale du jeu (DAT) sur la même ligne, à droite du nombre de fichiers/disques.
+  const sizePart = totalSize > 0
+    ? ` &nbsp;·&nbsp; 💾 ${formatFileSize(totalSize)}`
+    : '';
+  return `<div class="list-item-info">${romPart}${diskPart}${sizePart}</div>`;
+}
+
+// Icône affichée à gauche du nom : type de machine (arcade) ou icône de catégorie (non-arcade).
+function getGameDisplayIcon(game: GameInfo): string {
+  if (currentDatIsArcade) return machineTypeIcon(gameMachineType(game));
+  return getIconGameCategory(game.category);
+}
+
+// Marqueur de qualité d'émulation (arcade progettosnaps/MAME uniquement). Vide si
+// le DAT ne porte pas cette info (Pleasuredome) ou hors arcade.
+function getEmulationMarker(game: GameInfo): string {
+  if (!currentDatIsArcade || !game.driver_status) return '';
+  const map: Record<string, { icon: string; cls: string }> = {
+    good: { icon: '🟢', cls: 'emu-good' },
+    imperfect: { icon: '🟡', cls: 'emu-imperfect' },
+    preliminary: { icon: '🔴', cls: 'emu-preliminary' }
+  };
+  const m = map[game.driver_status];
+  if (!m) return '';
+  const label = game.driver_status.charAt(0).toUpperCase() + game.driver_status.slice(1);
+  return `<span class="emulation-marker ${m.cls}" title="${t('index.emulation.markerTitle', { status: label }).replace(/"/g, '&quot;')}">${m.icon} ${label}</span>`;
+}
+
+// Marqueur « clone » (arcade) : petit badge sur les clones, tooltip = parent (cloneof).
+// Masqué en vue merged (les clones y sont fondus dans le parent).
+function getCloneMarker(game: GameInfo): string {
+  if (!game.cloneof_ref || currentTargetSetMode === 'merged') return '';
+  const title = t('index.gamesView.cloneOfTitle', { parent: game.cloneof_ref }).replace(/"/g, '&quot;');
+  return ` <span class="clone-marker" title="${title}">🌀</span>`;
 }
 
 function displayGames(games: GameInfo[]) {
@@ -1834,12 +1929,27 @@ function displayGames(games: GameInfo[]) {
     } else if (game.category === 'Preproduction') {
       icon = icons.context['preproduction'];
     }*/
-    let icon = getIconGameCategory(game.category);
+    let icon = getGameDisplayIcon(game);
 
     const isDisappeared = !!game.is_disappeared;
-    const isUserSelected = !isDisappeared && game.is_selected !== 0;
-    const isAuto = autoSelectedIds.has(game.id) && !isUserSelected;
-    const isChecked = isUserSelected || isAuto;
+    // BIOS et devices : non sélectionnables par l'utilisateur — pilotés uniquement par
+    // la cascade de dépendances. Cochés (verrouillés) uniquement s'ils sont requis.
+    const isCascadeManaged = !!game.is_bios || !!game.is_device;
+    let isUserSelected: boolean;
+    let isAuto: boolean;
+    let isChecked: boolean;
+    let checkboxDisabled: boolean;
+    if (isCascadeManaged) {
+      isUserSelected = false;
+      isAuto = autoSelectedIds.has(game.id);
+      isChecked = isAuto;
+      checkboxDisabled = true;
+    } else {
+      isUserSelected = !isDisappeared && game.is_selected !== 0;
+      isAuto = autoSelectedIds.has(game.id) && !isUserSelected;
+      isChecked = isUserSelected || isAuto;
+      checkboxDisabled = isDisappeared || isAuto;
+    }
     const lockBadge = isAuto
       ? `<span class="auto-lock-badge" title="${formatAutoReasons(game.id).replace(/"/g, '&quot;')}">🔒</span> `
       : '';
@@ -1848,14 +1958,30 @@ function displayGames(games: GameInfo[]) {
       ? ` <span class="clone-count-badge" title="${t('index.gamesView.cloneBadgeTitle', { count: game.cloneCount! })}">🌀 +${game.cloneCount}</span>`
       : '';
 
+    // Arcade : fabricant + marqueur d'émulation regroupés dans un bloc SÉPARÉ (frère
+    // du badge de matching) — centré verticalement sur toute la hauteur de l'item et
+    // insensible à la longueur des infos du jeu (flex-shrink:0). La « catégorie »
+    // (= fabricant) n'est alors plus répétée en dessous.
+    const emuMarker = getEmulationMarker(game);
+    const manufacturerRight = (currentDatIsArcade && game.category)
+      ? `<span class="list-item-manufacturer" title="${escapeHtml(game.category).replace(/"/g, '&quot;')}">${escapeHtml(game.category)}</span>`
+      : '';
+    const arcadeInfoBlock = (manufacturerRight || emuMarker)
+      ? `<div class="list-item-arcade-info">${manufacturerRight}${emuMarker}</div>`
+      : '';
+    const categoryLine = (!currentDatIsArcade && game.category)
+      ? `<div class="list-item-info"><strong>${t('index.gamesView.categoryLabel')}</strong> ${escapeHtml(game.category)}</div>`
+      : '';
+
     item.innerHTML = `
-      <input type="checkbox" class="game-checkbox" data-game-id="${game.id}" ${isChecked ? 'checked' : ''} ${isDisappeared || isAuto ? 'disabled' : ''}>
+      <input type="checkbox" class="game-checkbox" data-game-id="${game.id}" ${isChecked ? 'checked' : ''} ${checkboxDisabled ? 'disabled' : ''}>
       <div style="flex: 1; min-width: 0;">
-        <div class="list-item-name">${lockBadge}${icon} ${game.name}${cloneBadge}${getChangeStatusBadgeHtml(game)}</div>
-        ${game.description ? `<div class="list-item-info">${game.description}</div>` : ''}
-        ${game.category ? `<div class="list-item-info"><strong>${t('index.gamesView.categoryLabel')}</strong> ${game.category}</div>` : ''}
+        <div class="list-item-name">${lockBadge}${icon} ${escapeHtml(game.name)}${getCloneMarker(game)}${cloneBadge}${getChangeStatusBadgeHtml(game)}</div>
+        ${game.description ? `<div class="list-item-info">${escapeHtml(game.description)}</div>` : ''}
+        ${categoryLine}
         ${getGameContentInfoHtml(game)}
       </div>
+      ${arcadeInfoBlock}
       ${isDisappeared ? '' : getMatchStatusBadgeHtml(game)}
     `;
 
@@ -1867,8 +1993,9 @@ function displayGames(games: GameInfo[]) {
       item.classList.add('deselected');
     }
 
-    // Checkbox click handler (pas pour les jeux disparus ni auto-sélectionnés)
-    if (!isDisappeared && !isAuto) {
+    // Checkbox click handler — seulement pour les cases actives (ni disparu, ni auto,
+    // ni cascade-managed BIOS/device).
+    if (!checkboxDisabled) {
       const checkbox = item.querySelector('.game-checkbox') as HTMLInputElement;
       checkbox.addEventListener('click', async (e) => {
         e.stopPropagation();
@@ -1928,7 +2055,7 @@ function extractCategoryCounts(games: GameInfo[]): Map<string, number> {
 function createFilterDropdown(
   containerId: string,
   label: string,
-  items: Array<{ key: string; displayName: string; count: number }>,
+  items: Array<{ key: string; displayName: string; count: number; group?: string }>,
   activeSet: Set<string>,
   onChangeCallback: () => void
 ) {
@@ -1971,7 +2098,17 @@ function createFilterDropdown(
     }
   }
 
+  let lastGroup: string | undefined;
   items.forEach(item => {
+    // Sous-en-tête de groupe (ex : « Fabricant ») inséré quand le groupe change.
+    if (item.group && item.group !== lastGroup) {
+      const header = document.createElement('div');
+      header.className = 'filter-dropdown-subheader';
+      header.textContent = item.group;
+      menu.appendChild(header);
+      lastGroup = item.group;
+    }
+
     const labelEl = document.createElement('label');
 
     const checkbox = document.createElement('input');
@@ -1981,7 +2118,10 @@ function createFilterDropdown(
 
     const nameSpan = document.createElement('span');
     nameSpan.className = 'filter-item-name';
-    nameSpan.innerHTML = item.displayName;
+    // textContent (et non innerHTML) : certaines valeurs sont du texte libre issu du
+    // DAT (ex : manufacturer MAME « <unknown Taiwanese vendor 8029> ») qui, interprété
+    // comme HTML, produirait une balise inconnue rendue vide — d'où des entrées blanches.
+    nameSpan.textContent = item.displayName;
 
     const countSpan = document.createElement('span');
     countSpan.className = 'filter-item-count';
@@ -2027,16 +2167,95 @@ document.addEventListener('click', () => {
   document.querySelectorAll('.filter-dropdown-menu.open').forEach(m => m.classList.remove('open'));
 });
 
-// Génération du dropdown de filtrage par catégorie
-function generateCategoryFilters() {
-  const sortedCategories = Array.from(categoryCounts.entries()).sort((a, b) => a[0].localeCompare(b[0]));
-  const items = sortedCategories.map(([category, count]) => ({
-    key: category,
-    displayName: category,
-    count
-  }));
+// Icônes des types de machine arcade. « games » réutilise l'icône « jeu » commune
+// (celle de la catégorie Games d'un DAT No-Intro/Redump).
+function machineTypeIcon(type: 'games' | 'bios' | 'device' | 'mechanical'): string {
+  switch (type) {
+    case 'bios': return '🧠';
+    case 'device': return '⚙️';
+    case 'mechanical': return '🔩';
+    default: return icons.context['game'];
+  }
+}
+function machineTypeLabel(type: 'games' | 'bios' | 'device' | 'mechanical'): string {
+  switch (type) {
+    case 'bios': return t('index.filters.bios');
+    case 'device': return t('index.filters.device');
+    case 'mechanical': return t('index.filters.mechanical');
+    default: return t('index.filters.games');
+  }
+}
+const CATEGORY_TYPE_ORDER: Array<{ key: string; type: 'games' | 'bios' | 'device' | 'mechanical' }> = [
+  { key: CATEGORY_GAMES_KEY, type: 'games' },
+  { key: CATEGORY_BIOS_KEY, type: 'bios' },
+  { key: CATEGORY_DEVICE_KEY, type: 'device' },
+  { key: CATEGORY_MECHANICAL_KEY, type: 'mechanical' }
+];
 
-  createFilterDropdown('category-filters-container', 'Catégorie', items, activeFilters, () => {
+// Génération du dropdown de filtrage « Catégorie ».
+//  - DAT arcade : les entrées sont les TYPES de machine (Games / BIOS / Device /
+//    Mechanical) — les fabricants passent dans le filtre « Fabricant » séparé.
+//  - DAT non-arcade : les entrées sont les catégories réelles (genre), avec leur icône.
+function generateCategoryFilters() {
+  const items: Array<{ key: string; displayName: string; count: number }> = [];
+
+  if (currentDatIsArcade) {
+    // Comptage par type (ordre fixe : Games, BIOS, Device, Mechanical).
+    const counts: Record<string, number> = { games: 0, bios: 0, device: 0, mechanical: 0 };
+    for (const g of allGames) counts[gameMachineType(g)]++;
+    for (const { key, type } of CATEGORY_TYPE_ORDER) {
+      if (counts[type] > 0) {
+        items.push({ key, displayName: `${machineTypeIcon(type)} ${machineTypeLabel(type)}`, count: counts[type] });
+      }
+    }
+  } else {
+    const sortedCategories = Array.from(categoryCounts.entries()).sort((a, b) => a[0].localeCompare(b[0]));
+    for (const [category, count] of sortedCategories) {
+      const icon = getIconGameCategory(category);
+      items.push({ key: category, displayName: `${icon} ${category}`, count });
+    }
+  }
+
+  createFilterDropdown('category-filters-container', t('index.filters.groupCategory'), items, activeFilters, () => {
+    applyFiltersAndGrouping();
+    updateGroupFilterSummary();
+  });
+}
+
+// Génération du dropdown « Fabricant » (arcade uniquement) : les valeurs sont les
+// game.category (= <manufacturer> MAME), triées alphabétiquement.
+function generateManufacturerFilters() {
+  const container = document.getElementById('manufacturer-filters-container');
+  if (!container) return;
+  if (!currentDatIsArcade || categoryCounts.size === 0) {
+    container.innerHTML = '';
+    return;
+  }
+  const sorted = Array.from(categoryCounts.entries()).sort((a, b) => a[0].localeCompare(b[0]));
+  const items = sorted.map(([manufacturer, count]) => ({ key: manufacturer, displayName: manufacturer, count }));
+
+  createFilterDropdown('manufacturer-filters-container', t('index.filters.manufacturer'), items, activeManufacturerFilters, () => {
+    applyFiltersAndGrouping();
+    updateGroupFilterSummary();
+  });
+}
+
+// Génération du dropdown « Clone » (arcade uniquement, seulement si des clones existent).
+function generateCloneFilter() {
+  const container = document.getElementById('clone-filters-container');
+  if (!container) return;
+  const cloneCount = allGames.filter(g => !!g.cloneof_ref).length;
+  if (!currentDatIsArcade || cloneCount === 0) {
+    container.innerHTML = '';
+    return;
+  }
+  const parentCount = allGames.length - cloneCount;
+  const items = [
+    { key: 'clone', displayName: `🌀 ${t('index.filters.clone')}`, count: cloneCount },
+    { key: 'parent', displayName: `— ${t('index.filters.notClone')}`, count: parentCount }
+  ];
+
+  createFilterDropdown('clone-filters-container', t('index.filters.cloneFilter'), items, activeCloneFilters, () => {
     applyFiltersAndGrouping();
     updateGroupFilterSummary();
   });
@@ -2249,50 +2468,33 @@ function generateChdFilter() {
   if (!container) return;
 
   const withChd = allGames.filter(g => !!g.has_chd).length;
+  // Décomposition des jeux à disque en deux catégories disjointes :
+  //  - « Avec disque & ROMs » : au moins un CHD ET au moins une ROM fichier.
+  //  - « Avec disque, sans ROM » : au moins un CHD mais aucune ROM (disque orphelin,
+  //    pour lequel on peut générer une archive vide).
+  const chdNoRomCount = allGames.filter(g => !!g.has_chd && (g.rom_count ?? 0) === 0).length;
+  const withChdAndRoms = withChd - chdNoRomCount;
   const withoutChd = allGames.length - withChd;
 
-  // Si le DAT ne contient aucun CHD, masquer le filtre (pas pertinent).
-  if (withChd === 0) {
+  // DAT arcade : toujours afficher le filtre Disques (repère utile même sans CHD).
+  // DAT non-arcade sans CHD : masquer (pas pertinent).
+  if (withChd === 0 && !currentDatIsArcade) {
     container.innerHTML = '';
     return;
   }
 
-  const items = [
-    { key: 'with-chd', displayName: `💿 ${t('index.filters.withDisk')}`, count: withChd },
-    { key: 'without-chd', displayName: `— ${t('index.filters.withoutDisk')}`, count: withoutChd }
+  // Ordre : « avec disque & ROMs » → « avec disque, sans ROM » (au milieu) → « sans disque ».
+  const items: Array<{ key: string; displayName: string; count: number }> = [
+    { key: 'with-chd', displayName: `💿 ${t('index.filters.withDisk')}`, count: withChdAndRoms }
   ];
+  // En arcade, l'entrée « disque sans ROM » est toujours présente (0 si aucun jeu de
+  // ce type — cas des DAT progettosnaps). Hors arcade, seulement si elle est non vide.
+  if (currentDatIsArcade || chdNoRomCount > 0) {
+    items.push({ key: 'chd-no-rom', displayName: `💿 ${t('index.filters.diskNoRom')}`, count: chdNoRomCount });
+  }
+  items.push({ key: 'without-chd', displayName: `— ${t('index.filters.withoutDisk')}`, count: withoutChd });
 
   createFilterDropdown('chd-filters-container', t('index.filters.disks'), items, activeChdFilters, () => {
-    applyFiltersAndGrouping();
-    updateGroupFilterSummary();
-  });
-}
-
-// Génération du dropdown de filtres spécifiques MAME :
-//  - BIOS       : le « jeu » est un set BIOS partagé (games.is_bios).
-//  - CHD sans ROM : jeu possédant un CHD mais aucune ROM (disque orphelin, pour
-//                 lequel on peut générer une archive vide). Pertinent surtout avec
-//                 les DAT CHD Pleasuredome ; les DAT Progettosnaps ne listent pas
-//                 ces jeux (disques sans ROM absents du DAT principal).
-function generateMameFilter() {
-  const container = document.getElementById('mame-filters-container');
-  if (!container) return;
-
-  const biosCount = allGames.filter(g => !!g.is_bios).length;
-  const chdNoRomCount = allGames.filter(g => !!g.has_chd && (g.rom_count ?? 0) === 0).length;
-
-  // Si le DAT ne comporte ni BIOS ni disque orphelin (DAT non MAME), masquer.
-  if (biosCount === 0 && chdNoRomCount === 0) {
-    container.innerHTML = '';
-    return;
-  }
-
-  const items = [
-    { key: 'bios',       displayName: `🧠 ${t('index.filters.bios')}`,      count: biosCount },
-    { key: 'chd-no-rom', displayName: `💿 ${t('index.filters.chdNoRom')}`, count: chdNoRomCount }
-  ];
-
-  createFilterDropdown('mame-filters-container', t('index.filters.mame'), items, activeMameFilters, () => {
     applyFiltersAndGrouping();
     updateGroupFilterSummary();
   });
@@ -2306,19 +2508,21 @@ function generateDriverStatusFilter() {
   const goodCount = allGames.filter(g => g.driver_status === 'good').length;
   const imperfectCount = allGames.filter(g => g.driver_status === 'imperfect').length;
   const preliminaryCount = allGames.filter(g => g.driver_status === 'preliminary').length;
+  const unsetCount = allGames.filter(g => !g.driver_status).length;
 
-  // Si le DAT ne porte pas d'info de driver_status (Pleasuredome / Logiqx classique),
-  // masquer le filtre.
-  if (goodCount + imperfectCount + preliminaryCount === 0) {
+  // DAT arcade : toujours afficher (avec l'entrée « Non spécifié » utile pour pointer
+  // les DAT Pleasuredome qui n'incluent pas cette info). DAT non-arcade : masquer.
+  if (!currentDatIsArcade) {
     container.innerHTML = '';
     return;
   }
 
-  const items = [
-    { key: 'good',        displayName: '🟢 Good',        count: goodCount },
-    { key: 'imperfect',   displayName: '🟡 Imperfect',   count: imperfectCount },
-    { key: 'preliminary', displayName: '🔴 Preliminary', count: preliminaryCount }
-  ];
+  const items: Array<{ key: string; displayName: string; count: number }> = [];
+  if (goodCount > 0) items.push({ key: 'good', displayName: '🟢 Good', count: goodCount });
+  if (imperfectCount > 0) items.push({ key: 'imperfect', displayName: '🟡 Imperfect', count: imperfectCount });
+  if (preliminaryCount > 0) items.push({ key: 'preliminary', displayName: '🔴 Preliminary', count: preliminaryCount });
+  // « Non spécifié » en dernier (Pleasuredome n'a jamais de driver_status).
+  if (unsetCount > 0) items.push({ key: 'unset', displayName: `⚪ ${t('index.filters.driverUnset')}`, count: unsetCount });
 
   createFilterDropdown('driver-status-filters-container', t('index.filters.emulation'), items, activeDriverFilters, () => {
     applyFiltersAndGrouping();
@@ -2329,6 +2533,25 @@ function generateDriverStatusFilter() {
 // Récupère le statut effectif d'un jeu (pour le filtrage)
 function getGameMatchStatus(game: GameInfo): string {
   return game.match_status || 'unknown';
+}
+
+// Prédicat du filtre Catégorie. Arcade : pseudo-clés de type. Non-arcade : catégorie réelle.
+// (Les deux jeux de clés ne se recouvrent pas → une même fonction gère les deux cas.)
+function matchesCategoryFilter(game: GameInfo): boolean {
+  if (activeFilters.has(CATEGORY_GAMES_KEY) && !game.is_bios && !game.is_device && !game.is_mechanical) return true;
+  if (activeFilters.has(CATEGORY_BIOS_KEY) && !!game.is_bios) return true;
+  if (activeFilters.has(CATEGORY_DEVICE_KEY) && !!game.is_device) return true;
+  if (activeFilters.has(CATEGORY_MECHANICAL_KEY) && !!game.is_mechanical) return true;
+  const category = game.category || t('index.filters.uncategorized');
+  return activeFilters.has(category);
+}
+
+// Prédicat du filtre Clone (arcade).
+function matchesCloneFilter(game: GameInfo): boolean {
+  const isClone = !!game.cloneof_ref;
+  if (activeCloneFilters.has('clone') && isClone) return true;
+  if (activeCloneFilters.has('parent') && !isClone) return true;
+  return false;
 }
 
 // Application des filtres et du groupement
@@ -2343,12 +2566,23 @@ function applyFiltersAndGrouping() {
     filteredGames = filteredGames.filter(g => !g.hasParentInDb);
   }
 
-  // Appliquer les filtres de catégorie
+  // Filtre Catégorie : en arcade, pseudo-entrées de TYPE (Games/BIOS/Device/Mechanical) ;
+  // en non-arcade, catégories réelles.
   if (activeFilters.size > 0) {
+    filteredGames = filteredGames.filter(matchesCategoryFilter);
+  }
+
+  // Filtre Fabricant (arcade) : cible game.category.
+  if (activeManufacturerFilters.size > 0) {
     filteredGames = filteredGames.filter(game => {
       const category = game.category || t('index.filters.uncategorized');
-      return activeFilters.has(category);
+      return activeManufacturerFilters.has(category);
     });
+  }
+
+  // Filtre Clone (arcade) : présence d'un cloneof.
+  if (activeCloneFilters.size > 0) {
+    filteredGames = filteredGames.filter(matchesCloneFilter);
   }
 
   // Appliquer les filtres de statut de matching
@@ -2383,30 +2617,24 @@ function applyFiltersAndGrouping() {
     filteredGames = filteredGames.filter(game => game.change_status !== 'disappeared');
   }
 
-  // Appliquer les filtres de présence de CHD
+  // Appliquer les filtres de présence de CHD (Disques). Logique OR entre trois cas
+  // disjoints : « avec disque & ROMs », « avec disque, sans ROM », « sans disque ».
   if (activeChdFilters.size > 0) {
     filteredGames = filteredGames.filter(game => {
       const hasChd = !!game.has_chd;
-      if (activeChdFilters.has('with-chd') && hasChd) return true;
+      const noRom = (game.rom_count ?? 0) === 0;
+      if (activeChdFilters.has('with-chd') && hasChd && !noRom) return true;
+      if (activeChdFilters.has('chd-no-rom') && hasChd && noRom) return true;
       if (activeChdFilters.has('without-chd') && !hasChd) return true;
       return false;
     });
   }
 
-  // Appliquer les filtres de qualité d'émulation (driver_status)
+  // Appliquer les filtres de qualité d'émulation (driver_status + « Non spécifié »)
   if (activeDriverFilters.size > 0) {
     filteredGames = filteredGames.filter(game => {
+      if (activeDriverFilters.has('unset') && !game.driver_status) return true;
       return game.driver_status ? activeDriverFilters.has(game.driver_status) : false;
-    });
-  }
-
-  // Appliquer les filtres spécifiques MAME (BIOS, CHD sans ROM). Logique OR
-  // au sein du dropdown : un jeu passe s'il satisfait l'un des critères actifs.
-  if (activeMameFilters.size > 0) {
-    filteredGames = filteredGames.filter(game => {
-      if (activeMameFilters.has('bios') && !!game.is_bios) return true;
-      if (activeMameFilters.has('chd-no-rom') && !!game.has_chd && (game.rom_count ?? 0) === 0) return true;
-      return false;
     });
   }
 
@@ -2428,6 +2656,41 @@ function updateGlobalCounters(displayed: number, total: number) {
 
   //counterDiv.innerHTML = `Affiché${displayed > 1 ? 's' : ''} : <strong>${displayed}</strong> 👁️ / <strong>${total}</strong>`;
   counterDiv.innerHTML = `👁️ <strong>${displayed}</strong> / <strong>${total}</strong>`;
+}
+
+// Replie ou déplie tous les groupes affichés + met à jour l'état persistant.
+function collapseAllGroups(collapse: boolean) {
+  document.querySelectorAll('.game-group').forEach(g => {
+    const key = (g as HTMLElement).dataset.groupKey;
+    g.classList.toggle('collapsed', collapse);
+    if (key) {
+      if (collapse) collapsedGameGroups.add(key);
+      else collapsedGameGroups.delete(key);
+    }
+  });
+}
+
+// Menu contextuel (clic droit) sur un en-tête de groupe : tout réduire / tout développer.
+function showGroupHeaderContextMenu(e: MouseEvent) {
+  e.preventDefault();
+  document.querySelectorAll('.group-ctx-menu').forEach(m => m.remove());
+
+  const menu = document.createElement('div');
+  menu.className = 'context-menu group-ctx-menu';
+  menu.style.display = 'block';
+  menu.style.left = `${e.clientX}px`;
+  menu.style.top = `${e.clientY}px`;
+  menu.innerHTML = `
+    <div class="context-menu-item" data-action="collapse-all">▶ ${t('index.gamesView.collapseAll')}</div>
+    <div class="context-menu-item" data-action="expand-all">▼ ${t('index.gamesView.expandAll')}</div>
+  `;
+  document.body.appendChild(menu);
+
+  const close = () => { menu.remove(); document.removeEventListener('click', close); };
+  menu.querySelector('[data-action="collapse-all"]')?.addEventListener('click', () => { collapseAllGroups(true); close(); });
+  menu.querySelector('[data-action="expand-all"]')?.addEventListener('click', () => { collapseAllGroups(false); close(); });
+  // Fermeture au prochain clic ailleurs (différé pour ne pas capter le clic courant).
+  setTimeout(() => document.addEventListener('click', close), 0);
 }
 
 // Affichage des jeux groupés
@@ -2454,8 +2717,13 @@ function displayGroupedGames(games: GameInfo[]) {
   games.forEach(game => {
     let groupKey: string;
 
-    if (currentGroupBy === 'category') {
+    if (currentGroupBy === 'category' || currentGroupBy === 'manufacturer') {
+      // 'category' (non-arcade) et 'manufacturer' (arcade) groupent tous deux par game.category.
       groupKey = game.category || t('index.filters.uncategorized');
+    } else if (currentGroupBy === 'type') {
+      groupKey = gameMachineType(game);
+    } else if (currentGroupBy === 'emulation') {
+      groupKey = game.driver_status || 'unset';
     } else if (currentGroupBy === 'letter') {
       groupKey = game.name.charAt(0).toUpperCase();
       if (!/[A-Z]/.test(groupKey)) {
@@ -2494,6 +2762,16 @@ function displayGroupedGames(games: GameInfo[]) {
       const changeOrder = ['new', 'modified', 'unchanged', 'disappeared'];
       return changeOrder.indexOf(a[0]) - changeOrder.indexOf(b[0]);
     }
+    // Groupement par type : ordre identique aux entrées du filtre Catégorie.
+    if (currentGroupBy === 'type') {
+      const typeOrder = ['games', 'bios', 'device', 'mechanical'];
+      return typeOrder.indexOf(a[0]) - typeOrder.indexOf(b[0]);
+    }
+    // Groupement par émulation : good → imperfect → preliminary → non spécifié.
+    if (currentGroupBy === 'emulation') {
+      const emuOrder = ['good', 'imperfect', 'preliminary', 'unset'];
+      return emuOrder.indexOf(a[0]) - emuOrder.indexOf(b[0]);
+    }
     return a[0].localeCompare(b[0]);
   });
 
@@ -2510,18 +2788,31 @@ function displayGroupedGames(games: GameInfo[]) {
       'unchanged': `⏸️ ${t('index.changeStatus.unchanged')}`,
       'disappeared': `❌ ${t('index.changeStatus.disappeared')}`
     };
+    const driverLabelsMap: Record<string, string> = {
+      'good': '🟢 Good',
+      'imperfect': '🟡 Imperfect',
+      'preliminary': '🔴 Preliminary',
+      'unset': `⚪ ${t('index.filters.driverUnset')}`
+    };
     const groupName = currentGroupBy === 'match-status'
       ? `${matchStatusIcons[groupKey]} ${matchStatusLabel(groupKey)}`
       : currentGroupBy === 'selection'
       ? selectionLabelsMap[groupKey]
       : currentGroupBy === 'change-status'
       ? (changeStatusLabelsMap[groupKey] || groupKey)
+      : currentGroupBy === 'type'
+      ? `${machineTypeIcon(groupKey as any)} ${machineTypeLabel(groupKey as any)}`
+      : currentGroupBy === 'emulation'
+      ? (driverLabelsMap[groupKey] || groupKey)
+      : currentGroupBy === 'category'
+      ? `${getIconGameCategory(groupKey)} ${groupKey}`
       : groupKey;
     // Trier les jeux par nom dans chaque groupe
     groupGames.sort((a, b) => a.name.localeCompare(b.name));
 
     const groupDiv = document.createElement('div');
     groupDiv.className = 'game-group';
+    groupDiv.dataset.groupKey = groupKey;
     // Restaurer l'état replié persistant (survit aux re-renders)
     if (collapsedGameGroups.has(groupKey)) {
       groupDiv.classList.add('collapsed');
@@ -2529,17 +2820,23 @@ function displayGroupedGames(games: GameInfo[]) {
 
     const headerDiv = document.createElement('div');
     headerDiv.className = 'game-group-header';
+    // Clic droit sur l'en-tête → tout réduire / tout développer.
+    headerDiv.addEventListener('contextmenu', showGroupHeaderContextMenu);
 
-    const selectableGames = groupGames.filter(g => !g.is_disappeared);
-    const groupSelectedCount = selectableGames.filter(g => g.is_selected !== 0).length;
+    // Exclut les jeux disparus et les BIOS/devices (non sélectionnables — cascade).
+    const selectableGames = groupGames.filter(g => !g.is_disappeared && !g.is_bios && !g.is_device);
+    const groupSelectedGames = selectableGames.filter(g => g.is_selected !== 0);
+    const groupSelectedCount = groupSelectedGames.length;
+    const groupSelectedSize = groupSelectedGames.reduce((sum, g) => sum + (g.total_size || 0), 0);
     const groupAllSelected = selectableGames.length > 0 && groupSelectedCount === selectableGames.length;
     const groupSomeSelected = groupSelectedCount > 0 && !groupAllSelected;
+    const groupSizePart = groupSelectedSize > 0 ? ` · 💾 ${formatFileSize(groupSelectedSize)}` : '';
 
     headerDiv.innerHTML = `
       <span class="group-chevron">▼</span>
       <input type="checkbox" class="group-checkbox" ${groupAllSelected ? 'checked' : ''}>
-      <span class="group-header-label">${groupName}</span>
-      <span class="count group-count">✔️ ${groupSelectedCount} / ${groupGames.length}</span>
+      <span class="group-header-label">${escapeHtml(groupName)}</span>
+      <span class="count group-count">✔️ ${groupSelectedCount} / ${groupGames.length}${groupSizePart}</span>
     `;
 
     const groupCheckbox = headerDiv.querySelector('.group-checkbox') as HTMLInputElement;
@@ -2688,10 +2985,16 @@ function displayGroupedGames(games: GameInfo[]) {
 function getDisplayedGames(): GameInfo[] {
   let result = allGames;
   if (activeFilters.size > 0) {
+    result = result.filter(matchesCategoryFilter);
+  }
+  if (activeManufacturerFilters.size > 0) {
     result = result.filter(game => {
       const category = game.category || t('index.filters.uncategorized');
-      return activeFilters.has(category);
+      return activeManufacturerFilters.has(category);
     });
+  }
+  if (activeCloneFilters.size > 0) {
+    result = result.filter(matchesCloneFilter);
   }
   if (activeMatchFilters.size > 0) {
     result = result.filter(game => activeMatchFilters.has(getGameMatchStatus(game)));
@@ -2715,19 +3018,17 @@ function getDisplayedGames(): GameInfo[] {
   if (activeChdFilters.size > 0) {
     result = result.filter(game => {
       const hasChd = !!game.has_chd;
-      if (activeChdFilters.has('with-chd') && hasChd) return true;
+      const noRom = (game.rom_count ?? 0) === 0;
+      if (activeChdFilters.has('with-chd') && hasChd && !noRom) return true;
+      if (activeChdFilters.has('chd-no-rom') && hasChd && noRom) return true;
       if (activeChdFilters.has('without-chd') && !hasChd) return true;
       return false;
     });
   }
   if (activeDriverFilters.size > 0) {
-    result = result.filter(game => game.driver_status ? activeDriverFilters.has(game.driver_status) : false);
-  }
-  if (activeMameFilters.size > 0) {
     result = result.filter(game => {
-      if (activeMameFilters.has('bios') && !!game.is_bios) return true;
-      if (activeMameFilters.has('chd-no-rom') && !!game.has_chd && (game.rom_count ?? 0) === 0) return true;
-      return false;
+      if (activeDriverFilters.has('unset') && !game.driver_status) return true;
+      return game.driver_status ? activeDriverFilters.has(game.driver_status) : false;
     });
   }
   return result;
@@ -2764,13 +3065,21 @@ function updateSelectionCounter() {
   const counterSpan = document.getElementById('selection-counter');
   if (!counterSpan) return;
 
-  const realGames = allGames.filter(g => !g.is_disappeared);
-  const selectedCount = realGames.filter(g => g.is_selected !== 0).length;
-  counterSpan.textContent = `✔️ ${selectedCount} / ${realGames.length}`;
+  // Compteur = jeux sélectionnables uniquement (hors disparus, hors BIOS/devices
+  // pilotés par la cascade). Les BIOS/devices requis apparaissent en auto (🔒), pas ici.
+  const realGames = allGames.filter(g => !g.is_disappeared && !g.is_bios && !g.is_device);
+  const selected = realGames.filter(g => g.is_selected !== 0);
+  const selectedSize = selected.reduce((sum, g) => sum + (g.total_size || 0), 0);
+  const sizePart = selectedSize > 0 ? ` · 💾 ${formatFileSize(selectedSize)}` : '';
+  counterSpan.textContent = `✔️ ${selected.length} / ${realGames.length}${sizePart}`;
 }
 
 // Mise à jour des checkboxes de groupes
 function updateGroupCheckboxes() {
+  // Map id → taille totale du jeu, pour recalculer la taille sélectionnée par groupe.
+  const sizeById = new Map<number, number>();
+  for (const g of allGames) sizeById.set(g.id, g.total_size || 0);
+
   const groupDivs = document.querySelectorAll('.game-group');
   groupDivs.forEach(groupDiv => {
     const groupCheckbox = groupDiv.querySelector('.group-checkbox') as HTMLInputElement;
@@ -2778,7 +3087,9 @@ function updateGroupCheckboxes() {
 
     const allGameCheckboxes = groupDiv.querySelectorAll('.game-checkbox') as NodeListOf<HTMLInputElement>;
     const selectableCheckboxes = Array.from(allGameCheckboxes).filter(cb => !cb.disabled);
-    const checkedCount = selectableCheckboxes.filter(cb => cb.checked).length;
+    const checkedBoxes = selectableCheckboxes.filter(cb => cb.checked);
+    const checkedCount = checkedBoxes.length;
+    const checkedSize = checkedBoxes.reduce((sum, cb) => sum + (sizeById.get(Number(cb.dataset.gameId)) || 0), 0);
 
     if (selectableCheckboxes.length === 0 || checkedCount === 0) {
       groupCheckbox.checked = false;
@@ -2791,10 +3102,11 @@ function updateGroupCheckboxes() {
       groupCheckbox.indeterminate = true;
     }
 
-    // Mettre à jour le compteur du groupe
+    // Mettre à jour le compteur du groupe (+ taille des jeux sélectionnés)
     const countSpan = groupDiv.querySelector('.group-count');
     if (countSpan) {
-      countSpan.textContent = `✔️ ${checkedCount} / ${allGameCheckboxes.length} `;
+      const sizePart = checkedSize > 0 ? ` · 💾 ${formatFileSize(checkedSize)}` : '';
+      countSpan.textContent = `✔️ ${checkedCount} / ${allGameCheckboxes.length}${sizePart} `;
     }
   });
 }
@@ -2903,11 +3215,11 @@ async function selectGame(element: HTMLElement, game: GameInfo) {
   
   const detailView = document.getElementById('detail-view');
   if (!detailView) return;
-  
-  let icon = getIconGameCategory(game.category);
+
+  let icon = getGameDisplayIcon(game);
 
   detailView.innerHTML = `
-    <div class="detail-header">${icon} ${game.name}</div>
+    <div class="detail-header">${icon} ${escapeHtml(game.name)}</div>
     <div style="padding: 10px;">${t('index.details.loadingRoms')}</div>
   `;
   
@@ -3027,22 +3339,58 @@ function displayRomDetails(game: GameInfo, roms: RomInfo[], matches: any[] = [])
     allMatchesMap.get(m.datRomId)!.push(m);
   }
 
-  let icon = getIconGameCategory(game.category);
+  let icon = getGameDisplayIcon(game);
 
   // Statut global du jeu
   const statusBadge = getMatchStatusBadgeHtml(game);
 
-  let html = `<div class="detail-header">${icon} ${game.name}</div>`;
+  // Taille totale du jeu = somme des tailles déclarées de ses ROMs/disques.
+  const totalSize = roms.reduce((sum, r) => sum + (r.size || 0), 0);
+
+  // Arcade : la « catégorie » est le fabricant (le type est déjà porté par l'icône).
+  const catLabel = currentDatIsArcade ? t('index.romDetails.manufacturer') : t('index.romDetails.category');
+  const catIconPrefix = currentDatIsArcade ? '' : `${icon} `;
+  const emulationRow = (currentDatIsArcade && game.driver_status)
+    ? `<div style="margin-bottom: 10px;"><strong>${t('index.romDetails.emulation')}</strong> ${getEmulationMarker(game)}</div>`
+    : '';
+  const cloneRow = (currentDatIsArcade && game.cloneof_ref)
+    ? `<div style="margin-bottom: 10px;"><strong>${t('index.romDetails.cloneOf')}</strong> ${escapeHtml(game.cloneof_ref)}</div>`
+    : '';
+  // romof affiché seulement s'il diffère de cloneof (souvent identique, ou = BIOS partagé).
+  const romofRow = (currentDatIsArcade && game.romof_ref && game.romof_ref !== game.cloneof_ref)
+    ? `<div style="margin-bottom: 10px;"><strong>${t('index.romDetails.romOf')}</strong> ${escapeHtml(game.romof_ref)}</div>`
+    : '';
+
+  // En-tête de la liste des ROMs. En arcade : compteurs ROMs (fichiers) + disques avec
+  // les icônes du volet central. Sinon : « ROM file(s): (N) » comme avant.
+  const fileRomCount = roms.filter(r => !r.is_disk).length;
+  const diskRomCount = roms.filter(r => !!r.is_disk).length;
+  const romsHeader = currentDatIsArcade
+    ? `<strong>${t('index.romDetails.romsLabel')}</strong> 📄 ${fileRomCount}${diskRomCount > 0 ? ` &nbsp;·&nbsp; 💿 ${diskRomCount}` : ''}`
+    : `<strong>${t('index.romDetails.romFiles')}</strong> (${roms.length})`;
+
+  let html = `<div class="detail-header">${icon} ${escapeHtml(game.name)}</div>`;
+  // Nom complet du jeu (description) — pour les DAT MAME, game.name est un code court
+  // (« ct486 ») alors que la description est le titre lisible.
+  if (game.description && game.description !== game.name) {
+    html += `<div class="detail-subtitle">${escapeHtml(game.description)}</div>`;
+  }
   html += `
     <div style="padding: 10px; font-size: 12px;">
       <div style="margin-bottom: 10px;">
-        <strong>${t('index.romDetails.category')}</strong> ${icon} ${game.category || t('index.filters.uncategorized')}
+        <strong>${catLabel}</strong> ${catIconPrefix}${escapeHtml(game.category || t('index.filters.uncategorized'))}
       </div>
+      ${emulationRow}
+      ${cloneRow}
+      ${romofRow}
+      ${totalSize > 0 ? `<div style="margin-bottom: 10px;">
+        <strong>${t('index.romDetails.totalSize')}</strong> 💾 ${formatFileSize(totalSize)}
+      </div>` : ''}
       <div style="margin-bottom: 10px;">
         <strong>${t('index.romDetails.matching')}</strong> ${statusBadge}
       </div>
       <div style="margin-top: 15px;">
-        <strong>${t('index.romDetails.romFiles')}</strong> (${roms.length})
+        ${romsHeader}
       </div>
     </div>`;
 
@@ -3120,6 +3468,62 @@ function displayRomDetails(game: GameInfo, roms: RomInfo[], matches: any[] = [])
   }
 
   detailView.innerHTML = html;
+
+  // Arcade : pour un BIOS / device / mechanical, lister les machines qui en dépendent
+  // (chargement asynchrone, ajouté en fin de volet).
+  if (currentDatIsArcade && (game.is_bios || game.is_device || game.is_mechanical)) {
+    appendDependentsSection(game.id, detailView);
+  }
+}
+
+// Charge et ajoute au volet droit la liste des machines qui dépendent d'un jeu
+// (parent BIOS / device / mechanical). Ajouté après le reste du contenu.
+async function appendDependentsSection(gameId: number, container: HTMLElement): Promise<void> {
+  let dependents: Array<{ name: string; description: string | null; relationship_type: string }> = [];
+  try {
+    dependents = await window.api.listDependents(gameId);
+  } catch { /* ignore */ }
+  if (dependents.length === 0) return;
+  // Le volet a pu changer de contenu entre-temps (autre sélection) : ne rien faire
+  // si ce n'est plus le même jeu affiché.
+  if (!container.isConnected) return;
+
+  const typeLabel = (t2: string): string => {
+    if (t2 === 'cloneof') return t('index.autoReasons.parentOfClone');
+    if (t2 === 'romof') return t('index.autoReasons.biosOf');
+    if (t2 === 'device_ref') return t('index.autoReasons.deviceRequiredBy');
+    return t2;
+  };
+
+  // Table nom → jeu pour connaître l'état de sélection de chaque machine dépendante.
+  const byName = new Map<string, GameInfo>();
+  for (const g of allGames) byName.set(g.name, g);
+  // Badge « sélectionné » affiché uniquement si la machine est effectivement retenue
+  // (sélection utilisateur ou auto-cascade).
+  const selectedBadge = (name: string): string => {
+    const g = byName.get(name);
+    const included = !!g && (g.is_selected !== 0 || autoSelectedIds.has(g.id));
+    return included
+      ? ` <span class="match-status-badge status-complete">✅ ${t('index.selectionStatus.selected')}</span>`
+      : '';
+  };
+
+  const rows = dependents.map(d => `
+    <div class="file-item" style="padding: 6px 8px;">
+      <div style="display: flex; justify-content: space-between; align-items: center; gap: 8px;">
+        <span style="font-weight: 500; min-width: 0; overflow: hidden; text-overflow: ellipsis;">${escapeHtml(d.name)}</span>
+        ${selectedBadge(d.name)}
+      </div>
+      ${d.description ? `<div class="list-item-info">${escapeHtml(d.description)}</div>` : ''}
+      <div class="file-hash">${escapeHtml(typeLabel(d.relationship_type))}</div>
+    </div>`).join('');
+
+  const section = document.createElement('div');
+  section.style.padding = '10px';
+  section.innerHTML = `
+    <div style="margin: 6px 0 8px;"><strong>${t('index.romDetails.dependents', { count: dependents.length })}</strong></div>
+    ${rows}`;
+  container.appendChild(section);
 }
 
 // Affichage du contenu d'une archive
@@ -3686,6 +4090,9 @@ async function openExistingDatabase() {
         targetFolderPath = savedTargetFolder;
       }
 
+      // Fusionner les presets personnalisés de la base dans les paramètres de l'app.
+      await syncDbCustomPresetsToApp();
+
       // Mettre à jour l'état des boutons workflow en fonction de l'état réel de la base de données
       updateWorkflowButtons();
 
@@ -4034,6 +4441,11 @@ datLoadButton?.addEventListener('click', () => {
   window.api.openDatDownloadWindow();
 });
 
+// Chargement rapide : ouvrir une base de données RUMCET existante.
+document.getElementById('open-database-btn')?.addEventListener('click', () => {
+  openExistingDatabase();
+});
+
 /**
  * Post-traitement après un chargement PRIMAIRE réussi depuis l'écran unifié :
  * même logique que l'ancien flux « Créer base de données » (bandeau, sidebar,
@@ -4053,6 +4465,10 @@ async function handlePrimaryDatLoaded(payload: {
   currentDatPath = payload.datPath || null;
   currentDbPath = payload.dbPath;
   currentDatInfo = payload.datInfo || null;
+
+  // Aligner la base fraîche avec les presets personnalisés globaux (et récupérer
+  // d'éventuels presets déjà présents dans une base réutilisée).
+  await syncDbCustomPresetsToApp();
 
   // Mettre à jour le bandeau d'info DB
   updateDbInfoBanner();
@@ -4196,7 +4612,7 @@ consolidateRomsButton?.addEventListener('click', runConsolidation);
 // BIOS, devices et jeux disparus sont exclus du ciblage (gérés par la cascade).
 // Les règles sont persistées dans la metadata DB ('selection_rules').
 
-type AsmField = 'name' | 'description' | 'category' | 'driver_status' | 'has_chd' | 'is_clone' | 'match_status';
+type AsmField = 'name' | 'description' | 'name_desc' | 'category' | 'driver_status' | 'has_chd' | 'is_clone' | 'is_mechanical' | 'match_status';
 
 interface SelectionRule {
   action: 'select' | 'deselect';
@@ -4208,17 +4624,49 @@ interface SelectionRule {
 let asmRules: SelectionRule[] = [];
 let asmBase: 'all' | 'none' | 'current' = 'all';
 
-const ASM_TEXT_FIELDS: AsmField[] = ['name', 'description', 'category'];
+// Presets personnalisés (créés par l'utilisateur). Scope = type de DAT où le preset
+// est proposé. Globaux (paramètres de l'app) + miroir per-base (metadata).
+type PresetScope = 'arcade' | 'nointro-redump' | 'global';
+interface CustomPreset { id: string; name: string; scope: PresetScope; rules: SelectionRule[]; }
+let asmCustomPresets: CustomPreset[] = [];
+// Position (index parmi les presets visibles) du preset en cours de glisser-déposer.
+let asmDragVi: number | null = null;
+
+// Signature de contenu d'un preset : sert d'identité (dédoublonnage), indépendante de
+// l'id et du nom. Valeurs texte normalisées (trim + minuscules).
+function presetSig(p: { rules: SelectionRule[] }): string {
+  return JSON.stringify((p.rules || []).map(r => [r.action, r.field, r.operator, (r.value || '').trim().toLowerCase()]));
+}
+
+// Normalise un scope inconnu vers 'global'.
+function normPresetScope(s: any): PresetScope {
+  return (s === 'arcade' || s === 'nointro-redump' || s === 'global') ? s : 'global';
+}
+
+// Fusion de scope : deux scopes différents (ou l'un = global) → global.
+function mergeScope(a: PresetScope, b: PresetScope): PresetScope {
+  return a === b ? a : 'global';
+}
+
+// Un preset custom est-il visible pour le type de DAT courant ?
+function customPresetVisible(p: CustomPreset): boolean {
+  if (p.scope === 'global') return true;
+  return p.scope === 'arcade' ? currentDatIsArcade : !currentDatIsArcade;
+}
+
+const ASM_TEXT_FIELDS: AsmField[] = ['name', 'description', 'name_desc', 'category'];
 
 // Libellés résolus au rendu (les traductions ne sont pas chargées à l'import du module)
 function asmFieldLabels(): Record<AsmField, string> {
   return {
     name: t('index.asm.fieldName'),
     description: t('index.asm.fieldDescription'),
+    name_desc: t('index.asm.fieldNameOrDescription'),
     category: t('index.asm.fieldCategory'),
     driver_status: t('index.asm.fieldDriverStatus'),
     has_chd: t('index.asm.fieldHasChd'),
     is_clone: t('index.asm.fieldIsClone'),
+    is_mechanical: t('index.asm.fieldMechanical'),
     match_status: t('index.asm.fieldMatchStatus')
   };
 }
@@ -4250,6 +4698,7 @@ function asmEnumValues(): Partial<Record<AsmField, Array<{ v: string; l: string 
     ],
     has_chd: [{ v: 'yes', l: t('common.yes').toLowerCase() }, { v: 'no', l: t('common.no').toLowerCase() }],
     is_clone: [{ v: 'yes', l: t('common.yes').toLowerCase() }, { v: 'no', l: t('common.no').toLowerCase() }],
+    is_mechanical: [{ v: 'yes', l: t('common.yes').toLowerCase() }, { v: 'no', l: t('common.no').toLowerCase() }],
     match_status: [
       { v: 'complete', l: t('index.asm.valueComplete') },
       { v: 'partial', l: t('index.asm.valuePartial') },
@@ -4261,11 +4710,14 @@ function asmEnumValues(): Partial<Record<AsmField, Array<{ v: string; l: string 
 
 // Modèles rapides : jeux de règles pré-configurés ajoutés à la liste courante
 const ASM_PRESETS: Record<string, SelectionRule[]> = {
+  // Filtre sur « Nom ou description » : couvre No-Intro/Redump (tag dans le nom) ET
+  // MAME (mention dans la description / titre).
   'no-proto': [
-    { action: 'deselect', field: 'name', operator: 'contains', value: '(proto' },
-    { action: 'deselect', field: 'name', operator: 'contains', value: '(beta' },
-    { action: 'deselect', field: 'name', operator: 'contains', value: '(demo' },
-    { action: 'deselect', field: 'name', operator: 'contains', value: '(sample' }
+    { action: 'deselect', field: 'name_desc', operator: 'contains', value: '(proto' },
+    { action: 'deselect', field: 'name_desc', operator: 'contains', value: '(beta' },
+    { action: 'deselect', field: 'name_desc', operator: 'contains', value: '(demo' },
+    { action: 'deselect', field: 'name_desc', operator: 'contains', value: '(sample' },
+    { action: 'deselect', field: 'name_desc', operator: 'contains', value: 'prototype' }
   ],
   // Convention No-Intro/Redump : les BIOS sont préfixés « [BIOS] » dans le nom.
   // (Les BIOS MAME portent isbios="yes" et sont déjà exclus du ciblage des règles —
@@ -4276,18 +4728,31 @@ const ASM_PRESETS: Record<string, SelectionRule[]> = {
   // Convention No-Intro/Redump : « (Aftermarket) » = production post-commerciale,
   // « (Unl) » = jeu non licencié. N'existe pas dans les DAT MAME.
   'no-aftermarket-unl': [
-    { action: 'deselect', field: 'name', operator: 'contains', value: '(aftermarket' },
-    { action: 'deselect', field: 'name', operator: 'contains', value: '(unl)' }
+    { action: 'deselect', field: 'name_desc', operator: 'contains', value: '(aftermarket' },
+    { action: 'deselect', field: 'name_desc', operator: 'contains', value: '(unl)' }
   ],
   'no-clones': [{ action: 'deselect', field: 'is_clone', operator: 'is', value: 'yes' }],
   'good-only': [{ action: 'deselect', field: 'driver_status', operator: 'is-not', value: 'good' }],
   'no-chd': [{ action: 'deselect', field: 'has_chd', operator: 'is', value: 'yes' }],
-  'complete-only': [{ action: 'deselect', field: 'match_status', operator: 'is-not', value: 'complete' }]
+  'complete-only': [{ action: 'deselect', field: 'match_status', operator: 'is-not', value: 'complete' }],
+  // Machines électromécaniques (flippers, machines à sous…) : non jouables au pad,
+  // typiquement exclues d'un set Recalbox.
+  'no-mechanical': [{ action: 'deselect', field: 'is_mechanical', operator: 'is', value: 'yes' }],
+  // Jouables : ne garde que good + imperfect ; exclut « preliminary » et « non spécifié »
+  // (la plupart des jeux « imperfect » fonctionnent correctement ; « non spécifié » sur
+  // progettosnaps = bios/devices, déjà non sélectionnables).
+  'playable-only': [
+    { action: 'deselect', field: 'driver_status', operator: 'is', value: 'preliminary' },
+    { action: 'deselect', field: 'driver_status', operator: 'is', value: '' }
+  ]
 };
 
 function asmRuleMatches(rule: SelectionRule, game: GameInfo): boolean {
   if (ASM_TEXT_FIELDS.includes(rule.field)) {
-    const raw = String((game as any)[rule.field] || '');
+    // 'name_desc' : champ virtuel combinant le nom et la description.
+    const raw = rule.field === 'name_desc'
+      ? `${game.name || ''} ${game.description || ''}`
+      : String((game as any)[rule.field] || '');
     const v = raw.toLowerCase();
     const q = (rule.value || '').toLowerCase();
     // Une règle texte sans valeur ne matche rien (sauf regex vide, rejetée aussi)
@@ -4307,6 +4772,7 @@ function asmRuleMatches(rule: SelectionRule, game: GameInfo): boolean {
   let actual: string;
   if (rule.field === 'has_chd') actual = game.has_chd ? 'yes' : 'no';
   else if (rule.field === 'is_clone') actual = game.parent_name_ref ? 'yes' : 'no';
+  else if (rule.field === 'is_mechanical') actual = game.is_mechanical ? 'yes' : 'no';
   else if (rule.field === 'driver_status') actual = game.driver_status || '';
   else actual = game.match_status || 'unknown';
 
@@ -4496,6 +4962,216 @@ function asmRenderRules() {
   asmSchedulePreview();
 }
 
+// Charge les presets personnalisés depuis les paramètres de l'application.
+async function asmLoadCustomPresets(): Promise<void> {
+  try {
+    const settings = await window.api.getSettings();
+    const list = Array.isArray(settings?.customSelectionPresets) ? settings.customSelectionPresets : [];
+    asmCustomPresets = list.map((p: any) => ({
+      id: String(p.id || crypto.randomUUID()),
+      name: String(p.name || ''),
+      scope: normPresetScope(p.scope),
+      rules: Array.isArray(p.rules) ? p.rules : []
+    }));
+  } catch {
+    asmCustomPresets = [];
+  }
+}
+
+// Persiste les presets personnalisés dans les paramètres de l'app ET dans la metadata
+// de la base courante (miroir pour la portabilité).
+async function asmPersistCustomPresets(): Promise<void> {
+  try {
+    await window.api.updateSettings({ customSelectionPresets: asmCustomPresets });
+  } catch { /* ignore */ }
+  try {
+    if (currentDbPath) {
+      await window.api.setDbMetadata('custom_selection_presets', JSON.stringify(asmCustomPresets));
+    }
+  } catch { /* ignore */ }
+}
+
+// Rendu de la section « Mes modèles » (filtré par scope selon le DAT courant).
+function asmRenderCustomPresets(): void {
+  const container = document.getElementById('asm-custom-presets');
+  if (!container) return;
+  container.innerHTML = '';
+
+  const scopeLabel: Record<PresetScope, string> = {
+    'arcade': t('index.autoSelect.scopeArcade'),
+    'nointro-redump': t('index.autoSelect.scopeNoIntroRedump'),
+    'global': t('index.autoSelect.scopeGlobal')
+  };
+
+  const visible = asmCustomPresets.filter(customPresetVisible);
+  if (visible.length === 0) {
+    const empty = document.createElement('span');
+    empty.className = 'asm-custom-empty';
+    empty.textContent = t('index.autoSelect.customEmpty');
+    container.appendChild(empty);
+    return;
+  }
+
+  const realIdxOf = (p: CustomPreset) => asmCustomPresets.indexOf(p);
+
+  visible.forEach((preset, vi) => {
+    const chip = document.createElement('span');
+    chip.className = 'asm-custom-chip';
+    chip.draggable = true;
+    chip.dataset.vi = String(vi);
+    chip.title = t('index.autoSelect.customDragTitle');
+
+    const applyBtn = document.createElement('button');
+    applyBtn.type = 'button';
+    applyBtn.className = 'asm-custom-apply';
+    applyBtn.textContent = preset.name || '(sans nom)';
+    applyBtn.title = t('index.autoSelect.customApplyTitle');
+    applyBtn.addEventListener('click', () => {
+      // Append (comme les modèles intégrés) — copie profonde pour édition indépendante.
+      asmRules.push(...preset.rules.map(r => ({ ...r })));
+      asmRenderRules();
+    });
+
+    const badge = document.createElement('span');
+    badge.className = 'asm-scope-badge';
+    badge.textContent = scopeLabel[preset.scope];
+
+    const delBtn = document.createElement('button');
+    delBtn.className = 'asm-rule-btn asm-delete';
+    delBtn.textContent = '🗑';
+    delBtn.title = t('index.autoSelect.customDeleteTitle');
+    delBtn.addEventListener('click', async () => {
+      const ri = realIdxOf(preset);
+      if (ri >= 0) asmCustomPresets.splice(ri, 1);
+      await asmPersistCustomPresets();
+      asmRenderCustomPresets();
+      log('logs.game.customPresetDeleted', { context: 'game', state: 'deleted' });
+    });
+
+    // Réordre par glisser-déposer (entre presets visibles ; les masqués restent en place).
+    chip.addEventListener('dragstart', (e) => {
+      asmDragVi = vi;
+      chip.classList.add('asm-dragging');
+      if (e.dataTransfer) e.dataTransfer.effectAllowed = 'move';
+    });
+    chip.addEventListener('dragend', () => {
+      chip.classList.remove('asm-dragging');
+      container.querySelectorAll('.asm-drag-over').forEach(c => c.classList.remove('asm-drag-over'));
+    });
+    chip.addEventListener('dragover', (e) => {
+      e.preventDefault();
+      if (e.dataTransfer) e.dataTransfer.dropEffect = 'move';
+      if (asmDragVi !== null && asmDragVi !== vi) chip.classList.add('asm-drag-over');
+    });
+    chip.addEventListener('dragleave', () => chip.classList.remove('asm-drag-over'));
+    chip.addEventListener('drop', (e) => {
+      e.preventDefault();
+      chip.classList.remove('asm-drag-over');
+      if (asmDragVi !== null && asmDragVi !== vi) asmReorderVisiblePresets(asmDragVi, vi);
+      asmDragVi = null;
+    });
+
+    chip.appendChild(applyBtn);
+    chip.appendChild(badge);
+    chip.appendChild(delBtn);
+    container.appendChild(chip);
+  });
+}
+
+// Déplace le preset visible de la position `src` vers `dst` (indices dans la liste
+// filtrée par scope), en conservant en place les presets masqués (autre scope).
+async function asmReorderVisiblePresets(src: number, dst: number): Promise<void> {
+  const positions: number[] = [];
+  const visibleArr: CustomPreset[] = [];
+  asmCustomPresets.forEach((p, i) => {
+    if (customPresetVisible(p)) { positions.push(i); visibleArr.push(p); }
+  });
+  if (src < 0 || src >= visibleArr.length || dst < 0 || dst >= visibleArr.length) return;
+  const [moved] = visibleArr.splice(src, 1);
+  visibleArr.splice(dst, 0, moved);
+  positions.forEach((pos, k) => { asmCustomPresets[pos] = visibleArr[k]; });
+  await asmPersistCustomPresets();
+  asmRenderCustomPresets();
+}
+
+// Crée un preset personnalisé à partir des règles en cours d'édition.
+async function asmCreateCustomPreset(): Promise<void> {
+  const nameInput = document.getElementById('asm-custom-name') as HTMLInputElement | null;
+  const scopeSel = document.getElementById('asm-custom-scope') as HTMLSelectElement | null;
+  const name = (nameInput?.value || '').trim();
+  if (!name) {
+    log('logs.game.customPresetNameRequired', { severity: 'warning', context: 'game' });
+    return;
+  }
+  if (asmRules.length === 0) {
+    log('logs.game.customPresetNeedsRules', { severity: 'warning', context: 'game' });
+    return;
+  }
+  const scope = normPresetScope(scopeSel?.value);
+  const rules = asmRules.map(r => ({ ...r }));
+
+  // Si un preset de même contenu existe déjà : fusionner son scope plutôt que dupliquer.
+  const sig = presetSig({ rules });
+  const existing = asmCustomPresets.find(p => presetSig(p) === sig);
+  if (existing) {
+    existing.scope = mergeScope(existing.scope, scope);
+  } else {
+    asmCustomPresets.push({ id: crypto.randomUUID(), name, scope, rules });
+  }
+
+  if (nameInput) nameInput.value = '';
+  await asmPersistCustomPresets();
+  asmRenderCustomPresets();
+  log('logs.game.customPresetSaved', { context: 'game', state: 'success' });
+}
+
+// À l'ouverture d'une base : fusionne les presets de la base (metadata) dans les
+// paramètres de l'app. Dédoublonnage PAR CONTENU (pas par id) ; l'identité (name+id) de
+// l'app l'emporte sur un équivalent ; le scope manquant est ajouté (→ global si diffèrent).
+// Puis réaligne les deux côtés (metadata réécrite avec la liste app).
+async function syncDbCustomPresetsToApp(): Promise<void> {
+  if (!currentDbPath) return;
+  try {
+    const settings = await window.api.getSettings();
+    const app: CustomPreset[] = (Array.isArray(settings?.customSelectionPresets) ? settings.customSelectionPresets : [])
+      .map((p: any) => ({ id: String(p.id || crypto.randomUUID()), name: String(p.name || ''), scope: normPresetScope(p.scope), rules: Array.isArray(p.rules) ? p.rules : [] }));
+
+    let db: CustomPreset[] = [];
+    try {
+      const raw = await window.api.getDbMetadata('custom_selection_presets');
+      if (raw) db = JSON.parse(raw);
+    } catch { /* metadata absente/corrompue */ }
+
+    const bySig = new Map<string, CustomPreset>();
+    for (const p of app) bySig.set(presetSig(p), p);
+
+    let changed = false;
+    for (const dbP of db) {
+      const norm: CustomPreset = { id: String(dbP.id || crypto.randomUUID()), name: String(dbP.name || ''), scope: normPresetScope(dbP.scope), rules: Array.isArray(dbP.rules) ? dbP.rules : [] };
+      const sig = presetSig(norm);
+      const appP = bySig.get(sig);
+      if (!appP) {
+        app.push(norm);
+        bySig.set(sig, norm);
+        changed = true;
+      } else {
+        const merged = mergeScope(appP.scope, norm.scope);
+        if (merged !== appP.scope) { appP.scope = merged; changed = true; }
+      }
+    }
+
+    // Aligner app ↔ base : app est le sur-ensemble ; on réécrit toujours la metadata
+    // (elle prend ainsi les name/id canoniques de l'app pour les équivalents).
+    asmCustomPresets = app;
+    if (changed) {
+      await window.api.updateSettings({ customSelectionPresets: app });
+    }
+    await window.api.setDbMetadata('custom_selection_presets', JSON.stringify(app));
+  } catch {
+    /* ignore — la sync est best-effort */
+  }
+}
+
 async function openAutoSelectModal() {
   if (!currentDbPath || allGames.length === 0) {
     log('logs.game.loadDatFirst', { severity: 'warning', context: 'game' });
@@ -4518,10 +5194,71 @@ async function openAutoSelectModal() {
     r.checked = r.value === asmBase;
   });
 
+  // N'afficher que les presets pertinents pour le type de DAT courant (évite la
+  // confusion : Clones/Good/CHD/Mechanical/Jouables n'ont de sens qu'en arcade ;
+  // BIOS/Aftermarket sont des conventions No-Intro/Redump).
+  document.querySelectorAll<HTMLButtonElement>('#auto-select-modal [data-preset-scope]').forEach(btn => {
+    const scope = btn.dataset.presetScope || 'both';
+    const visible = scope === 'both' || (scope === 'arcade' ? currentDatIsArcade : !currentDatIsArcade);
+    btn.style.display = visible ? '' : 'none';
+  });
+
+  // Scope par défaut du sélecteur de création = type du DAT courant.
+  const scopeSel = document.getElementById('asm-custom-scope') as HTMLSelectElement | null;
+  if (scopeSel) scopeSel.value = currentDatIsArcade ? 'arcade' : 'nointro-redump';
+
+  await asmLoadCustomPresets();
+  asmRenderCustomPresets();
   asmRenderRules();
 
   const modal = document.getElementById('auto-select-modal') as HTMLElement;
   modal.style.display = 'flex';
+}
+
+// Clé de stockage des presets par défaut : par système (type de DAT). Repli sur une
+// clé générique si le système n'est pas encore déterminé.
+async function asmDefaultKey(): Promise<string> {
+  try {
+    const sys = await window.api.getDbMetadata('system_id');
+    if (sys) return `sys:${sys}`;
+  } catch { /* ignore */ }
+  return currentDatIsArcade ? 'arcade' : 'generic';
+}
+
+// Enregistre les règles courantes comme modèle par défaut pour ce type de DAT.
+async function asmSaveAsDefault(): Promise<void> {
+  try {
+    const key = await asmDefaultKey();
+    const settings = await window.api.getSettings();
+    const map = { ...(settings?.defaultSelectionRules || {}) };
+    map[key] = { base: asmBase, rules: asmRules };
+    await window.api.updateSettings({ defaultSelectionRules: map });
+    log('logs.game.defaultPresetsSaved', { context: 'game', state: 'success' });
+  } catch (error) {
+    log('logs.game.autoSelectError', { params: { error: error instanceof Error ? error.message : String(error) }, severity: 'error', context: 'game' });
+  }
+}
+
+// Recharge le modèle par défaut enregistré pour ce type de DAT dans l'éditeur.
+async function asmRestoreDefault(): Promise<void> {
+  try {
+    const key = await asmDefaultKey();
+    const settings = await window.api.getSettings();
+    const saved = settings?.defaultSelectionRules?.[key];
+    if (!saved) {
+      log('logs.game.defaultPresetsNone', { severity: 'warning', context: 'game' });
+      return;
+    }
+    asmBase = saved.base === 'none' || saved.base === 'current' ? saved.base : 'all';
+    asmRules = Array.isArray(saved.rules) ? saved.rules.map((r: SelectionRule) => ({ ...r })) : [];
+    document.querySelectorAll<HTMLInputElement>('input[name="asm-base"]').forEach(r => {
+      r.checked = r.value === asmBase;
+    });
+    asmRenderRules();
+    log('logs.game.defaultPresetsRestored', { context: 'game', state: 'success' });
+  } catch (error) {
+    log('logs.game.autoSelectError', { params: { error: error instanceof Error ? error.message : String(error) }, severity: 'error', context: 'game' });
+  }
 }
 
 async function asmApply() {
@@ -4584,6 +5321,11 @@ function setupAutoSelectModal() {
     asmRenderRules();
   });
 
+  document.getElementById('asm-clear-rules')?.addEventListener('click', () => {
+    asmRules = [];
+    asmRenderRules();
+  });
+
   document.querySelectorAll<HTMLInputElement>('input[name="asm-base"]').forEach(radio => {
     radio.addEventListener('change', () => {
       asmBase = radio.value as 'all' | 'none' | 'current';
@@ -4601,6 +5343,10 @@ function setupAutoSelectModal() {
       }
     });
   });
+
+  document.getElementById('asm-save-default')?.addEventListener('click', asmSaveAsDefault);
+  document.getElementById('asm-restore-default')?.addEventListener('click', asmRestoreDefault);
+  document.getElementById('asm-custom-save-btn')?.addEventListener('click', asmCreateCustomPreset);
 
   document.getElementById('asm-cancel')?.addEventListener('click', () => {
     (document.getElementById('auto-select-modal') as HTMLElement).style.display = 'none';
@@ -4698,13 +5444,52 @@ window.addEventListener('click', (event) => {
 (window as any).showExtraFiles = showExtraFiles;
 (window as any).exportReport = exportReport;
 
+// Reconstruit dynamiquement les options du sélecteur « Grouper par » selon le
+// contexte. En arcade : « Category »(=type), « Manufacturer », « Emulation ». En
+// non-arcade : « Category »(=catégorie réelle). Restaure la valeur courante si valide.
+function rebuildGroupByOptions() {
+  const sel = document.getElementById('group-by') as HTMLSelectElement;
+  if (!sel) return;
+  const prev = currentGroupBy;
+
+  // Même ordre que la barre de filtres : base commune (None, First letter, Category,
+  // Matching, Selection, [Évolution]) puis, en arcade, les groupements spécifiques
+  // (Manufacturer, Emulation). En arcade, « Category » regroupe par TYPE.
+  const opts: Array<{ value: GroupByMode; label: string }> = [
+    { value: 'none', label: t('index.filters.groupNone') },
+    { value: 'letter', label: t('index.filters.groupLetter') },
+    { value: currentDatIsArcade ? 'type' : 'category', label: t('index.filters.groupCategory') },
+    { value: 'match-status', label: t('index.filters.groupMatchStatus') },
+    { value: 'selection', label: t('index.filters.groupSelection') }
+  ];
+  if (allGames.some(g => g.change_status)) {
+    opts.push({ value: 'change-status', label: t('index.filters.groupChangeStatus') });
+  }
+  if (currentDatIsArcade) {
+    opts.push({ value: 'manufacturer', label: t('index.filters.manufacturer') });
+    opts.push({ value: 'emulation', label: t('index.filters.emulation') });
+  }
+
+  sel.innerHTML = '';
+  for (const o of opts) {
+    const el = document.createElement('option');
+    el.value = o.value;
+    el.textContent = o.label;
+    sel.appendChild(el);
+  }
+
+  // Restaurer la valeur précédente si toujours proposée, sinon revenir à « Aucun ».
+  currentGroupBy = opts.some(o => o.value === prev) ? prev : 'none';
+  sel.value = currentGroupBy;
+}
+
 // Configuration du groupement et filtrage
 function setupGroupingAndFiltering() {
   const groupBySelect = document.getElementById('group-by') as HTMLSelectElement;
   if (!groupBySelect) return;
 
   groupBySelect.addEventListener('change', () => {
-    currentGroupBy = groupBySelect.value as 'none' | 'category' | 'letter' | 'match-status' | 'selection' | 'change-status';
+    currentGroupBy = groupBySelect.value as GroupByMode;
     // Les clés de groupes ne sont plus valides quand le mode de groupement change
     collapsedGameGroups.clear();
     applyFiltersAndGrouping();
@@ -4718,8 +5503,9 @@ function setupGroupingAndFiltering() {
       const isSelected = selectAllCheckbox.checked;
       selectAllCheckbox.indeterminate = false;
 
-      // Récupérer les jeux actuellement affichés (filtrés), hors jeux disparus
-      const displayedGames = getDisplayedGames().filter((g: GameInfo) => !g.is_disappeared);
+      // Récupérer les jeux actuellement affichés (filtrés), hors jeux disparus et hors
+      // BIOS/devices (non sélectionnables — pilotés par la cascade de dépendances).
+      const displayedGames = getDisplayedGames().filter((g: GameInfo) => !g.is_disappeared && !g.is_bios && !g.is_device);
       const gameIds = displayedGames.map((g: GameInfo) => g.id);
 
       if (gameIds.length === 0) return;
@@ -4757,13 +5543,41 @@ function updateGroupFilterSummary() {
     'unchanged': `⏸️ ${t('index.changeStatus.unchanged')}`,
     'disappeared': `❌ ${t('index.changeStatus.disappeared')}`
   };
+  const diskLabels: Record<string, string> = {
+    'with-chd': `💿 ${t('index.filters.withDisk')}`,
+    'chd-no-rom': `💿 ${t('index.filters.diskNoRom')}`,
+    'without-chd': `— ${t('index.filters.withoutDisk')}`
+  };
+  const driverLabels: Record<string, string> = {
+    'good': '🟢 Good',
+    'imperfect': '🟡 Imperfect',
+    'preliminary': '🔴 Preliminary',
+    'unset': `⚪ ${t('index.filters.driverUnset')}`
+  };
+  const cloneLabels: Record<string, string> = {
+    'clone': `🌀 ${t('index.filters.clone')}`,
+    'parent': `— ${t('index.filters.notClone')}`
+  };
+  const categoryDisplay = (k: string): string => {
+    if (k === CATEGORY_GAMES_KEY) return `${machineTypeIcon('games')} ${machineTypeLabel('games')}`;
+    if (k === CATEGORY_BIOS_KEY) return `🧠 ${t('index.filters.bios')}`;
+    if (k === CATEGORY_DEVICE_KEY) return `⚙️ ${t('index.filters.device')}`;
+    if (k === CATEGORY_MECHANICAL_KEY) return `🔩 ${t('index.filters.mechanical')}`;
+    return k;
+  };
 
-  // Définir les groupes de filtres avec leur label, set actif et fonction de label
+  // Définir les groupes de filtres avec leur label, set actif et fonction de label.
+  // L'ordre suit l'ordre d'apparition des filtres dans le bandeau : base commune
+  // (Catégorie, Matching, Sélection, Évolution) puis filtres spécifiques arcade.
   const filterGroups: Array<{ label: string; activeSet: Set<string>; getDisplayName: (key: string) => string; containerId: string }> = [
-    { label: t('index.filters.groupCategory'), activeSet: activeFilters, getDisplayName: (k) => k, containerId: 'category-filters-container' },
+    { label: t('index.filters.groupCategory'), activeSet: activeFilters, getDisplayName: categoryDisplay, containerId: 'category-filters-container' },
     { label: t('index.filters.matching'), activeSet: activeMatchFilters, getDisplayName: (k) => `${matchStatusIcons[k]} ${matchStatusLabel(k)}`, containerId: 'match-status-filters-container' },
     { label: t('index.filters.groupSelection'), activeSet: activeSelectionFilters, getDisplayName: (k) => selectionLabels[k] || k, containerId: 'selection-filters-container' },
-    { label: t('index.filters.groupChangeStatus'), activeSet: activeChangeFilters, getDisplayName: (k) => changeStatusLabels[k] || k, containerId: 'change-status-filters-container' }
+    { label: t('index.filters.groupChangeStatus'), activeSet: activeChangeFilters, getDisplayName: (k) => changeStatusLabels[k] || k, containerId: 'change-status-filters-container' },
+    { label: t('index.filters.manufacturer'), activeSet: activeManufacturerFilters, getDisplayName: (k) => k, containerId: 'manufacturer-filters-container' },
+    { label: t('index.filters.disks'), activeSet: activeChdFilters, getDisplayName: (k) => diskLabels[k] || k, containerId: 'chd-filters-container' },
+    { label: t('index.filters.emulation'), activeSet: activeDriverFilters, getDisplayName: (k) => driverLabels[k] || k, containerId: 'driver-status-filters-container' },
+    { label: t('index.filters.cloneFilter'), activeSet: activeCloneFilters, getDisplayName: (k) => cloneLabels[k] || k, containerId: 'clone-filters-container' }
   ];
 
   const activeGroups = filterGroups.filter(g => g.activeSet.size > 0);

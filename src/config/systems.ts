@@ -30,11 +30,20 @@ export interface DatSourceConfig {
   recommended?: 'no-intro' | 'redump';
 }
 
+/** Famille de règles de matching/consolidation d'un système (voir src/helpers/systemProfiles). */
+export type SystemProfileKind = 'arcade' | 'disc' | 'cartridge';
+
 export interface SystemDefinition {
   systemId: string;
   fullname: string;
   manufacturer: string | null;
   type: string | null;
+  /**
+   * Famille de profil système (règles de matching/consolidation). Optionnel :
+   * si absent, il est inféré (arcade si type='arcade', sinon 'cartridge').
+   * À renseigner explicitement pour les systèmes disque optique ('disc').
+   */
+  profile?: SystemProfileKind;
   releaseDate: string | null;
   /** Formats archive supportés par tous les cores de l'émulateur. */
   supportedFormats: ArchiveFormat[];
@@ -405,6 +414,7 @@ export const SYSTEMS: SystemDefinition[] = [
   },
   {
     systemId: 'dreamcast',
+    profile: 'disc',
     fullname: "Sega Dreamcast",
     manufacturer: "Sega",
     type: "console",
@@ -965,6 +975,7 @@ export const SYSTEMS: SystemDefinition[] = [
   },
   {
     systemId: 'pcenginecd',
+    profile: 'disc',
     fullname: "PC Engine CD",
     manufacturer: "NEC",
     type: "console",
@@ -1063,6 +1074,7 @@ export const SYSTEMS: SystemDefinition[] = [
   },
   {
     systemId: 'psx',
+    profile: 'disc',
     fullname: "Sony Playstation 1",
     manufacturer: "Sony",
     type: "console",
@@ -1105,6 +1117,7 @@ export const SYSTEMS: SystemDefinition[] = [
   },
   {
     systemId: 'saturn',
+    profile: 'disc',
     fullname: "Sega Saturn",
     manufacturer: "Sega",
     type: "console",
@@ -1147,6 +1160,7 @@ export const SYSTEMS: SystemDefinition[] = [
   },
   {
     systemId: 'segacd',
+    profile: 'disc',
     fullname: "Sega CD",
     manufacturer: "Sega",
     type: "console",
@@ -1608,6 +1622,17 @@ export function detectSystemFromDatName(datName: string): SystemDefinition | nul
 /** Retourne un système par son systemId, ou null s'il n'existe pas. */
 export function getSystemById(systemId: string): SystemDefinition | null {
   return SYSTEMS_BY_ID.get(systemId) ?? null;
+}
+
+/**
+ * Famille de profil d'un système. Priorité : champ `profile` explicite du registre ;
+ * sinon inférence — 'arcade' si type='arcade', 'cartridge' par défaut. Un système
+ * inconnu retombe sur 'cartridge' (comportement générique).
+ */
+export function getSystemProfileKind(systemId: string): SystemProfileKind {
+  const sys = getSystemById(systemId);
+  if (sys?.profile) return sys.profile;
+  return sys?.type === 'arcade' ? 'arcade' : 'cartridge';
 }
 
 /** Retourne tous les systèmes connus. */

@@ -9,7 +9,7 @@ import {
   getEffectiveUnmatchedRomsFolder,
   getEffectiveTempExtractionFolder
 } from './settingsManager.js';
-import { getSystemById, detectSystemFromDatName as detectSystem } from '../config/systems.js';
+import { detectSystemFromDatName as detectSystem } from '../config/systems.js';
 import { ArchiveManager } from './archives/ArchiveManager.js';
 import {
   recordConsolidatedArchive,
@@ -17,7 +17,12 @@ import {
   cleanupStaleScannedFiles,
   type ConsolidatedRomEntry
 } from './recordConsolidation.js';
-import { resolveDependencies } from './resolveDependencies.js';
+import { systemProfileManager } from './systemProfiles/index.js';
+import type { SystemProfile } from './systemProfiles/index.js';
+import type { MatchedRomInfo } from './systemProfiles/types.js';
+import { getSystemAllowedFormats, determineTargetFormat, findChdEntryPoint, CHD_ENTRY_EXTENSIONS } from './systemProfiles/rules.js';
+// Ré-exports de compatibilité : ces helpers vivent désormais dans systemProfiles/rules.
+export { getSystemAllowedFormats, determineTargetFormat } from './systemProfiles/rules.js';
 import path from 'path';
 import fs from 'fs/promises';
 
@@ -29,30 +34,6 @@ import fs from 'fs/promises';
  * accessibles à la demande pour investigation future.
  */
 const RUMCET_DEBUG = process.env.RUMCET_DEBUG === '1' || process.env.RUMCET_DEBUG === 'true';
-
-/**
- * Phase 4 — Construit la clause SQL qui filtre les dat_roms selon le mode cible.
- *  - DAT non-arcade : aucun filtrage (les concepts merge_name/cloneof n'existent pas).
- *  - mode split    : seules les ROMs propres (merge_name IS NULL) appartiennent à l'archive
- *                    du jeu. Les ROMs partagées avec le parent vivent dans l'archive parente.
- *  - mode non-merged : aucun filtrage (le jeu est autonome, il contient toutes ses ROMs requises).
- *  - mode merged   : aucun filtrage pour l'instant (Phase 6 gérera la fusion clones → parent).
- *
- * IMPORTANT : le préfixe `dr.` doit correspondre à l'alias de la table dat_roms
- * dans la requête appelante.
- */
-function effectiveRomsCondition(
-  targetMode: ArcadeTargetSetMode | null,
-  datIsArcade: boolean,
-  alias: string = 'dr'
-): string {
-  if (!datIsArcade) return '';
-  if (targetMode === 'split') {
-    const prefix = alias ? `${alias}.` : '';
-    return `AND ${prefix}merge_name IS NULL`;
-  }
-  return '';
-}
 
 export interface ConsolidationProgress {
   phase: 'preparing' | 'consolidating' | 'moving-unmatched' | 'complete';
@@ -80,35 +61,6 @@ export interface ConsolidationResult {
 
 type ProgressCallback = (progress: ConsolidationProgress) => void;
 
-interface MatchedRomInfo {
-  datRomId: number;
-  datRomName: string;
-  datRomSize: number | null;
-  datRomCrc32: string | null;
-  datRomMd5: string | null;
-  datRomSha1: string | null;
-  /** Phase 5 : présent (non-null) si cette ROM est partagée avec le parent (merge="X") — vue split. */
-  datRomMergeName: string | null;
-  /**
-   * Phase 6 : ID du game qui possède cette dat_rom dans le DAT.
-   * En temps normal égal à `game.id`. En mode merged avec des clones foldés,
-   * les ROMs propres des clones sont mixées : cette colonne indique le clone
-   * d'origine pour placement en sous-dossier `{cloneName}/` dans l'archive.
-   */
-  datRomOwnerGameId: number;
-  datRomOwnerGameName: string;
-  scannedFileId: number | null;
-  scannedFilePath: string | null;
-  scannedFileName: string | null;
-  archiveContentId: number | null;
-  archiveFileName: string | null;
-  archivePath: string | null;
-  archiveType: string | null;
-  /** 1 si cette entrée est un <disk> MAME (CHD). Un disque n'est jamais extrait ni
-   *  ré-archivé : il est copié tel quel. Voir isChdDisk() / copyChdDisksToOutput(). */
-  isDisk: number | null;
-}
-
 /**
  * Sanitise un nom de fichier en remplaçant les caractères interdits
  */
@@ -122,113 +74,6 @@ export function sanitizeFileName(name: string): string {
  */
 export function detectSystemFromDatName(datName: string): string {
   return detectSystem(datName)?.systemId ?? 'default';
-}
-
-/**
- * Retourne les formats d'archive autorisés pour un système :
- * 1. Surcharge utilisateur (systemCompatibility) — prioritaire, MÊME si vide
- *    (vide = "pas de compression voulue par l'utilisateur")
- * 2. Registre central src/config/systems.ts (supportedFormats Recalbox)
- * 3. zip + 7z si système totalement inconnu
- *
- * Un tableau vide signifie : aucun format d'archive supporté → la consolidation
- * doit conserver les fichiers bruts (datRawFormats) sans compression.
- */
-export function getSystemAllowedFormats(
-  systemId: string,
-  settings: ReturnType<typeof settingsManager.getAll>
-): ArchiveFormat[] {
-  // 1) Surcharge utilisateur — respectée même si vide (choix explicite)
-  const userOverride = settings.systemCompatibility?.find(
-    (sc: { systemId: string; supportedFormats: ArchiveFormat[] }) =>
-      sc.systemId.toLowerCase() === systemId.toLowerCase()
-  );
-  if (userOverride) {
-    return userOverride.supportedFormats;
-  }
-
-  // 2) Registre central — peut renvoyer un tableau vide (système sans archive supportée)
-  const sys = getSystemById(systemId);
-  if (sys) {
-    return sys.supportedFormats;
-  }
-
-  // 3) Système totalement inconnu : fallback prudent zip + 7z
-  return ['7z', 'zip'];
-}
-
-/**
- * Détermine le meilleur format d'archive pour un système donné en croisant les
- * formats autorisés avec la priorité utilisateur.
- *
- * Retourne `null` si aucun format d'archive n'est autorisé pour ce système
- * (l'utilisateur a explicitement décoché tous les formats, OU système Recalbox
- * sans aucun format archive compatible). Dans ce cas, la consolidation doit
- * conserver les fichiers bruts (datRawFormats) sans compression.
- */
-export function determineTargetFormat(
-  systemId: string,
-  settings: ReturnType<typeof settingsManager.getAll>,
-  chdPossible: boolean
-): ArchiveFormat | null {
-  const allowedFormats = getSystemAllowedFormats(systemId, settings);
-
-  // Aucun format d'archive autorisé → mode brut
-  if (allowedFormats.length === 0) return null;
-
-  // Croiser la priorité utilisateur avec les formats autorisés du système
-  for (const format of settings.archiveFormatPriority) {
-    if (format === 'chd' && !chdPossible) continue;
-    if (allowedFormats.includes(format)) {
-      return format;
-    }
-  }
-
-  // Fallback : premier format autorisé (hors CHD si impossible)
-  for (const format of allowedFormats) {
-    if (format === 'chd' && !chdPossible) continue;
-    return format;
-  }
-
-  // Aucun format autorisé hors CHD impossible → mode brut
-  return null;
-}
-
-/**
- * Extensions de fichiers acceptés comme point d'entrée pour chdman
- * (.bin seul n'est PAS suffisant — il faut un .cue, .gdi, .iso, etc.)
- */
-const CHD_ENTRY_EXTENSIONS = ['.cue', '.gdi', '.iso', '.toc', '.nrg', '.cdi', '.ccd'];
-
-/**
- * Vérifie si les ROMs d'un jeu contiennent un point d'entrée valide pour conversion CHD
- * Utilisé AVANT extraction pour décider si CHD est un format candidat
- */
-function canConvertToChd(roms: MatchedRomInfo[]): boolean {
-  return roms.some(rom => {
-    const ext = path.extname(rom.datRomName).toLowerCase();
-    return CHD_ENTRY_EXTENSIONS.includes(ext);
-  });
-}
-
-/**
- * Trouve le fichier point d'entrée CHD parmi les fichiers extraits
- * Utilisé APRÈS extraction pour trouver le fichier à passer à chdman
- */
-function findChdEntryPoint(filePaths: string[]): string | null {
-  return filePaths.find(f =>
-    CHD_ENTRY_EXTENSIONS.includes(path.extname(f).toLowerCase())
-  ) || null;
-}
-
-/**
- * Un disque CHD (balise <disk> MAME, is_disk=1). Un CHD est un fichier de disque
- * autonome : il ne doit JAMAIS être extrait ni ré-archivé, seulement copié tel quel.
- * On se base sur is_disk (fiable) et non sur l'extension du nom (les <disk> MAME
- * n'ont pas d'extension, ex : "riscos311_apps").
- */
-function isChdDisk(rom: MatchedRomInfo): boolean {
-  return !!rom.isDisk;
 }
 
 /**
@@ -310,6 +155,10 @@ export async function consolidateRoms(
   const datSetMode = await getMetadata(db, 'dat_set_mode');
   const scannedSetMode = await getMetadata(db, 'scanned_set_mode');
   const datIsArcade = !!(datSetMode && datSetMode !== 'n/a');
+  // Profil système pour la consolidation. forConsolidation force le profil arcade
+  // quand le DAT porte des concepts arcade (dat_set_mode ≠ 'n/a'), reproduisant
+  // exactement l'ancien gate `datIsArcade`.
+  const profile = systemProfileManager.forConsolidation(systemId, datSetMode);
   if (datIsArcade) {
     console.log('');
     console.log('───── Arcade mode ─────');
@@ -341,10 +190,12 @@ export async function consolidateRoms(
   let autoIds: number[] = [];
   if (datIsArcade) {
     try {
-      const { states } = await resolveDependencies(db, targetMode);
-      autoIds = [...states.entries()].filter(([, s]) => s === 'auto').map(([id]) => id);
-      if (autoIds.length > 0) {
-        console.log(`Cascade: ${autoIds.length} auto-required game(s) (BIOS / parents / devices) added to consolidation.`);
+      const dep = await profile.resolveDependencies(db, targetMode);
+      if (dep) {
+        autoIds = [...dep.states.entries()].filter(([, s]) => s === 'auto').map(([id]) => id);
+        if (autoIds.length > 0) {
+          console.log(`Cascade: ${autoIds.length} auto-required game(s) (BIOS / parents / devices) added to consolidation.`);
+        }
       }
     } catch (err) {
       console.warn(`Cascade: dependency resolution failed — consolidating user-selected games only (${err})`);
@@ -415,7 +266,7 @@ export async function consolidateRoms(
   // ROMs merge_name'd qui appartiennent au parent). Le filtre est appliqué dans
   // les sous-requêtes COUNT pour ne compter que les ROMs effectivement requises
   // dans l'archive du jeu cible.
-  const cond = effectiveRomsCondition(targetMode, datIsArcade, 'dr');
+  const cond = profile.romsSqlCondition(targetMode, 'dr');
 
   // Cascade : inclure les jeux auto-sélectionnés en plus des user-sélectionnés.
   // Via une table temporaire — une liste IN(?,?,…) dépasserait la limite de
@@ -467,6 +318,24 @@ export async function consolidateRoms(
   `);
 
   result.stats.totalGamesProcessed = selectedGames.length;
+
+  // Diagnostic : si aucun jeu n'est retenu, indiquer POURQUOI (sélection vide,
+  // aucun match, DB non matchée…). Cause fréquente : un re-scan supprime les
+  // rom_matches (CASCADE) sans relancer l'étape de matching.
+  if (selectedGames.length === 0) {
+    const diag = await db.get<{ sel: number; withMatch: number; withRoms: number }>(`
+      SELECT
+        (SELECT COUNT(*) FROM games WHERE is_selected != 0) AS sel,
+        (SELECT COUNT(DISTINCT dr.game_id) FROM dat_roms dr
+          WHERE EXISTS (SELECT 1 FROM rom_matches rm WHERE rm.dat_rom_id = dr.id)) AS withMatch,
+        (SELECT COUNT(DISTINCT game_id) FROM dat_roms) AS withRoms
+    `);
+    console.warn(
+      `[Consolidation] 0 game selected — diagnostic: selected=${diag?.sel ?? 0}, ` +
+      `games with ≥1 matched ROM=${diag?.withMatch ?? 0}, games with ROMs=${diag?.withRoms ?? 0}. ` +
+      `If "games with ≥1 matched ROM" is 0, run the Matching step first (a re-scan clears matches).`
+    );
+  }
 
   // Phase 6 — En mode merged, calculer les groupes parent → clones-à-fusionner.
   // Un clone est fusionné dans son parent si le parent est dans la sélection
@@ -536,7 +405,7 @@ export async function consolidateRoms(
 
     try {
       const mergedClones = parentToFoldedClones.get(game.id) || [];
-      await consolidateGame(db, game, settings, archiveManager, result, systemId, targetMode, datIsArcade, mergedClones);
+      await consolidateGame(db, game, settings, archiveManager, result, systemId, targetMode, datIsArcade, profile, mergedClones);
     } catch (error: any) {
       result.stats.gamesErrored++;
       result.errors.push({ gameName: game.name, error: error.message || String(error) });
@@ -790,10 +659,11 @@ async function consolidateGame(
   systemId: string,
   targetMode: ArcadeTargetSetMode,
   datIsArcade: boolean,
+  profile: SystemProfile,
   mergedClones: Array<{ id: number; name: string }> = []
 ): Promise<void> {
   // Phase 4 — Filtre des dat_roms par mode cible (split exclut merge_name).
-  const gameCond = effectiveRomsCondition(targetMode, datIsArcade, 'dr');
+  const gameCond = profile.romsSqlCondition(targetMode, 'dr');
 
   // Récupérer TOUS les matches pour ce jeu depuis rom_matches
   // scanned_file_id pointe toujours vers le fichier physique (loose ou archive)
@@ -956,13 +826,12 @@ async function consolidateGame(
 
   const sanitizedName = sanitizeFileName(game.name);
 
-  // Séparer les disques CHD (<disk> MAME, is_disk=1) des ROMs "fichiers".
-  // Un CHD ne se ré-archive ni ne s'extrait jamais : il est copié tel quel.
-  //  - diskRoms : copiés via consolidateChdGame (jeu 100 % CHD) ou
+  // Séparer les disques CHD (<disk> MAME, is_disk=1) des ROMs "fichiers" via le
+  // profil. Un CHD ne se ré-archive ni ne s'extrait jamais : il est copié tel quel.
+  //  - diskRoms (copyAsIs) : copiés via consolidateChdGame (jeu 100 % CHD) ou
   //    copyChdDisksToOutput (jeu ROMs + CHD).
-  //  - fileRoms : passent par le flux d'archivage normal (extraction + archive).
-  const diskRoms = matchedRoms.filter(isChdDisk);
-  const fileRoms = matchedRoms.filter(r => !isChdDisk(r));
+  //  - fileRoms (archivable) : passent par le flux d'archivage normal.
+  const { archivable: fileRoms, copyAsIs: diskRoms } = profile.classifyRoms(matchedRoms);
 
   // Jeu 100 % CHD (aucune ROM fichier) → copie directe des disques, pas d'archive.
   if (fileRoms.length === 0) {
@@ -972,11 +841,11 @@ async function consolidateGame(
   }
 
   // Déterminer si le contenu peut être converti en CHD (point d'entrée .cue/.gdi/.iso présent)
-  const chdPossible = canConvertToChd(fileRoms);
+  const chdPossible = profile.canProduceChd(fileRoms);
 
   // Déterminer le format cible en fonction du système et des préférences
-  const targetFormat = determineTargetFormat(systemId, settings, chdPossible);
-  const allowedFormats = getSystemAllowedFormats(systemId, settings);
+  const targetFormat = profile.determineTargetFormat(systemId, settings, chdPossible);
+  const allowedFormats = profile.allowedFormats(systemId, settings);
 
   if (settings.useBestCompression) {
     console.log(`[2/4 Strategy] multi-format mode: all formats compatible with "${systemId}" will be tested → [${allowedFormats.join(', ')}]${chdPossible ? '' : ' (CHD not possible: no .cue/.gdi/.iso entry point)'}`);
@@ -993,7 +862,7 @@ async function consolidateGame(
       console.log(`[2/4 Strategy] "recreate perfect archives" option disabled → looking for a reusable source archive`);
       const directCopyResult = await tryDirectArchiveCopy(
         db, game, matchedRoms, settings, result, allowedFormats, sanitizedName, archiveManager,
-        targetMode, datIsArcade
+        targetMode, datIsArcade, profile
       );
       if (directCopyResult) return; // Archive copiée directement, pas besoin de recréer
     }
@@ -1012,11 +881,33 @@ async function consolidateGame(
     // Les disques CHD (diskRoms) sont volontairement exclus : ils seront copiés
     // tels quels après création de l'archive (copyChdDisksToOutput).
     console.log(`[3/4 Preparation] extracting source files to: ${tempDir}`);
+
+    // Optimisation : un CHD est monolithique — chdman extrait TOUT le disque à
+    // chaque appel. Grouper les ROMs sourcées d'un même CHD pour ne l'extraire
+    // qu'UNE fois puis distribuer ses fichiers (cas Redump/PS1 : bin/cue issus du
+    // même CHD). Les autres sources (zip/7z, extraction par fichier peu coûteuse)
+    // passent par le chemin habituel, un fichier à la fois.
+    const chdGroups = new Map<string, MatchedRomInfo[]>();
+    const nonChdRoms: MatchedRomInfo[] = [];
     for (const rom of fileRoms) {
+      if (rom.archiveType === 'chd' && rom.archivePath && rom.archiveContentId && rom.archiveFileName) {
+        const key = rom.archivePath;
+        if (!chdGroups.has(key)) chdGroups.set(key, []);
+        chdGroups.get(key)!.push(rom);
+      } else {
+        nonChdRoms.push(rom);
+      }
+    }
+
+    for (const rom of nonChdRoms) {
       // Phase 6 — Passer game.name comme "hôte" : les ROMs de clones foldés seront
       // placées dans un sous-dossier {cloneName}/ pour respecter la convention MAME.
       await extractRomToTemp(rom, tempDir, archiveManager, game.name);
       result.stats.romsExtracted++;
+    }
+    for (const [chdPath, roms] of chdGroups) {
+      await extractChdRomsToTemp(chdPath, roms, tempDir, archiveManager, game.name);
+      result.stats.romsExtracted += roms.length;
     }
 
     // Lister les fichiers bruts extraits (récursivement, pour capter les sous-dossiers
@@ -1391,13 +1282,14 @@ async function tryDirectArchiveCopy(
   sanitizedName: string,
   archiveManager: ArchiveManager,
   targetMode: ArcadeTargetSetMode,
-  datIsArcade: boolean
+  datIsArcade: boolean,
+  profile: SystemProfile
 ): Promise<boolean> {
   const logPrefix = `[2/4 Stratégie]`;
 
   // Phase 4 — Restreindre aux dat_roms effectivement attendues dans l'archive cible.
   // En split, on exclut les merge_name (elles appartiennent au parent).
-  const directCond = effectiveRomsCondition(targetMode, datIsArcade, '');
+  const directCond = profile.romsSqlCondition(targetMode, '');
 
   // Récupérer les hashes des ROMs attendues pour ce jeu (filtrées selon le mode cible)
   const datRoms = await db.all<{ name: string; crc32: string; md5: string; sha1: string }>(`
@@ -1482,8 +1374,10 @@ async function tryDirectArchiveCopy(
     if (candidate.archive_type === 'chd') {
       const ext = path.extname(sourcePath);
       const destFileName = `${sanitizedName}${ext}`;
-      // CHD : sous-dossier au nom du jeu si l'option est activée (convention MAME/Recalbox)
-      const chdBaseDir = settings.arcadeChdSubfolder
+      // Layout du CHD selon la famille (via le profil) : arcade → sous-dossier au nom
+      // du set (obligatoire pour MAME/Recalbox : <rompath>/<machine>/<disk>.chd) ;
+      // disque optique (PS1…) → le CHD est le jeu lui-même, il reste à plat.
+      const chdBaseDir = profile.isArcade()
         ? path.join(settings.validatedRomsFolder, sanitizedName)
         : settings.validatedRomsFolder;
       await fs.mkdir(chdBaseDir, { recursive: true });
@@ -1653,15 +1547,10 @@ async function consolidateChdGame(
 ): Promise<void> {
   const sanitizedName = sanitizeFileName(game.name);
 
-  // Sous-dossier au nom du jeu si :
-  //  - l'option arcadeChdSubfolder est activée (convention MAME/Recalbox : area51/area51.chd), OU
-  //  - l'option arcadeChdEmptyZip est activée (le placeholder <jeu>.zip implique cette disposition), OU
-  //  - le jeu contient plusieurs CHD (toujours regroupés dans un sous-dossier).
-  // Sinon, un CHD unique reste à plat dans le dossier cible.
-  const useSubfolder = settings.arcadeChdSubfolder || settings.arcadeChdEmptyZip || matchedRoms.length > 1;
-  const targetDir = useSubfolder
-    ? path.join(settings.validatedRomsFolder, sanitizedName)
-    : settings.validatedRomsFolder;
+  // consolidateChdGame n'est atteint que pour des <disk> MAME (is_disk=1) → arcade.
+  // MAME et les cores Recalbox résolvent les CHD dans <rompath>/<machine>/<disk>.chd :
+  // le sous-dossier au nom du set est donc TOUJOURS requis (jamais à plat).
+  const targetDir = path.join(settings.validatedRomsFolder, sanitizedName);
 
   await fs.mkdir(targetDir, { recursive: true });
 
@@ -1741,7 +1630,7 @@ async function listExtractedFiles(tempDir: string): Promise<string[]> {
     for (const entry of entries) {
       const full = path.join(dir, entry.name);
       if (entry.isDirectory()) {
-        if (entry.name === 'output' || entry.name === '_extract_tmp') continue;
+        if (entry.name === 'output' || entry.name === '_extract_tmp' || entry.name === '_chd_extract') continue;
         await walk(full);
       } else if (entry.isFile()) {
         files.push(full);
@@ -1828,6 +1717,56 @@ async function extractRomToTemp(
     await fs.copyFile(rom.scannedFilePath, targetPath);
   } else {
     console.warn(`[extract] ⚠️ ${rom.datRomName}: no source (neither archive nor loose) — ROM not extracted`);
+  }
+}
+
+/**
+ * Extrait UNE SEULE FOIS un CHD source, puis distribue chacune des ROMs qui en
+ * proviennent vers son emplacement cible (nom du DAT, + sous-dossier {clone}/ si
+ * clone foldé). Évite N extractions complètes du même CHD (chdman est monolithique).
+ * Toutes les ROMs de `roms` doivent avoir `archivePath === chdPath` et un
+ * `archiveFileName` (le nom du fichier tel que produit à l'extraction du CHD).
+ */
+async function extractChdRomsToTemp(
+  chdPath: string,
+  roms: MatchedRomInfo[],
+  tempDir: string,
+  archiveManager: ArchiveManager,
+  hostGameName?: string
+): Promise<void> {
+  const extractDir = path.join(tempDir, '_chd_extract');
+  await fs.mkdir(extractDir, { recursive: true });
+
+  try {
+    // Extraction complète du CHD (chdman ignore de toute façon un filtre de fichiers).
+    await archiveManager.extractArchive(chdPath, extractDir);
+
+    for (const rom of roms) {
+      const isFromClone = !!(hostGameName && rom.datRomOwnerGameName && rom.datRomOwnerGameName !== hostGameName);
+      const targetDir = isFromClone ? path.join(tempDir, rom.datRomOwnerGameName!) : tempDir;
+      const targetPath = path.join(targetDir, rom.datRomName);
+      await fs.mkdir(path.dirname(targetPath), { recursive: true });
+
+      const extractedPath = path.join(extractDir, rom.archiveFileName!);
+      try {
+        const st = await fs.stat(extractedPath);
+        if (!st.isFile()) {
+          console.warn(`[extract] ⚠️ ${rom.datRomName}: "${extractedPath}" is not a regular file`);
+          continue;
+        }
+      } catch {
+        console.warn(`[extract] ⚠️ ${rom.datRomName}: "${rom.archiveFileName}" not found in extracted CHD "${chdPath}"`);
+        continue;
+      }
+      // Copie (et non rename) : plusieurs ROMs proviennent de la même extraction.
+      await fs.copyFile(extractedPath, targetPath);
+    }
+  } finally {
+    try {
+      await fs.rm(extractDir, { recursive: true, force: true });
+    } catch {
+      // Ignorer
+    }
   }
 }
 
@@ -2066,9 +2005,9 @@ export async function consolidateSingleGame(
   const allChd = extractedFiles.every(f => path.extname(f).toLowerCase() === '.chd');
 
   if (allChd) {
-    // Sous-dossier au nom du jeu si l'option est activée, si le zip vide est demandé,
-    // ou si plusieurs CHD (convention MAME/Recalbox : area51/area51.chd).
-    const useSubfolder = settings.arcadeChdSubfolder || settings.arcadeChdEmptyZip || extractedFiles.length > 1;
+    // Layout du CHD selon la famille (via le profil) : arcade → sous-dossier au nom
+    // du set (obligatoire pour MAME/Recalbox) ; disque optique → CHD à plat.
+    const useSubfolder = systemProfileManager.forSystem(systemId).isArcade();
     const chdDir = useSubfolder
       ? path.join(settings.validatedRomsFolder, sanitizedName)
       : settings.validatedRomsFolder;
