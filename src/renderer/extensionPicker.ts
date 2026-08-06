@@ -21,6 +21,7 @@
 // système ET pour les overrides par source × système.
 
 import { t } from './i18n.js';
+import { makeReorderable } from './reorderable.js';
 
 export type DownloadExtensionSource = 'global' | 'sysCompressed' | 'datRaw' | 'extraRaw' | 'manual';
 
@@ -363,48 +364,23 @@ function buildPoolTag(
 }
 
 /**
- * Drag & drop pour réordonner les tags dans la zone active.
- * Utilise l'API HTML5 native drag & drop.
+ * Réordonnancement des tags de la zone active.
+ * La plomberie du glisser-déposer vit dans ./reorderable.js ; ici on ne décrit que
+ * l'effet sur les données. Le passage pool → active se fait au clic, pas au glisser :
+ * il n'y a donc aucun dépôt inter-zones à gérer.
  */
 function setupActiveDragDrop(
   zone: HTMLElement,
   data: ExtensionPickerData,
   onChange: (d: ExtensionPickerData) => void
 ): void {
-  let draggedIndex: number | null = null;
-
-  zone.querySelectorAll<HTMLElement>('.extpicker-tag').forEach(tag => {
-    tag.addEventListener('dragstart', (e) => {
-      draggedIndex = parseInt(tag.dataset.index || '-1', 10);
-      tag.classList.add('dragging');
-      if (e.dataTransfer) e.dataTransfer.effectAllowed = 'move';
-    });
-
-    tag.addEventListener('dragend', () => {
-      tag.classList.remove('dragging');
-      draggedIndex = null;
-    });
-
-    tag.addEventListener('dragover', (e) => {
-      e.preventDefault();
-      if (e.dataTransfer) e.dataTransfer.dropEffect = 'move';
-      tag.classList.add('drop-target');
-    });
-
-    tag.addEventListener('dragleave', () => {
-      tag.classList.remove('drop-target');
-    });
-
-    tag.addEventListener('drop', (e) => {
-      e.preventDefault();
-      tag.classList.remove('drop-target');
-      if (draggedIndex === null) return;
-      const targetIndex = parseInt(tag.dataset.index || '-1', 10);
-      if (targetIndex < 0 || targetIndex === draggedIndex) return;
-
-      const [moved] = data.activeExtensions.splice(draggedIndex, 1);
-      data.activeExtensions.splice(targetIndex, 0, moved);
+  makeReorderable({
+    items: Array.from(zone.querySelectorAll<HTMLElement>('.extpicker-tag')),
+    onReorder: (from, to) => {
+      const [moved] = data.activeExtensions.splice(from, 1);
+      data.activeExtensions.splice(to, 0, moved);
       onChange(data);
-    });
+    },
+    overClass: 'drop-target'
   });
 }

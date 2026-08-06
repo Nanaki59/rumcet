@@ -2,8 +2,9 @@
 import sqlite3 from 'sqlite3';
 import fs from 'fs/promises';
 import path from 'path';
+import { buildGameNamingColumns, namingModeFromSetMode } from '../shared/romNaming/index.js';
 
-const currentSchemaVersion = '2.0';
+const currentSchemaVersion = '2.2';
 
 export class Database {
   private db: sqlite3.Database;
@@ -153,6 +154,35 @@ async function initSchema(db: Database): Promise<void> {
       romof_ref TEXT,
       driver_status TEXT,
       source_id INTEGER,
+      -- v2.1 — métadonnées extraites du nom par src/shared/romNaming/.
+      --   base_title    : titre nu normalisé (sans tag, sans diacritique, minuscules),
+      --                   clé de regroupement des variantes d'un même jeu.
+      --   regions       : régions canoniques en CSV ("USA,Europe").
+      --   languages     : codes langue No-Intro en CSV, explicites ou déduits de la région.
+      --   video_mode    : NTSC | PAL | PAL 60Hz | PAL-M | SECAM.
+      --   revision      : libellé normalisé ("Rev 1", "v1.02"). NULL = édition d'origine.
+      --   revision_rank : rang comparable de la révision, 0 pour l'édition d'origine.
+      --   dev_status    : proto | beta | alpha | demo | sample. NULL = production.
+      --   release_flags : marqueurs de diffusion en CSV ("Unl,Aftermarket").
+      --   disc_number   : numéro de disque (Redump), entre TOUJOURS dans la clé de
+      --                   regroupement pour que deux disques ne s'éliminent pas.
+      --   group_key     : clé de regroupement 1G1R effective. Renseignée par les clone
+      --                   lists quand elles surchargent le regroupement automatique ;
+      --                   NULL sinon, auquel cas base_title fait foi.
+      base_title TEXT,
+      regions TEXT,
+      languages TEXT,
+      video_mode TEXT,
+      revision TEXT,
+      revision_rank INTEGER DEFAULT 0,
+      dev_status TEXT,
+      release_flags TEXT,
+      disc_number INTEGER,
+      --   release_date  : date de build déclarée dans le nom (ISO). Départage de
+      --                   dernier recours : deux entrées peuvent ne différer que
+      --                   par elle, et un tri alphabétique retiendrait la plus ancienne.
+      release_date TEXT,
+      group_key TEXT,
       created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
       FOREIGN KEY (source_id) REFERENCES dat_sources(id) ON DELETE SET NULL
     );
@@ -365,6 +395,8 @@ async function initSchema(db: Database): Promise<void> {
     CREATE INDEX IF NOT EXISTS idx_dat_roms_is_disk ON dat_roms(is_disk);
     CREATE INDEX IF NOT EXISTS idx_dat_roms_source ON dat_roms(source_id);
     CREATE INDEX IF NOT EXISTS idx_game_rel_source ON game_relationships(source_id);
+    CREATE INDEX IF NOT EXISTS idx_games_base_title ON games(base_title);
+    CREATE INDEX IF NOT EXISTS idx_games_group_key ON games(group_key);
   `);
 
   console.log(`✅ Database initialized (schema v${currentSchemaVersion})`);
@@ -431,6 +463,12 @@ async function migrateSchemaIfNeeded(db: Database, currentVersion: string): Prom
   }
   if (currentVersion < '2.0') {
     await migrateToV2_0(db);
+  }
+  if (currentVersion < '2.1') {
+    await migrateToV2_1(db);
+  }
+  if (currentVersion < '2.2') {
+    await migrateToV2_2(db);
   }
 }
 
@@ -743,6 +781,124 @@ async function migrateToV2_0(db: Database): Promise<void> {
   );
 
   console.log('✅ Migration to schema v2.0 complete');
+}
+
+async function migrateToV2_1(db: Database): Promise<void> {
+  console.log('Migrating to schema v2.1 (games naming metadata: region / languages / revision / dev status)...');
+
+  // Colonnes de métadonnées extraites du nom (voir le commentaire du CREATE TABLE games).
+  const gamesCols = await db.all<{ name: string }>('PRAGMA table_info(games)');
+  const newColumns: Array<[string, string]> = [
+    ['base_title', 'TEXT'],
+    ['regions', 'TEXT'],
+    ['languages', 'TEXT'],
+    ['video_mode', 'TEXT'],
+    ['revision', 'TEXT'],
+    ['revision_rank', 'INTEGER DEFAULT 0'],
+    ['dev_status', 'TEXT'],
+    ['release_flags', 'TEXT'],
+    ['disc_number', 'INTEGER'],
+    ['group_key', 'TEXT']
+  ];
+  for (const [name, type] of newColumns) {
+    if (!gamesCols.some(c => c.name === name)) {
+      await db.run(`ALTER TABLE games ADD COLUMN ${name} ${type}`);
+    }
+  }
+
+  // Rétro-remplissage. Contrairement aux migrations arcade précédentes, on ne peut pas
+  // se contenter d'attendre le prochain chargement de DAT : les facettes de filtre
+  // seraient vides sur une base existante, ce qui passerait pour un bug. Le parsing
+  // est une fonction pure du nom et de la description, tous deux déjà en base — le
+  // fichier DAT d'origine n'est pas nécessaire.
+  const datSetMode = await db.get<{ value: string }>(
+    'SELECT value FROM metadata WHERE key = ?',
+    ['dat_set_mode']
+  );
+  const mode = namingModeFromSetMode(datSetMode?.value);
+
+  const games = await db.all<{ id: number; name: string; description: string | null }>(
+    'SELECT id, name, description FROM games'
+  );
+
+  if (games.length > 0) {
+    console.log(`Backfilling naming metadata for ${games.length} games (mode: ${mode})...`);
+    await db.exec('BEGIN TRANSACTION');
+    try {
+      for (const game of games) {
+        const cols = buildGameNamingColumns(game.name, game.description, mode);
+        await db.run(
+          `UPDATE games SET
+             base_title = ?, regions = ?, languages = ?, video_mode = ?,
+             revision = ?, revision_rank = ?, dev_status = ?, release_flags = ?,
+             disc_number = ?
+           WHERE id = ?`,
+          [
+            cols.base_title, cols.regions, cols.languages, cols.video_mode,
+            cols.revision, cols.revision_rank, cols.dev_status, cols.release_flags,
+            cols.disc_number, game.id
+          ]
+        );
+      }
+      await db.exec('COMMIT');
+    } catch (error) {
+      await db.exec('ROLLBACK');
+      throw error;
+    }
+    console.log(`✅ Naming metadata backfilled for ${games.length} games`);
+  }
+
+  await db.run(
+    'UPDATE metadata SET value = ?, updated_at = CURRENT_TIMESTAMP WHERE key = ?',
+    [currentSchemaVersion, 'schema_version']
+  );
+
+  console.log('✅ Migration to schema v2.1 complete');
+}
+
+async function migrateToV2_2(db: Database): Promise<void> {
+  console.log('Migrating to schema v2.2 (games.release_date — build date declared in the name)...');
+
+  const gamesCols = await db.all<{ name: string }>('PRAGMA table_info(games)');
+  if (!gamesCols.some(c => c.name === 'release_date')) {
+    await db.run('ALTER TABLE games ADD COLUMN release_date TEXT');
+  }
+
+  // Rétro-remplissage ciblé : seule la nouvelle colonne est réécrite, les autres
+  // métadonnées de nommage ayant déjà été posées par la migration v2.1.
+  const datSetMode = await db.get<{ value: string }>(
+    'SELECT value FROM metadata WHERE key = ?',
+    ['dat_set_mode']
+  );
+  const mode = namingModeFromSetMode(datSetMode?.value);
+
+  const games = await db.all<{ id: number; name: string; description: string | null }>(
+    'SELECT id, name, description FROM games'
+  );
+
+  if (games.length > 0) {
+    await db.exec('BEGIN TRANSACTION');
+    try {
+      let dated = 0;
+      for (const game of games) {
+        const { release_date } = buildGameNamingColumns(game.name, game.description, mode);
+        if (release_date) dated++;
+        await db.run('UPDATE games SET release_date = ? WHERE id = ?', [release_date, game.id]);
+      }
+      await db.exec('COMMIT');
+      console.log(`✅ release_date backfilled (${dated}/${games.length} games carry a date)`);
+    } catch (error) {
+      await db.exec('ROLLBACK');
+      throw error;
+    }
+  }
+
+  await db.run(
+    'UPDATE metadata SET value = ?, updated_at = CURRENT_TIMESTAMP WHERE key = ?',
+    [currentSchemaVersion, 'schema_version']
+  );
+
+  console.log('✅ Migration to schema v2.2 complete');
 }
 
 async function migrateToV1_6(db: Database): Promise<void> {

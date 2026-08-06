@@ -261,6 +261,22 @@ contextBridge.exposeInMainWorld('api', {
   resetSettings: () => ipcRenderer.invoke('settings:reset'),
 
   // ========================================
+  // API des clone lists (regroupement 1G1R)
+  // ========================================
+
+  cloneList: {
+    /** État vis-à-vis de la base ouverte : fichier correspondant, application, dossier. */
+    getStatus: () => ipcRenderer.invoke('clone-list:get-status'),
+    /** Sans argument : télécharge la liste correspondant au DAT ouvert. */
+    download: (fileName?: string) => ipcRenderer.invoke('clone-list:download', fileName),
+    /** Sans argument : applique la liste locale correspondant au DAT ouvert. */
+    apply: (fileName?: string) => ipcRenderer.invoke('clone-list:apply', fileName),
+    /** Retire les regroupements posés par une liste. */
+    clear: () => ipcRenderer.invoke('clone-list:clear'),
+    listLocal: () => ipcRenderer.invoke('clone-list:list-local')
+  },
+
+  // ========================================
   // API de téléchargement de DAT
   // ========================================
 

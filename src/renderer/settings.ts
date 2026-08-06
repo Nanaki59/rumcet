@@ -13,6 +13,10 @@ import {
   type ExtensionPickerData,
   type ExtensionPickerSources
 } from './extensionPicker.js';
+// Référentiels du parseur de noms : ils alimentent les listes de priorité 1G1R,
+// de sorte que les valeurs proposées soient exactement celles que le parseur produit.
+import { CANONICAL_REGIONS, CANONICAL_LANGUAGES } from '../shared/romNaming/index.js';
+import { makeReorderable } from './reorderable.js';
 
 // Utiliser les types depuis global.d.ts
 type ArchiveFormat = '7z' | 'zip' | 'chd';
@@ -65,6 +69,24 @@ interface AppSettings {
   useEmbeddedChdman?: boolean;
   rarToolPriority?: RarTool[];
   systemCompatibility?: SystemCompatibility[];
+  /** Sélection 1G1R — miroir de OneGameOneRomSettings (settingsManager.ts). */
+  oneGameOneRom?: {
+    enabled: boolean;
+    regionPriority: string[];
+    languagePriority: string[];
+    languageOverRegion: boolean;
+    videoPriority: string[];
+    preferLatestRevision: boolean;
+    fallbackToOwned: boolean;
+  };
+  /** Clone lists — miroir de CloneListSettings (settingsManager.ts). */
+  cloneLists?: {
+    sourceUrl: string;
+    folder?: string;
+    lastDownload?: string;
+    autoApply: boolean;
+    autoDownload: boolean;
+  };
   noIntroDefaults?: {
     includeBios: boolean;
     includeProto: boolean;
@@ -104,6 +126,15 @@ let currentFormatPriority: ArchiveFormat[] = ['chd', '7z', 'zip'];
 let currentRarToolPriority: RarTool[] = ['7zip', 'winrar', 'unrar'];
 let currentSettings: AppSettings;
 
+// Listes de priorité 1G1R. Tableaux mutés en place par le widget de priorité,
+// relus tels quels au moment de la sauvegarde.
+let ogorRegionPriority: string[] = [];
+let ogorLanguagePriority: string[] = [];
+let ogorVideoPriority: string[] = [];
+
+/** Modes vidéo proposables. Aligné sur le type VideoMode du parseur de noms. */
+const OGOR_VIDEO_MODES = ['NTSC', 'PAL', 'PAL 60Hz', 'PAL-M', 'SECAM'];
+
 // ============================================
 // INITIALISATION
 // ============================================
@@ -116,6 +147,7 @@ window.addEventListener('DOMContentLoaded', async () => {
   console.log('Loading settings...');
   await loadSettings();
   setupTabs();
+  setupOneGameOneRom();
 
   // Bouton "Ajouter une source"
   document.getElementById('addDownloadSource')?.addEventListener('click', addDownloadSource);
@@ -251,7 +283,26 @@ async function loadSettings(): Promise<void> {
       currentRarToolPriority = currentSettings.rarToolPriority;
     }
     renderRarToolPriorityList();
-    
+
+    // Onglet 1G1R — désactivé tant que l'utilisateur ne l'a pas coché.
+    // Les valeurs par défaut ne servent que si la clé est absente des paramètres.
+    const ogor = currentSettings.oneGameOneRom;
+    (document.getElementById('ogorEnabled') as HTMLInputElement).checked = ogor?.enabled === true;
+    (document.getElementById('ogorLanguageOverRegion') as HTMLInputElement).checked = ogor?.languageOverRegion === true;
+    (document.getElementById('ogorPreferLatestRevision') as HTMLInputElement).checked = ogor?.preferLatestRevision !== false;
+    (document.getElementById('ogorFallbackToOwned') as HTMLInputElement).checked = ogor?.fallbackToOwned !== false;
+    ogorRegionPriority = [...(ogor?.regionPriority ?? ['World', 'Europe', 'USA', 'Japan'])];
+    ogorLanguagePriority = [...(ogor?.languagePriority ?? ['En', 'Fr', 'Ja'])];
+    ogorVideoPriority = [...(ogor?.videoPriority ?? ['PAL', 'PAL 60Hz', 'NTSC'])];
+    renderOneGameOneRom();
+
+    const cloneLists = currentSettings.cloneLists;
+    (document.getElementById('cloneListSourceUrl') as HTMLInputElement).value = cloneLists?.sourceUrl || '';
+    (document.getElementById('cloneListFolder') as HTMLInputElement).value = cloneLists?.folder || '';
+    (document.getElementById('cloneListAutoApply') as HTMLInputElement).checked = cloneLists?.autoApply === true;
+    (document.getElementById('cloneListAutoDownload') as HTMLInputElement).checked = cloneLists?.autoDownload === true;
+    await showEffectiveCloneListFolder();
+
     // Onglet Compatibilité
     renderSystemCompatibility();
 
@@ -299,6 +350,9 @@ async function browseFolder(fieldId: string): Promise<void> {
       break;
     case 'tempExtractionFolder':
       folderType = 'temp';
+      break;
+    case 'cloneListFolder':
+      folderType = 'clonelists';
       break;
   }
 
@@ -410,64 +464,146 @@ async function autoDetectUnRAR(): Promise<void> {
 
 
 // ============================================
-// PRIORITÉ DES FORMATS (DRAG & DROP)
+// LISTES DE PRIORITÉ ORDONNABLES (DRAG & DROP)
 // ============================================
+//
+// Widget générique partagé par toutes les listes ordonnées des paramètres :
+// formats d'archive, outils RAR, et les trois listes de la sélection 1G1R
+// (régions, langues, modes vidéo). Auparavant dupliqué à l'identique par liste.
+//
+// Le drag & drop est doublé de boutons ↑/↓ : le glisser-déposer seul serait
+// inaccessible au clavier.
 
-function renderFormatPriorityList(): void {
-  const container = document.getElementById('formatPriorityList');
-  if (!container) return;
-  
-  container.innerHTML = '';
-  
-  currentFormatPriority.forEach((format, index) => {
-    const item = createFormatPriorityItem(format, index);
-    container.appendChild(item);
-  });
+interface PriorityListSpec {
+  /** id du conteneur DOM qui reçoit les items. */
+  containerId: string;
+  /** Lecture de l'état courant (le tableau est muté puis re-rendu). */
+  getItems: () => string[];
+  /** Libellé affiché pour une valeur. Par défaut, la valeur brute. */
+  displayName?: (value: string) => string;
+  /** Suffixe de classe CSS pour la pastille colorée (`format-<suffixe>`). */
+  cssSuffix?: (value: string) => string;
+  /** Si true, chaque item porte un bouton de retrait. */
+  removable?: boolean;
+  /**
+   * Valeurs proposables à l'ajout. Celles déjà présentes sont filtrées.
+   * Fournir cette fonction fait apparaître le sélecteur d'ajout sous la liste.
+   */
+  addableValues?: () => Array<{ value: string; label: string }>;
+  /** id du `<select>` d'ajout et du bouton associé (requis si addableValues). */
+  addSelectId?: string;
+  addButtonId?: string;
 }
 
-function createFormatPriorityItem(format: ArchiveFormat, index: number): HTMLElement {
+const priorityLists = new Map<string, PriorityListSpec>();
+
+/** Enregistre une liste et effectue son premier rendu. */
+function registerPriorityList(spec: PriorityListSpec): void {
+  priorityLists.set(spec.containerId, spec);
+  renderPriorityList(spec.containerId);
+}
+
+function renderPriorityList(containerId: string): void {
+  const spec = priorityLists.get(containerId);
+  const container = document.getElementById(containerId);
+  if (!spec || !container) return;
+
+  const items = spec.getItems();
+  container.innerHTML = '';
+  const elements = items.map((value, index) =>
+    container.appendChild(createPriorityItem(spec, value, index, items.length)));
+
+  makeReorderable({
+    items: elements,
+    onReorder: (from, to) => movePriorityItem(containerId, from, to)
+  });
+
+  renderPriorityAddControl(spec, items);
+}
+
+function createPriorityItem(
+  spec: PriorityListSpec, value: string, index: number, total: number
+): HTMLElement {
+  // `draggable` et l'identification de la liste sont posés par makeReorderable() :
+  // l'index vit dans la fermeture du helper, plus besoin de le refléter en dataset.
   const item = document.createElement('div');
   item.className = 'format-priority-item';
-  item.draggable = true;
-  item.dataset.index = index.toString();
-  
+
   const order = document.createElement('span');
   order.className = 'format-order';
   order.textContent = `${index + 1}.`;
-  
+
   const name = document.createElement('span');
-  name.className = `format-name format-${format}`;
-  name.textContent = getFormatDisplayName(format);
-  
+  name.className = `format-name format-${spec.cssSuffix ? spec.cssSuffix(value) : value}`;
+  name.textContent = spec.displayName ? spec.displayName(value) : value;
+
   const actions = document.createElement('div');
   actions.className = 'format-actions';
-  
+
   if (index > 0) {
     const upBtn = document.createElement('button');
     upBtn.className = 'btn-icon';
     upBtn.textContent = '↑';
-    upBtn.onclick = () => moveFormat(index, index - 1);
+    upBtn.onclick = () => movePriorityItem(spec.containerId, index, index - 1);
     actions.appendChild(upBtn);
   }
-  
-  if (index < currentFormatPriority.length - 1) {
+  if (index < total - 1) {
     const downBtn = document.createElement('button');
     downBtn.className = 'btn-icon';
     downBtn.textContent = '↓';
-    downBtn.onclick = () => moveFormat(index, index + 1);
+    downBtn.onclick = () => movePriorityItem(spec.containerId, index, index + 1);
     actions.appendChild(downBtn);
   }
-  
+  if (spec.removable) {
+    const delBtn = document.createElement('button');
+    delBtn.className = 'btn-icon';
+    delBtn.textContent = '✕';
+    delBtn.title = t('settings.oneGameOneRom.removeEntry');
+    delBtn.onclick = () => {
+      spec.getItems().splice(index, 1);
+      renderPriorityList(spec.containerId);
+    };
+    actions.appendChild(delBtn);
+  }
+
   item.appendChild(order);
   item.appendChild(name);
   item.appendChild(actions);
-  
-  item.addEventListener('dragstart', handleDragStart);
-  item.addEventListener('dragover', handleDragOver);
-  item.addEventListener('drop', handleDrop);
-  item.addEventListener('dragend', handleDragEnd);
-  
+
+  // Le glisser-déposer est câblé par makeReorderable() dans renderPriorityList(),
+  // une fois tous les éléments créés.
   return item;
+}
+
+/** Repeuple le `<select>` d'ajout avec les valeurs non encore présentes. */
+function renderPriorityAddControl(spec: PriorityListSpec, items: string[]): void {
+  if (!spec.addableValues || !spec.addSelectId) return;
+  const select = document.getElementById(spec.addSelectId) as HTMLSelectElement | null;
+  if (!select) return;
+
+  const remaining = spec.addableValues().filter(v => !items.includes(v.value));
+  select.innerHTML = '';
+  for (const { value, label } of remaining) {
+    const opt = document.createElement('option');
+    opt.value = value;
+    opt.textContent = label;
+    select.appendChild(opt);
+  }
+  select.disabled = remaining.length === 0;
+
+  const button = spec.addButtonId
+    ? document.getElementById(spec.addButtonId) as HTMLButtonElement | null
+    : null;
+  if (button) button.disabled = remaining.length === 0;
+}
+
+function movePriorityItem(containerId: string, fromIndex: number, toIndex: number): void {
+  const spec = priorityLists.get(containerId);
+  if (!spec) return;
+  const items = spec.getItems();
+  const [moved] = items.splice(fromIndex, 1);
+  items.splice(toIndex, 0, moved);
+  renderPriorityList(containerId);
 }
 
 function getFormatDisplayName(format: ArchiveFormat): string {
@@ -479,110 +615,6 @@ function getFormatDisplayName(format: ArchiveFormat): string {
   return names[format] || format.toUpperCase();
 }
 
-function moveFormat(fromIndex: number, toIndex: number): void {
-  const format = currentFormatPriority.splice(fromIndex, 1)[0];
-  currentFormatPriority.splice(toIndex, 0, format);
-  renderFormatPriorityList();
-}
-
-let draggedElement: HTMLElement | null = null;
-
-function handleDragStart(this: HTMLElement, e: DragEvent): void {
-  draggedElement = this;
-  this.classList.add('dragging');
-  if (e.dataTransfer) {
-    e.dataTransfer.effectAllowed = 'move';
-  }
-}
-
-function handleDragOver(this: HTMLElement, e: DragEvent): void {
-  if (e.preventDefault) e.preventDefault();
-  if (e.dataTransfer) e.dataTransfer.dropEffect = 'move';
-  
-  const items = Array.from(document.querySelectorAll('.format-priority-item'));
-  items.forEach(item => item.classList.remove('drag-over'));
-  this.classList.add('drag-over');
-}
-
-function handleDrop(this: HTMLElement, e: DragEvent): void {
-  if (e.stopPropagation) e.stopPropagation();
-  
-  if (draggedElement && draggedElement !== this) {
-    const fromIndex = parseInt(draggedElement.dataset.index || '0');
-    const toIndex = parseInt(this.dataset.index || '0');
-    moveFormat(fromIndex, toIndex);
-  }
-}
-
-function handleDragEnd(this: HTMLElement): void {
-  this.classList.remove('dragging');
-  const items = document.querySelectorAll('.format-priority-item');
-  items.forEach(item => item.classList.remove('drag-over'));
-  draggedElement = null;
-}
-
-
-// ============================================
-// PRIORITÉ DES OUTILS RAR (DRAG & DROP)
-// ============================================
-
-function renderRarToolPriorityList(): void {
-  const container = document.getElementById('rarToolPriorityList');
-  if (!container) return;
-  
-  container.innerHTML = '';
-  
-  currentRarToolPriority.forEach((tool, index) => {
-    const item = createRarToolPriorityItem(tool, index);
-    container.appendChild(item);
-  });
-}
-
-function createRarToolPriorityItem(tool: RarTool, index: number): HTMLElement {
-  const item = document.createElement('div');
-  item.className = 'format-priority-item';
-  item.draggable = true;
-  item.dataset.index = index.toString();
-  
-  const order = document.createElement('span');
-  order.className = 'format-order';
-  order.textContent = `${index + 1}.`;
-  
-  const name = document.createElement('span');
-  name.className = `format-name format-${tool}`;
-  name.textContent = getRarToolDisplayName(tool);
-  
-  const actions = document.createElement('div');
-  actions.className = 'format-actions';
-  
-  if (index > 0) {
-    const upBtn = document.createElement('button');
-    upBtn.className = 'btn-icon';
-    upBtn.textContent = '↑';
-    upBtn.onclick = () => moveRarTool(index, index - 1);
-    actions.appendChild(upBtn);
-  }
-  
-  if (index < currentRarToolPriority.length - 1) {
-    const downBtn = document.createElement('button');
-    downBtn.className = 'btn-icon';
-    downBtn.textContent = '↓';
-    downBtn.onclick = () => moveRarTool(index, index + 1);
-    actions.appendChild(downBtn);
-  }
-  
-  item.appendChild(order);
-  item.appendChild(name);
-  item.appendChild(actions);
-  
-  item.addEventListener('dragstart', handleRarToolDragStart);
-  item.addEventListener('dragover', handleDragOver);
-  item.addEventListener('drop', handleRarToolDrop);
-  item.addEventListener('dragend', handleDragEnd);
-  
-  return item;
-}
-
 function getRarToolDisplayName(tool: RarTool): string {
   const names: Record<RarTool, string> = {
     '7zip': t('settings.tools.sevenZipRecommended'),
@@ -592,29 +624,85 @@ function getRarToolDisplayName(tool: RarTool): string {
   return names[tool] || tool.toUpperCase();
 }
 
-function moveRarTool(fromIndex: number, toIndex: number): void {
-  const tool = currentRarToolPriority.splice(fromIndex, 1)[0];
-  currentRarToolPriority.splice(toIndex, 0, tool);
-  renderRarToolPriorityList();
+function renderFormatPriorityList(): void {
+  registerPriorityList({
+    containerId: 'formatPriorityList',
+    getItems: () => currentFormatPriority,
+    displayName: v => getFormatDisplayName(v as ArchiveFormat)
+  });
 }
 
-let draggedRarToolElement: HTMLElement | null = null;
-
-function handleRarToolDragStart(this: HTMLElement, e: DragEvent): void {
-  draggedRarToolElement = this;
-  this.classList.add('dragging');
-  if (e.dataTransfer) {
-    e.dataTransfer.effectAllowed = 'move';
-  }
+function renderRarToolPriorityList(): void {
+  registerPriorityList({
+    containerId: 'rarToolPriorityList',
+    getItems: () => currentRarToolPriority,
+    displayName: v => getRarToolDisplayName(v as RarTool)
+  });
 }
 
-function handleRarToolDrop(this: HTMLElement, e: DragEvent): void {
-  if (e.stopPropagation) e.stopPropagation();
-  
-  if (draggedRarToolElement && draggedRarToolElement !== this) {
-    const fromIndex = parseInt(draggedRarToolElement.dataset.index || '0');
-    const toIndex = parseInt(this.dataset.index || '0');
-    moveRarTool(fromIndex, toIndex);
+// ============================================
+// SÉLECTION 1G1R
+// ============================================
+
+/** Rend les trois listes de priorité et câble leurs sélecteurs d'ajout. */
+function renderOneGameOneRom(): void {
+  registerPriorityList({
+    containerId: 'ogorRegionList',
+    getItems: () => ogorRegionPriority,
+    cssSuffix: () => 'region',
+    removable: true,
+    addableValues: () => CANONICAL_REGIONS.map(r => ({ value: r, label: r })),
+    addSelectId: 'ogorRegionAdd',
+    addButtonId: 'ogorRegionAddBtn'
+  });
+  registerPriorityList({
+    containerId: 'ogorLanguageList',
+    getItems: () => ogorLanguagePriority,
+    cssSuffix: () => 'language',
+    removable: true,
+    addableValues: () => CANONICAL_LANGUAGES.map(l => ({ value: l, label: l })),
+    addSelectId: 'ogorLanguageAdd',
+    addButtonId: 'ogorLanguageAddBtn'
+  });
+  registerPriorityList({
+    containerId: 'ogorVideoList',
+    getItems: () => ogorVideoPriority,
+    cssSuffix: () => 'video',
+    removable: true,
+    addableValues: () => OGOR_VIDEO_MODES.map(v => ({ value: v, label: v })),
+    addSelectId: 'ogorVideoAdd',
+    addButtonId: 'ogorVideoAddBtn'
+  });
+}
+
+/** Câble les boutons d'ajout et l'interrupteur maître. Appelé une fois au démarrage. */
+function setupOneGameOneRom(): void {
+  const wire = (buttonId: string, selectId: string, list: string[], containerId: string) => {
+    document.getElementById(buttonId)?.addEventListener('click', () => {
+      const select = document.getElementById(selectId) as HTMLSelectElement | null;
+      if (!select?.value) return;
+      if (!list.includes(select.value)) list.push(select.value);
+      renderPriorityList(containerId);
+    });
+  };
+  wire('ogorRegionAddBtn', 'ogorRegionAdd', ogorRegionPriority, 'ogorRegionList');
+  wire('ogorLanguageAddBtn', 'ogorLanguageAdd', ogorLanguagePriority, 'ogorLanguageList');
+  wire('ogorVideoAddBtn', 'ogorVideoAdd', ogorVideoPriority, 'ogorVideoList');
+}
+
+/**
+ * Renseigne le dossier effectif des clone lists en indication de saisie.
+ * Le champ vide signifie « dossier applicatif », mais sans afficher lequel
+ * l'utilisateur ne peut pas savoir où ses fichiers atterrissent.
+ */
+async function showEffectiveCloneListFolder(): Promise<void> {
+  const input = document.getElementById('cloneListFolder') as HTMLInputElement | null;
+  if (!input) return;
+  try {
+    const { folder } = await window.api.cloneList.listLocal();
+    if (folder) input.placeholder = folder;
+  } catch {
+    // Handler indisponible : on laisse le champ sans indication plutôt qu'un texte faux.
   }
 }
 
@@ -1352,7 +1440,27 @@ async function saveSettings(): Promise<void> {
       chdmanPath: (document.getElementById('chdmanPath') as HTMLInputElement).value,
       useEmbeddedChdman: (document.getElementById('useEmbeddedChdman') as HTMLInputElement).checked,
       rarToolPriority: currentRarToolPriority,
-      
+
+      // Sélection 1G1R
+      oneGameOneRom: {
+        enabled: (document.getElementById('ogorEnabled') as HTMLInputElement).checked,
+        regionPriority: [...ogorRegionPriority],
+        languagePriority: [...ogorLanguagePriority],
+        languageOverRegion: (document.getElementById('ogorLanguageOverRegion') as HTMLInputElement).checked,
+        videoPriority: [...ogorVideoPriority],
+        preferLatestRevision: (document.getElementById('ogorPreferLatestRevision') as HTMLInputElement).checked,
+        fallbackToOwned: (document.getElementById('ogorFallbackToOwned') as HTMLInputElement).checked
+      },
+
+      // Clone lists — lastDownload est piloté par le main process, pas par cet écran
+      cloneLists: {
+        sourceUrl: (document.getElementById('cloneListSourceUrl') as HTMLInputElement).value.trim(),
+        folder: (document.getElementById('cloneListFolder') as HTMLInputElement).value.trim(),
+        lastDownload: currentSettings.cloneLists?.lastDownload,
+        autoApply: (document.getElementById('cloneListAutoApply') as HTMLInputElement).checked,
+        autoDownload: (document.getElementById('cloneListAutoDownload') as HTMLInputElement).checked
+      },
+
       // Compatibilité système
       systemCompatibility,
 

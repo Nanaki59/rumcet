@@ -41,6 +41,7 @@ import { registerSearchHandlers } from './handlers/search.handlers.js';
 import { registerConsolidationHandlers } from './handlers/consolidation.handlers.js';
 import { registerDatDownloadHandlers } from './handlers/datDownload.handlers.js';
 import { registerRomDownloadHandlers } from './handlers/romDownload.handlers.js';
+import { registerCloneListHandlers } from './handlers/cloneList.handlers.js';
 
 // Définition de __dirname pour les modules ES6
 const __filename = fileURLToPath(import.meta.url);
@@ -466,6 +467,7 @@ async function initializeApp(): Promise<void> {
     registerDatDownloadHandlers(() => mainWindow);
     registerDatDownloadWindowHandlers();
     registerRomDownloadHandlers(ipcMain, mainWindow);
+    registerCloneListHandlers(ipcMain, mainWindow);
     registerLogHandlers();
     registerMenuHandlers();
     registerI18nHandlers();

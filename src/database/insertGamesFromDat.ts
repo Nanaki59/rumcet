@@ -3,6 +3,7 @@
 import { Database, setMetadata } from './init.js';
 import { parseString } from 'xml2js';
 import fs from 'fs/promises';
+import { buildGameNamingColumns, namingModeFromSetMode } from '../shared/romNaming/index.js';
 
 interface RomAttributes {
   name?: string;
@@ -245,6 +246,11 @@ export async function insertGamesFromDat(
   const hdr = extractDatHeader(datObject);
   const { mode: datSetMode, inferredFromHeader: datModeInferred } = detectDatSetMode(games, hdr.name);
 
+  // Convention de nommage à appliquer : MAME range ses tags dans <description>,
+  // No-Intro/Redump dans le nom lui-même. Le mode 'n/a' signale l'absence de marqueur
+  // arcade, donc un DAT No-Intro ou Redump.
+  const namingMode = namingModeFromSetMode(datSetMode);
+
   await db.run('BEGIN TRANSACTION');
 
   try {
@@ -275,14 +281,17 @@ export async function insertGamesFromDat(
     // Préparer les statements. En complémentaire on ne veut pas écraser les jeux
     // existants — INSERT OR IGNORE + SELECT pour récupérer l'ID (nouveau ou existant).
     // Pour les ROMs, on vérifie l'unicité par (game_id, name) avant d'insérer.
+    const gameColumns =
+      `(name, description, category, is_selected, is_bios, is_device, is_mechanical, ` +
+      `parent_name_ref, cloneof_ref, romof_ref, driver_status, source_id, ` +
+      // v2.1 — métadonnées extraites du nom (voir src/shared/romNaming/)
+      `base_title, regions, languages, video_mode, revision, revision_rank, ` +
+      `dev_status, release_flags, disc_number, release_date)`;
+    const gamePlaceholders = `VALUES (${new Array(22).fill('?').join(', ')})`;
     const insertGame = db.prepare(
       isComplementary
-        ? `INSERT OR IGNORE INTO games
-           (name, description, category, is_selected, is_bios, is_device, is_mechanical, parent_name_ref, cloneof_ref, romof_ref, driver_status, source_id)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
-        : `INSERT OR REPLACE INTO games
-           (name, description, category, is_selected, is_bios, is_device, is_mechanical, parent_name_ref, cloneof_ref, romof_ref, driver_status, source_id)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+        ? `INSERT OR IGNORE INTO games ${gameColumns} ${gamePlaceholders}`
+        : `INSERT OR REPLACE INTO games ${gameColumns} ${gamePlaceholders}`
     );
     const getGameId = db.prepare('SELECT id FROM games WHERE name = ?');
     const insertRom = db.prepare(
@@ -335,9 +344,17 @@ export async function insertGamesFromDat(
       // Insertion / dédup du jeu. En complémentaire, INSERT OR IGNORE ne fait
       // rien si le nom existe déjà : les attributs du primaire sont préservés.
       // Le compteur gamesCount ne s'incrémente que pour les jeux réellement nouveaux.
+      // v2.1 — métadonnées de nommage (région, langues, révision, statut de dev…).
+      // Même helper que le rétro-remplissage de la migration : les deux chemins
+      // doivent produire des valeurs identiques pour un jeu donné.
+      const naming = buildGameNamingColumns(gameName, description, namingMode);
+
       const wasNewGame = await new Promise<boolean>((resolve, reject) => {
         insertGame.run(
           gameName, description, category, isSelected, isBios, isDevice, isMechanical, parentNameRef, cloneof, romof, driverStatus, sourceId,
+          naming.base_title, naming.regions, naming.languages, naming.video_mode,
+          naming.revision, naming.revision_rank, naming.dev_status, naming.release_flags,
+          naming.disc_number, naming.release_date,
           function (this: import('sqlite3').RunResult, err: Error | null) {
             if (err) return reject(err);
             resolve((this.changes ?? 0) > 0);

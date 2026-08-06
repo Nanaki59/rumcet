@@ -42,7 +42,34 @@ export interface AppSettings {
    * un scope (arcade / nointro-redump / global) pilotant leur visibilité.
    */
   customSelectionPresets?: Array<{ id: string; name: string; scope: string; rules: any[] }>;
-  
+
+  /**
+   * Sélection 1G1R. Miroir de OneGameOneRomSettings (src/helpers/settingsManager.ts).
+   * Strictement opt-in : `enabled` false par défaut, jamais activé implicitement.
+   */
+  oneGameOneRom?: {
+    enabled: boolean;
+    regionPriority: string[];
+    languagePriority: string[];
+    languageOverRegion: boolean;
+    videoPriority: string[];
+    preferLatestRevision: boolean;
+    fallbackToOwned: boolean;
+    perSystem?: Record<string, Partial<Omit<AppSettings['oneGameOneRom'] & {}, 'perSystem'>>>;
+  };
+
+  /**
+   * Clone lists. Miroir de CloneListSettings (src/helpers/settingsManager.ts).
+   * `folder` vide = <userData>/clonelists.
+   */
+  cloneLists?: {
+    sourceUrl: string;
+    folder?: string;
+    lastDownload?: string;
+    autoApply: boolean;
+    autoDownload: boolean;
+  };
+
   // ========================================
   // ONGLET GÉNÉRAL - Démarrage
   // ========================================
@@ -992,7 +1019,50 @@ declare global {
       getSettings: () => Promise<AppSettings>;
       updateSettings: (settings: Partial<AppSettings>) => Promise<boolean>;
       resetSettings: () => Promise<AppSettings>;
-      
+
+      // ========================================
+      // API des clone lists (regroupement 1G1R)
+      // ========================================
+
+      cloneList: {
+        getStatus: () => Promise<{
+          folder: string;
+          datName: string | null;
+          /** Vrai pour un DAT arcade : les clone lists n'y ont pas cours. */
+          isArcade: boolean;
+          localCount: number;
+          /** Fichier local correspondant au DAT ouvert, ou null. */
+          matchedFile: string | null;
+          appliedAt: string | null;
+          appliedList: string | null;
+          lastDownload: string | null;
+        }>;
+        download: (fileName?: string) => Promise<{
+          success: boolean;
+          error?: string;
+          datName?: string;
+          fileName?: string;
+          variants?: number;
+          path?: string;
+        }>;
+        apply: (fileName?: string) => Promise<{
+          success: boolean;
+          error?: string;
+          report?: {
+            listName: string;
+            lastUpdated: string | null;
+            variantsTotal: number;
+            variantsMatched: number;
+            gamesGrouped: number;
+            categoriesOverridden: number;
+            unmatchedSearchTerms: number;
+            ignored: { supersets: number; compilations: number; regexTerms: number };
+          };
+        }>;
+        clear: () => Promise<{ success: boolean }>;
+        listLocal: () => Promise<{ folder: string; files: string[] }>;
+      };
+
       // ========================================
       // API des événements
       // ========================================

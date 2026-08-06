@@ -3,6 +3,7 @@
 import { displayMatchingReport, initMatchingUI, displayInitialReport } from './matchingUI.js';
 import { initI18n, refreshTranslations, t } from './i18n.js';
 import { setupConsoleCapture } from './consoleCapture.js';
+import { makeReorderable } from './reorderable.js';
 
 // Capturer les console.* de cette page vers le fichier de logs dès le chargement
 setupConsoleCapture();
@@ -33,7 +34,7 @@ let currentSearchScope: 'all' | 'games' | 'files' | 'archives' = 'all';
 let originalContent: HTMLElement[] = [];
 
 // Variables pour le groupement et le filtrage
-type GroupByMode = 'none' | 'category' | 'letter' | 'match-status' | 'selection' | 'change-status' | 'type' | 'manufacturer' | 'emulation';
+type GroupByMode = 'none' | 'category' | 'letter' | 'match-status' | 'selection' | 'change-status' | 'type' | 'manufacturer' | 'emulation' | 'region';
 let currentGroupBy: GroupByMode = 'none';
 let activeFilters: Set<string> = new Set();
 let activeMatchFilters: Set<string> = new Set();
@@ -49,6 +50,14 @@ let activeCloneFilters: Set<string> = new Set();
 // Filtres spécifiques MAME : conservé pour compatibilité (l'ancien dropdown « MAME »
 // a été démantelé). Reste vidé au reset.
 let activeMameFilters: Set<string> = new Set();
+// Schéma v2.1 — filtres sur les métadonnées extraites du nom. Les colonnes regions /
+// languages / release_flags sont des CSV : un jeu peut appartenir à plusieurs entrées
+// d'un même dropdown (« USA,Europe »), la correspondance se fait donc par intersection.
+let activeRegionFilters: Set<string> = new Set();
+let activeLanguageFilters: Set<string> = new Set();
+let activeVideoModeFilters: Set<string> = new Set();
+let activeDevStatusFilters: Set<string> = new Set();
+let activeReleaseFlagFilters: Set<string> = new Set();
 // Vrai si le DAT courant est un DAT arcade (MAME/FBNeo). Déterminé au chargement des
 // jeux d'après la présence de marqueurs arcade (bios/device/mechanical/parent/driver).
 let currentDatIsArcade = false;
@@ -103,6 +112,19 @@ interface GameInfo {
   parent_name_ref?: string | null;
   cloneof_ref?: string | null;
   romof_ref?: string | null;
+  // Schéma v2.1 — métadonnées extraites du nom par src/shared/romNaming/.
+  // regions / languages / release_flags sont des CSV ("USA,Europe").
+  base_title?: string | null;
+  regions?: string | null;
+  languages?: string | null;
+  video_mode?: string | null;
+  revision?: string | null;
+  revision_rank?: number;
+  dev_status?: string | null;
+  release_flags?: string | null;
+  disc_number?: number | null;
+  release_date?: string | null;
+  group_key?: string | null;
   // Phase 4 — nombre de ROMs « fichiers » (is_disk = 0). Les CHD ne sont pas comptés ici.
   rom_count?: number;
   // Nombre de disques CHD (is_disk = 1) liés au jeu. La visibilité d'un jeu se base
@@ -1252,6 +1274,11 @@ function resetInterface() {
   activeManufacturerFilters.clear();
   activeCloneFilters.clear();
   activeMameFilters.clear();
+  activeRegionFilters.clear();
+  activeLanguageFilters.clear();
+  activeVideoModeFilters.clear();
+  activeDevStatusFilters.clear();
+  activeReleaseFlagFilters.clear();
   currentDatIsArcade = false;
 
   // Masquer les barres liées à la vue DAT (réaffichées au prochain chargement)
@@ -1269,7 +1296,9 @@ function resetInterface() {
                     'match-status-filters-container', 'selection-filters-container',
                     'change-status-filters-container', 'chd-filters-container',
                     'clone-filters-container', 'driver-status-filters-container',
-                    'mame-filters-container']) {
+                    'mame-filters-container', 'region-filters-container',
+                    'language-filters-container', 'video-mode-filters-container',
+                    'dev-status-filters-container', 'release-flag-filters-container']) {
     const el = document.getElementById(id);
     if (el) el.innerHTML = '';
   }
@@ -1642,6 +1671,13 @@ async function updateCenterContent(type: 'dat' | 'folder', path: string) {
       generateMatchStatusFilters();
       generateSelectionFilters();
       generateChangeStatusFilters();
+      // Facettes issues des métadonnées de nommage (v2.1) : elles s'effacent
+      // d'elles-mêmes si le DAT courant ne porte pas l'information.
+      generateRegionFilters();
+      generateLanguageFilters();
+      generateVideoModeFilters();
+      generateDevStatusFilters();
+      generateReleaseFlagFilters();
       generateChdFilter();
       generateCloneFilter();
       generateDriverStatusFilter();
@@ -2261,6 +2297,144 @@ function generateCloneFilter() {
   });
 }
 
+// ============================================================================
+// Facettes issues des métadonnées de nommage (schéma v2.1)
+// ============================================================================
+//
+// Ces dropdowns valent pour TOUS les types de DAT : No-Intro et Redump portent les
+// tags dans le nom, MAME dans la description. Chacun s'efface de lui-même quand le
+// DAT courant ne porte pas l'information — un DAT MAME n'a par exemple presque
+// jamais de mode vidéo, et l'entrée serait un dropdown vide et inerte.
+
+/** Valeurs d'une colonne CSV de `games` pour un jeu donné. */
+function gameListValues(game: GameInfo, field: 'regions' | 'languages' | 'release_flags'): string[] {
+  const raw = game[field];
+  if (!raw) return [];
+  return raw.split(',').map(v => v.trim()).filter(v => v.length > 0);
+}
+
+/**
+ * Construit un dropdown à partir d'une colonne multivaluée (CSV).
+ * Les compteurs se chevauchent volontairement : un jeu « (USA, Europe) » est compté
+ * dans les deux entrées, et la sélection des deux entrées ne le montre qu'une fois.
+ */
+function generateListFacet(
+  containerId: string,
+  label: string,
+  field: 'regions' | 'languages' | 'release_flags',
+  activeSet: Set<string>,
+  icon: string
+) {
+  const container = document.getElementById(containerId);
+  if (!container) return;
+
+  const counts = new Map<string, number>();
+  for (const game of allGames) {
+    for (const value of gameListValues(game, field)) {
+      counts.set(value, (counts.get(value) || 0) + 1);
+    }
+  }
+  // Rien à filtrer : pas de dropdown. Une seule valeur pour tout le DAT non plus —
+  // un filtre qui ne peut rien exclure n'apporte que du bruit visuel.
+  if (counts.size < 2) {
+    container.innerHTML = '';
+    activeSet.clear();
+    return;
+  }
+
+  // Tri par effectif décroissant : sur un DAT No-Intro, les régions majeures
+  // remontent d'elles-mêmes en tête, ce qui est l'ordre utile à l'usage.
+  const items = Array.from(counts.entries())
+    .sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]))
+    .map(([value, count]) => ({ key: value, displayName: `${icon} ${value}`, count }));
+
+  createFilterDropdown(containerId, label, items, activeSet, () => {
+    applyFiltersAndGrouping();
+    updateGroupFilterSummary();
+  });
+}
+
+function generateRegionFilters() {
+  generateListFacet('region-filters-container', t('index.filters.region'), 'regions', activeRegionFilters, '🌍');
+}
+
+function generateLanguageFilters() {
+  generateListFacet('language-filters-container', t('index.filters.language'), 'languages', activeLanguageFilters, '💬');
+}
+
+function generateReleaseFlagFilters() {
+  generateListFacet('release-flag-filters-container', t('index.filters.releaseFlag'), 'release_flags', activeReleaseFlagFilters, '🏷️');
+}
+
+/** Dropdown « Mode vidéo ». Colonne scalaire : une valeur au plus par jeu. */
+function generateVideoModeFilters() {
+  const container = document.getElementById('video-mode-filters-container');
+  if (!container) return;
+
+  const counts = new Map<string, number>();
+  for (const game of allGames) {
+    if (game.video_mode) counts.set(game.video_mode, (counts.get(game.video_mode) || 0) + 1);
+  }
+  if (counts.size === 0) {
+    container.innerHTML = '';
+    activeVideoModeFilters.clear();
+    return;
+  }
+
+  const items = Array.from(counts.entries())
+    .sort((a, b) => a[0].localeCompare(b[0]))
+    .map(([value, count]) => ({ key: value, displayName: `📺 ${value}`, count }));
+  // Entrée « non spécifié » : sur la plupart des DAT c'est l'écrasante majorité des
+  // jeux, il faut pouvoir les isoler comme les autres.
+  const unsetCount = allGames.filter(g => !g.video_mode).length;
+  if (unsetCount > 0) {
+    items.push({ key: 'unset', displayName: `⚪ ${t('index.filters.videoModeUnset')}`, count: unsetCount });
+  }
+
+  createFilterDropdown('video-mode-filters-container', t('index.filters.videoMode'), items, activeVideoModeFilters, () => {
+    applyFiltersAndGrouping();
+    updateGroupFilterSummary();
+  });
+}
+
+/** Ordre d'affichage du statut de développement : du plus abouti au plus précoce. */
+const DEV_STATUS_ORDER = ['production', 'sample', 'demo', 'beta', 'proto', 'alpha'];
+
+function devStatusLabel(key: string): string {
+  return key === 'production' ? t('index.devStatus.production') : t(`index.devStatus.${key}`);
+}
+
+/** Dropdown « Statut de développement ». « production » = absence de tag. */
+function generateDevStatusFilters() {
+  const container = document.getElementById('dev-status-filters-container');
+  if (!container) return;
+
+  const counts = new Map<string, number>();
+  for (const game of allGames) {
+    const key = game.dev_status || 'production';
+    counts.set(key, (counts.get(key) || 0) + 1);
+  }
+  // Un DAT sans aucune préproduction n'a qu'une entrée « production » : inutile.
+  if (counts.size < 2) {
+    container.innerHTML = '';
+    activeDevStatusFilters.clear();
+    return;
+  }
+
+  const items = DEV_STATUS_ORDER
+    .filter(key => counts.has(key))
+    .map(key => ({
+      key,
+      displayName: `${key === 'production' ? '✅' : '🚧'} ${devStatusLabel(key)}`,
+      count: counts.get(key)!
+    }));
+
+  createFilterDropdown('dev-status-filters-container', t('index.filters.devStatus'), items, activeDevStatusFilters, () => {
+    applyFiltersAndGrouping();
+    updateGroupFilterSummary();
+  });
+}
+
 // Labels et icônes pour les statuts de matching.
 // Fonction (et non constante) : les traductions ne sont pas encore chargées à l'import du module.
 function matchStatusLabel(status: string): string {
@@ -2638,6 +2812,41 @@ function applyFiltersAndGrouping() {
     });
   }
 
+  // Facettes de nommage (v2.1). Colonnes multivaluées : un jeu passe le filtre dès
+  // qu'UNE de ses valeurs est cochée — « (USA, Europe) » ressort aussi bien sous
+  // « USA » que sous « Europe ».
+  if (activeRegionFilters.size > 0) {
+    filteredGames = filteredGames.filter(game =>
+      gameListValues(game, 'regions').some(r => activeRegionFilters.has(r))
+    );
+  }
+
+  if (activeLanguageFilters.size > 0) {
+    filteredGames = filteredGames.filter(game =>
+      gameListValues(game, 'languages').some(l => activeLanguageFilters.has(l))
+    );
+  }
+
+  if (activeReleaseFlagFilters.size > 0) {
+    filteredGames = filteredGames.filter(game =>
+      gameListValues(game, 'release_flags').some(f => activeReleaseFlagFilters.has(f))
+    );
+  }
+
+  if (activeVideoModeFilters.size > 0) {
+    filteredGames = filteredGames.filter(game => {
+      if (activeVideoModeFilters.has('unset') && !game.video_mode) return true;
+      return game.video_mode ? activeVideoModeFilters.has(game.video_mode) : false;
+    });
+  }
+
+  // « production » = absence de tag de préproduction dans le nom.
+  if (activeDevStatusFilters.size > 0) {
+    filteredGames = filteredGames.filter(game =>
+      activeDevStatusFilters.has(game.dev_status || 'production')
+    );
+  }
+
   // Mettre à jour les compteurs globaux
   updateGlobalCounters(filteredGames.length, allGames.filter(g => !g.is_disappeared).length);
 
@@ -2735,6 +2944,10 @@ function displayGroupedGames(games: GameInfo[]) {
       groupKey = game.is_selected !== 0 ? 'selected' : 'unselected';
     } else if (currentGroupBy === 'change-status') {
       groupKey = game.change_status || 'unchanged';
+    } else if (currentGroupBy === 'region') {
+      // Un jeu multi-régions forme son propre groupe (« USA,Europe ») plutôt que
+      // d'être dupliqué : un même jeu ne doit apparaître qu'une fois dans la liste.
+      groupKey = game.regions || t('index.filters.regionUnset');
     } else {
       groupKey = 'Tous';
     }
@@ -4470,6 +4683,10 @@ async function handlePrimaryDatLoaded(payload: {
   // d'éventuels presets déjà présents dans une base réutilisée).
   await syncDbCustomPresetsToApp();
 
+  // Le chargement d'un DAT réécrit la table des jeux : les regroupements posés par
+  // une clone list sont perdus. On les repose si l'utilisateur l'a demandé.
+  await maybeAutoApplyCloneList();
+
   // Mettre à jour le bandeau d'info DB
   updateDbInfoBanner();
   updateLeftSidebar();
@@ -4526,6 +4743,9 @@ window.api.onDatDownloadLoaded(async (payload: any) => {
     if (payload?.mode === 'complementary') {
       log('logs.dat.complementaryLoaded', { params: { name: payload.datName, version: payload.datVersion || t('logs.dat.noVersion') }, context: 'dat', state: 'success' });
       log('logs.dat.complementaryStats', { params: { games: payload.gamesCount, roms: payload.romsCount, disks: payload.disksCount, relationships: payload.relationshipsCount }, context: 'dat', state: 'count' });
+      // Les jeux apportés par le DAT complémentaire n'ont pas de clé de regroupement :
+      // sans réapplication, ils échapperaient à l'arbitrage 1G1R.
+      await maybeAutoApplyCloneList();
       // Rafraîchir bandeau (compteurs CHD peuvent avoir bougé) + volet central
       await updateDbInfoBanner();
       if (selectedElement) {
@@ -4612,7 +4832,12 @@ consolidateRomsButton?.addEventListener('click', runConsolidation);
 // BIOS, devices et jeux disparus sont exclus du ciblage (gérés par la cascade).
 // Les règles sont persistées dans la metadata DB ('selection_rules').
 
-type AsmField = 'name' | 'description' | 'name_desc' | 'category' | 'driver_status' | 'has_chd' | 'is_clone' | 'is_mechanical' | 'match_status';
+type AsmField = 'name' | 'description' | 'name_desc' | 'category' | 'driver_status' | 'has_chd' | 'is_clone' | 'is_mechanical' | 'match_status'
+  // Schéma v2.1 — métadonnées extraites du nom. `region`, `language` et
+  // `release_flag` portent sur des colonnes CSV : l'opérateur « est » signifie
+  // « contient cette valeur », ce qui est le comportement attendu pour un titre
+  // multi-régions comme « (USA, Europe) ».
+  | 'region' | 'language' | 'video_mode' | 'dev_status' | 'release_flag';
 
 interface SelectionRule {
   action: 'select' | 'deselect';
@@ -4629,8 +4854,6 @@ let asmBase: 'all' | 'none' | 'current' = 'all';
 type PresetScope = 'arcade' | 'nointro-redump' | 'global';
 interface CustomPreset { id: string; name: string; scope: PresetScope; rules: SelectionRule[]; }
 let asmCustomPresets: CustomPreset[] = [];
-// Position (index parmi les presets visibles) du preset en cours de glisser-déposer.
-let asmDragVi: number | null = null;
 
 // Signature de contenu d'un preset : sert d'identité (dédoublonnage), indépendante de
 // l'id et du nom. Valeurs texte normalisées (trim + minuscules).
@@ -4667,7 +4890,12 @@ function asmFieldLabels(): Record<AsmField, string> {
     has_chd: t('index.asm.fieldHasChd'),
     is_clone: t('index.asm.fieldIsClone'),
     is_mechanical: t('index.asm.fieldMechanical'),
-    match_status: t('index.asm.fieldMatchStatus')
+    match_status: t('index.asm.fieldMatchStatus'),
+    region: t('index.asm.fieldRegion'),
+    language: t('index.asm.fieldLanguage'),
+    video_mode: t('index.asm.fieldVideoMode'),
+    dev_status: t('index.asm.fieldDevStatus'),
+    release_flag: t('index.asm.fieldReleaseFlag')
   };
 }
 
@@ -4704,8 +4932,45 @@ function asmEnumValues(): Partial<Record<AsmField, Array<{ v: string; l: string 
       { v: 'partial', l: t('index.asm.valuePartial') },
       { v: 'missing', l: t('index.asm.valueMissing') },
       { v: 'unknown', l: t('index.asm.valueUnknown') }
+    ],
+    // Valeurs alimentées par le DAT courant plutôt que codées en dur : la liste des
+    // régions et des langues varie énormément d'un système à l'autre, et proposer
+    // les 51 régions canoniques sur un DAT qui n'en contient que quatre serait inutilisable.
+    region: asmValuesFromColumn('regions'),
+    language: asmValuesFromColumn('languages'),
+    release_flag: asmValuesFromColumn('release_flags'),
+    video_mode: [
+      ...asmDistinctScalarValues(g => g.video_mode),
+      { v: '', l: t('index.asm.valueUnset') }
+    ],
+    dev_status: [
+      { v: 'production', l: t('index.devStatus.production') },
+      ...DEV_STATUS_ORDER.filter(s => s !== 'production').map(s => ({ v: s, l: devStatusLabel(s) }))
     ]
   };
+}
+
+/** Valeurs distinctes d'une colonne CSV du DAT courant, triées par effectif. */
+function asmValuesFromColumn(field: 'regions' | 'languages' | 'release_flags'): Array<{ v: string; l: string }> {
+  const counts = new Map<string, number>();
+  for (const game of allGames) {
+    for (const value of gameListValues(game, field)) {
+      counts.set(value, (counts.get(value) || 0) + 1);
+    }
+  }
+  return Array.from(counts.entries())
+    .sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]))
+    .map(([value]) => ({ v: value, l: value }));
+}
+
+/** Valeurs distinctes d'une colonne scalaire du DAT courant, triées alphabétiquement. */
+function asmDistinctScalarValues(get: (g: GameInfo) => string | null | undefined): Array<{ v: string; l: string }> {
+  const values = new Set<string>();
+  for (const game of allGames) {
+    const value = get(game);
+    if (value) values.add(value);
+  }
+  return Array.from(values).sort().map(v => ({ v, l: v }));
 }
 
 // Modèles rapides : jeux de règles pré-configurés ajoutés à la liste courante
@@ -4768,9 +5033,24 @@ function asmRuleMatches(rule: SelectionRule, game: GameInfo): boolean {
     }
   }
 
+  // Champs multivalués (colonnes CSV). « est » = « contient cette valeur » : un titre
+  // « (USA, Europe) » satisfait aussi bien « région est USA » que « région est Europe ».
+  // Corollaire assumé : « n'est pas USA » exclut ce titre, ce qui est le comportement
+  // attendu quand on veut se débarrasser de tout ce qui touche à une région.
+  if (rule.field === 'region' || rule.field === 'language' || rule.field === 'release_flag') {
+    const column = rule.field === 'region' ? 'regions'
+      : rule.field === 'language' ? 'languages'
+      : 'release_flags';
+    const values = gameListValues(game, column);
+    const has = values.includes(rule.value);
+    return rule.operator === 'is-not' ? !has : has;
+  }
+
   // Champs booléens / énumérés
   let actual: string;
   if (rule.field === 'has_chd') actual = game.has_chd ? 'yes' : 'no';
+  else if (rule.field === 'video_mode') actual = game.video_mode || '';
+  else if (rule.field === 'dev_status') actual = game.dev_status || 'production';
   else if (rule.field === 'is_clone') actual = game.parent_name_ref ? 'yes' : 'no';
   else if (rule.field === 'is_mechanical') actual = game.is_mechanical ? 'yes' : 'no';
   else if (rule.field === 'driver_status') actual = game.driver_status || '';
@@ -4785,6 +5065,359 @@ function asmTargets(): GameInfo[] {
   return allGames.filter(g => !g.is_disappeared && !g.is_bios && !g.is_device);
 }
 
+// ============================================================================
+// Sélection 1G1R — post-passe de regroupement
+// ============================================================================
+//
+// Ne s'exécute QUE si l'utilisateur l'a explicitement activée. Désactivée, la
+// fonction asmCompute() se comporte exactement comme avant son introduction.
+//
+// Composition avec les règles : seuls les jeux encore sélectionnés APRÈS les règles
+// concourent. Les règles jouent donc le rôle de pré-filtres — « sans prototypes »
+// écarte les protos avant l'arbitrage, plutôt que de les laisser gagner un groupe.
+
+interface OneGameOneRomConfig {
+  enabled: boolean;
+  regionPriority: string[];
+  languagePriority: string[];
+  languageOverRegion: boolean;
+  videoPriority: string[];
+  preferLatestRevision: boolean;
+  fallbackToOwned: boolean;
+}
+
+/** Réglages chargés depuis les paramètres de l'application. */
+let ogorConfig: OneGameOneRomConfig | null = null;
+/**
+ * Surcharge de session, pilotée par la case de la modale d'auto-sélection.
+ * `null` = suivre le réglage global.
+ */
+let ogorSessionOverride: boolean | null = null;
+
+/** Le 1G1R doit-il s'appliquer maintenant ? */
+function ogorIsActive(): boolean {
+  if (ogorSessionOverride !== null) return ogorSessionOverride;
+  return ogorConfig?.enabled === true;
+}
+
+async function refreshOneGameOneRomConfig(): Promise<void> {
+  try {
+    const settings = await window.api.getSettings();
+    const raw = (settings as any)?.oneGameOneRom;
+    ogorConfig = raw
+      ? {
+          enabled: raw.enabled === true,
+          regionPriority: Array.isArray(raw.regionPriority) ? raw.regionPriority : [],
+          languagePriority: Array.isArray(raw.languagePriority) ? raw.languagePriority : [],
+          languageOverRegion: raw.languageOverRegion === true,
+          videoPriority: Array.isArray(raw.videoPriority) ? raw.videoPriority : [],
+          preferLatestRevision: raw.preferLatestRevision !== false,
+          fallbackToOwned: raw.fallbackToOwned !== false
+        }
+      : null;
+  } catch {
+    ogorConfig = null;
+  }
+}
+
+/**
+ * Rang d'une valeur dans une liste de priorité. Une valeur absente reçoit le rang le
+ * plus bas SANS être exclue : exclure fermement reste le rôle d'une règle
+ * (« région n'est pas Japan »), ce qui évite un second mécanisme d'exclusion.
+ */
+function ogorRank(values: string[], priority: string[]): number {
+  let best = Number.MAX_SAFE_INTEGER;
+  for (const value of values) {
+    const index = priority.indexOf(value);
+    if (index !== -1 && index < best) best = index;
+  }
+  return best;
+}
+
+/**
+ * Clé de regroupement des variantes d'un même jeu.
+ *  - MAME : la famille de clones du DAT fait autorité.
+ *  - No-Intro/Redump : group_key (surcharge de clone list) sinon base_title.
+ * Le numéro de disque entre TOUJOURS dans la clé : « (Disc 1) » et « (Disc 2) » sont
+ * deux moitiés d'un même jeu, jamais deux candidats à éliminer l'un l'autre.
+ */
+function ogorGroupKey(game: GameInfo): string | null {
+  const disc = game.disc_number != null ? `#disc${game.disc_number}` : '';
+  if (currentDatIsArcade) {
+    const family = game.parent_name_ref || game.name;
+    return `${family}${disc}`;
+  }
+  const base = game.group_key || game.base_title;
+  // Sans titre normalisé, aucun regroupement fiable n'est possible : le jeu reste seul.
+  return base ? `${base}${disc}` : null;
+}
+
+/** Ordre de préférence des statuts de préproduction, du plus abouti au plus précoce. */
+const OGOR_DEV_STATUS_ORDER = ['production', 'sample', 'demo', 'beta', 'proto', 'alpha'];
+/** Marqueurs pénalisants : une édition licenciée l'emporte sur une non licenciée. */
+const OGOR_PENALIZED_FLAGS = ['Unl', 'Aftermarket', 'Pirate', 'Bootleg', 'Hack'];
+
+/**
+ * Compare deux candidats d'un même groupe. Retourne < 0 si `a` doit l'emporter.
+ * La chaîne de critères est ordonnée : le premier critère discriminant tranche.
+ */
+function ogorCompare(a: GameInfo, b: GameInfo, cfg: OneGameOneRomConfig): number {
+  // 1. Ce qu'on possède réellement, si le repli est actif. C'est le critère que seul
+  //    un outil connaissant la collection peut appliquer.
+  if (cfg.fallbackToOwned) {
+    const ownedRank = (g: GameInfo) => {
+      const status = g.match_status || 'unknown';
+      return status === 'complete' ? 0 : status === 'partial' ? 1 : 2;
+    };
+    const diff = ownedRank(a) - ownedRank(b);
+    if (diff !== 0) return diff;
+  }
+
+  // 2 & 3. Région et langue, dans l'ordre choisi par l'utilisateur.
+  const regionDiff = () => ogorRank(gameListValues(a, 'regions'), cfg.regionPriority)
+                         - ogorRank(gameListValues(b, 'regions'), cfg.regionPriority);
+  const languageDiff = () => ogorRank(gameListValues(a, 'languages'), cfg.languagePriority)
+                           - ogorRank(gameListValues(b, 'languages'), cfg.languagePriority);
+  const first = cfg.languageOverRegion ? languageDiff() : regionDiff();
+  if (first !== 0) return first;
+  const second = cfg.languageOverRegion ? regionDiff() : languageDiff();
+  if (second !== 0) return second;
+
+  // 4. Mode vidéo.
+  const videoDiff = ogorRank(a.video_mode ? [a.video_mode] : [], cfg.videoPriority)
+                  - ogorRank(b.video_mode ? [b.video_mode] : [], cfg.videoPriority);
+  if (videoDiff !== 0) return videoDiff;
+
+  // 5. Révision la plus récente (rang décroissant).
+  if (cfg.preferLatestRevision) {
+    const revDiff = (b.revision_rank ?? 0) - (a.revision_rank ?? 0);
+    if (revDiff !== 0) return revDiff;
+  }
+
+  // 6. Statut de développement : une version de production l'emporte.
+  const devDiff = OGOR_DEV_STATUS_ORDER.indexOf(a.dev_status || 'production')
+                - OGOR_DEV_STATUS_ORDER.indexOf(b.dev_status || 'production');
+  if (devDiff !== 0) return devDiff;
+
+  // 7. Marqueurs pénalisants : moins il y en a, mieux c'est.
+  const penalty = (g: GameInfo) =>
+    gameListValues(g, 'release_flags').filter(f => OGOR_PENALIZED_FLAGS.includes(f)).length;
+  const penaltyDiff = penalty(a) - penalty(b);
+  if (penaltyDiff !== 0) return penaltyDiff;
+
+  // 8. Date de build la plus récente. Signal de dernier recours : deux entrées peuvent
+  //    ne différer que par elle (cas « Unearthed Zero » : même build de jam, deux dates).
+  const dateA = a.release_date || '';
+  const dateB = b.release_date || '';
+  if (dateA !== dateB) return dateB.localeCompare(dateA);
+
+  // 9. Départage déterministe : sans lui, l'arbitrage dépendrait de l'ordre de la liste.
+  return a.name.localeCompare(b.name);
+}
+
+/**
+ * Retire de la sélection les variantes perdantes de chaque groupe.
+ * Mute `selection` en place. Retourne le nombre de jeux écartés.
+ */
+function ogorApplyToSelection(selection: Map<number, boolean>): number {
+  const cfg = ogorConfig;
+  if (!cfg) return 0;
+
+  // Seuls les jeux encore sélectionnés après les règles concourent.
+  const groups = new Map<string, GameInfo[]>();
+  for (const game of asmTargets()) {
+    if (selection.get(game.id) !== true) continue;
+    const key = ogorGroupKey(game);
+    if (!key) continue;
+    const bucket = groups.get(key);
+    if (bucket) bucket.push(game);
+    else groups.set(key, [game]);
+  }
+
+  let dropped = 0;
+  for (const members of groups.values()) {
+    if (members.length < 2) continue;
+    members.sort((a, b) => ogorCompare(a, b, cfg));
+    for (let i = 1; i < members.length; i++) {
+      selection.set(members[i].id, false);
+      dropped++;
+    }
+  }
+  return dropped;
+}
+
+/**
+ * Rend la section 1G1R de la modale : case d'activation + résumé des priorités.
+ * C'est le SEUL point d'activation côté liste de jeux — aucun preset, aucun
+ * chargement de données ne doit pouvoir activer le 1G1R de biais.
+ */
+function asmRenderOneGameOneRomSection(): void {
+  const checkbox = document.getElementById('asm-ogor-enabled') as HTMLInputElement | null;
+  const summary = document.getElementById('asm-ogor-summary');
+  if (!checkbox || !summary) return;
+
+  checkbox.checked = ogorIsActive();
+
+  if (!ogorConfig) {
+    summary.textContent = t('index.asm.ogorNotConfigured');
+    return;
+  }
+  const cfg = ogorConfig;
+  const first = cfg.languageOverRegion
+    ? `${t('index.filters.language')} ${cfg.languagePriority.join(' › ') || '—'}`
+    : `${t('index.filters.region')} ${cfg.regionPriority.join(' › ') || '—'}`;
+  const second = cfg.languageOverRegion
+    ? `${t('index.filters.region')} ${cfg.regionPriority.join(' › ') || '—'}`
+    : `${t('index.filters.language')} ${cfg.languagePriority.join(' › ') || '—'}`;
+  const options: string[] = [];
+  if (cfg.preferLatestRevision) options.push(t('index.asm.ogorLatestRevision'));
+  if (cfg.fallbackToOwned) options.push(t('index.asm.ogorFallbackToOwned'));
+  summary.textContent = `${first} · ${second}` + (options.length ? ` · ${options.join(' · ')}` : '');
+}
+
+// ── Clone list : statut et actions dans la modale ───────────────────────────────
+
+/**
+ * Rafraîchit la ligne d'état et l'activation des boutons.
+ * Les clone lists ne concernent que les DAT No-Intro/Redump : un DAT arcade porte
+ * déjà ses relations parent/clone, une liste n'y apporterait rien.
+ */
+async function asmRefreshCloneListStatus(): Promise<void> {
+  const statusEl = document.getElementById('asm-clonelist-status');
+  const dlBtn = document.getElementById('asm-clonelist-download') as HTMLButtonElement | null;
+  const applyBtn = document.getElementById('asm-clonelist-apply') as HTMLButtonElement | null;
+  const clearBtn = document.getElementById('asm-clonelist-clear') as HTMLButtonElement | null;
+  if (!statusEl || !dlBtn || !applyBtn || !clearBtn) return;
+
+  let status: Awaited<ReturnType<typeof window.api.cloneList.getStatus>> | null = null;
+  try {
+    status = await window.api.cloneList.getStatus();
+  } catch {
+    statusEl.textContent = t('index.asm.cloneListUnavailable');
+    dlBtn.disabled = applyBtn.disabled = clearBtn.disabled = true;
+    return;
+  }
+
+  if (status.isArcade) {
+    statusEl.textContent = t('index.asm.cloneListArcade');
+    dlBtn.disabled = applyBtn.disabled = clearBtn.disabled = true;
+    return;
+  }
+
+  dlBtn.disabled = false;
+  clearBtn.disabled = !status.appliedList;
+  applyBtn.disabled = !status.matchedFile;
+
+  if (status.appliedList) {
+    const when = status.appliedAt ? new Date(status.appliedAt).toLocaleString() : '';
+    statusEl.textContent = t('index.asm.cloneListApplied', { list: status.appliedList, date: when });
+  } else if (status.matchedFile) {
+    statusEl.textContent = t('index.asm.cloneListReady', { file: status.matchedFile });
+  } else {
+    statusEl.textContent = t('index.asm.cloneListMissing', { dat: status.datName || '—' });
+  }
+}
+
+/**
+ * Réapplique la clone list après un chargement de DAT, si le réglage le demande.
+ * Silencieux quand aucune liste locale ne correspond : ce n'est pas une erreur, la
+ * plupart des collections n'en utilisent pas.
+ */
+async function maybeAutoApplyCloneList(): Promise<void> {
+  try {
+    const settings = await window.api.getSettings();
+    const config = (settings as any)?.cloneLists;
+    if (config?.autoApply !== true) return;
+
+    let status = await window.api.cloneList.getStatus();
+    if (status.isArcade) return;
+
+    // Téléchargement à la demande, uniquement si rien ne correspond localement.
+    // Une liste déjà présente n'est jamais rafraîchie ici : ce serait un appel
+    // réseau à chaque chargement de DAT, pour une donnée qui bouge lentement.
+    if (!status.matchedFile && config.autoDownload === true) {
+      const downloaded = await window.api.cloneList.download();
+      if (!downloaded.success) return;
+      status = await window.api.cloneList.getStatus();
+    }
+    if (!status.matchedFile) return;
+
+    await window.api.cloneList.apply();
+  } catch (error: any) {
+    log('logs.cloneList.error', {
+      params: { error: error?.message || String(error) },
+      severity: 'warning',
+      context: 'dat'
+    });
+  }
+}
+
+/** Câble les trois boutons. Appelé une fois au démarrage. */
+function asmSetupCloneListActions(): void {
+  const withBusy = async (id: string, action: () => Promise<void>) => {
+    const btn = document.getElementById(id) as HTMLButtonElement | null;
+    if (!btn || btn.disabled) return;
+    const previous = btn.textContent;
+    btn.disabled = true;
+    btn.textContent = t('common.pleaseWait');
+    try {
+      await action();
+    } catch (error: any) {
+      log('logs.cloneList.error', { params: { error: error?.message || String(error) }, severity: 'error', context: 'dat' });
+    } finally {
+      btn.textContent = previous;
+      await asmRefreshCloneListStatus();
+    }
+  };
+
+  document.getElementById('asm-clonelist-download')?.addEventListener('click', () => {
+    withBusy('asm-clonelist-download', async () => {
+      const result = await window.api.cloneList.download();
+      if (!result.success && result.error === 'no-match') {
+        log('logs.cloneList.noMatch', { params: { dat: result.datName || '—' }, severity: 'warning', context: 'dat' });
+      }
+    });
+  });
+
+  document.getElementById('asm-clonelist-apply')?.addEventListener('click', () => {
+    withBusy('asm-clonelist-apply', async () => {
+      const result = await window.api.cloneList.apply();
+      if (result.success && result.report) {
+        // Le regroupement vient de changer : recharger pour que group_key remonte
+        // dans allGames, sinon l'aperçu 1G1R raisonnerait sur l'ancien découpage.
+        await reloadGamesPreservingView();
+        asmSchedulePreview();
+      }
+    });
+  });
+
+  document.getElementById('asm-clonelist-clear')?.addEventListener('click', () => {
+    withBusy('asm-clonelist-clear', async () => {
+      await window.api.cloneList.clear();
+      await reloadGamesPreservingView();
+      asmSchedulePreview();
+    });
+  });
+}
+
+/**
+ * Recharge `allGames` depuis la base sans perturber la vue courante.
+ * Les colonnes de regroupement ayant changé côté base, un simple re-rendu ne suffit
+ * pas : il faut relire les jeux.
+ */
+async function reloadGamesPreservingView(): Promise<void> {
+  const fresh = await window.api.listGames();
+  if (!Array.isArray(fresh) || fresh.length === 0) return;
+  // Report des champs recalculés en mémoire (statut de matching, flags dérivés).
+  const previous = new Map(allGames.map(g => [g.id, g]));
+  allGames = fresh.map((g: GameInfo) => {
+    const old = previous.get(g.id);
+    return old ? { ...g, match_status: old.match_status, is_disappeared: old.is_disappeared } : g;
+  });
+  computeParentCloneRelations(allGames);
+  applyFiltersAndGrouping();
+}
+
 /** Calcule l'état de sélection final pour chaque jeu ciblé. */
 function asmCompute(): Map<number, boolean> {
   const result = new Map<number, boolean>();
@@ -4795,8 +5428,16 @@ function asmCompute(): Map<number, boolean> {
     }
     result.set(g.id, sel);
   }
+
+  // Court-circuit : 1G1R désactivé ⇒ on retourne le résultat des règles tel quel,
+  // sans le moindre calcul supplémentaire. Comportement identique à l'existant.
+  ogorLastDropped = ogorIsActive() ? ogorApplyToSelection(result) : 0;
+
   return result;
 }
+
+/** Nombre de doublons écartés par le dernier `asmCompute()`. Alimente l'aperçu. */
+let ogorLastDropped = 0;
 
 // Aperçu débounced (les regex sur de gros DAT MAME peuvent coûter cher au keystroke)
 let asmPreviewTimer: ReturnType<typeof setTimeout> | null = null;
@@ -4817,7 +5458,13 @@ function asmUpdatePreview() {
     if (target) sel++;
     if (target !== (g.is_selected !== 0)) changed++;
   }
-  el.innerHTML = t('index.asm.preview', { selected: `<strong>${sel}</strong>`, total: result.size, changed: `<strong>${changed}</strong>` });
+  let html = t('index.asm.preview', { selected: `<strong>${sel}</strong>`, total: result.size, changed: `<strong>${changed}</strong>` });
+  // Contribution propre du 1G1R, distinguée de celle des règles : sans ça, on ne
+  // saurait pas ce qui relève de l'arbitrage et ce qui relève des règles.
+  if (ogorLastDropped > 0) {
+    html += `<br>🎯 ${t('index.asm.ogorDropped', { count: `<strong>${ogorLastDropped}</strong>` })}`;
+  }
+  el.innerHTML = html;
 }
 
 /** Construit la ligne d'édition d'une règle (action / champ / opérateur / valeur / déplacer / supprimer). */
@@ -4825,7 +5472,17 @@ function asmMakeRow(rule: SelectionRule, index: number): HTMLElement {
   const row = document.createElement('div');
   row.className = 'asm-rule';
 
-  // Boutons déplacer (l'ordre des règles est significatif)
+  // Poignée de préhension. Une ligne de règle contient des <select> et un <input> :
+  // rendre la ligne entière déplaçable en permanence empêcherait de sélectionner du
+  // texte à la souris dans le champ de valeur. makeReorderable() n'arme donc le
+  // glisser que pendant l'appui sur cette poignée.
+  const grip = document.createElement('span');
+  grip.className = 'asm-rule-grip';
+  grip.textContent = '⠿';
+  grip.title = t('index.asm.dragTitle');
+
+  // Boutons déplacer (l'ordre des règles est significatif). Conservés à côté du
+  // glisser-déposer : ils restent le seul accès au clavier.
   const upBtn = document.createElement('button');
   upBtn.className = 'asm-rule-btn';
   upBtn.textContent = '▲';
@@ -4937,6 +5594,7 @@ function asmMakeRow(rule: SelectionRule, index: number): HTMLElement {
     asmRenderRules();
   });
 
+  row.appendChild(grip);
   row.appendChild(upBtn);
   row.appendChild(downBtn);
   row.appendChild(actionSel);
@@ -4957,7 +5615,20 @@ function asmRenderRules() {
     empty.textContent = t('index.asm.noRules');
     container.appendChild(empty);
   } else {
-    asmRules.forEach((rule, index) => container.appendChild(asmMakeRow(rule, index)));
+    const rows = asmRules.map((rule, index) => container.appendChild(asmMakeRow(rule, index)));
+    // L'ordre des règles est décisif (la dernière qui matche gagne) : le glisser-déposer
+    // évite d'enchaîner les ▲/▼ pour remonter une règle depuis le bas d'une longue liste.
+    makeReorderable({
+      items: rows,
+      onReorder: (from, to) => {
+        const [moved] = asmRules.splice(from, 1);
+        asmRules.splice(to, 0, moved);
+        asmRenderRules();
+      },
+      draggingClass: 'asm-dragging',
+      overClass: 'asm-drag-over',
+      handle: row => row.querySelector<HTMLElement>('.asm-rule-grip')
+    });
   }
   asmSchedulePreview();
 }
@@ -5013,12 +5684,12 @@ function asmRenderCustomPresets(): void {
   }
 
   const realIdxOf = (p: CustomPreset) => asmCustomPresets.indexOf(p);
+  const chips: HTMLElement[] = [];
 
-  visible.forEach((preset, vi) => {
+  visible.forEach((preset) => {
+    // `draggable` est posé par makeReorderable() une fois tous les chips créés.
     const chip = document.createElement('span');
     chip.className = 'asm-custom-chip';
-    chip.draggable = true;
-    chip.dataset.vi = String(vi);
     chip.title = t('index.autoSelect.customDragTitle');
 
     const applyBtn = document.createElement('button');
@@ -5048,33 +5719,21 @@ function asmRenderCustomPresets(): void {
       log('logs.game.customPresetDeleted', { context: 'game', state: 'deleted' });
     });
 
-    // Réordre par glisser-déposer (entre presets visibles ; les masqués restent en place).
-    chip.addEventListener('dragstart', (e) => {
-      asmDragVi = vi;
-      chip.classList.add('asm-dragging');
-      if (e.dataTransfer) e.dataTransfer.effectAllowed = 'move';
-    });
-    chip.addEventListener('dragend', () => {
-      chip.classList.remove('asm-dragging');
-      container.querySelectorAll('.asm-drag-over').forEach(c => c.classList.remove('asm-drag-over'));
-    });
-    chip.addEventListener('dragover', (e) => {
-      e.preventDefault();
-      if (e.dataTransfer) e.dataTransfer.dropEffect = 'move';
-      if (asmDragVi !== null && asmDragVi !== vi) chip.classList.add('asm-drag-over');
-    });
-    chip.addEventListener('dragleave', () => chip.classList.remove('asm-drag-over'));
-    chip.addEventListener('drop', (e) => {
-      e.preventDefault();
-      chip.classList.remove('asm-drag-over');
-      if (asmDragVi !== null && asmDragVi !== vi) asmReorderVisiblePresets(asmDragVi, vi);
-      asmDragVi = null;
-    });
-
     chip.appendChild(applyBtn);
     chip.appendChild(badge);
     chip.appendChild(delBtn);
     container.appendChild(chip);
+    chips.push(chip);
+  });
+
+  // Réordre par glisser-déposer. Les index manipulés sont ceux de la liste VISIBLE ;
+  // asmReorderVisiblePresets() les retraduit vers le tableau complet, en laissant en
+  // place les presets masqués par le scope courant.
+  makeReorderable({
+    items: chips,
+    onReorder: (from, to) => { asmReorderVisiblePresets(from, to); },
+    draggingClass: 'asm-dragging',
+    overClass: 'asm-drag-over'
   });
 }
 
@@ -5178,6 +5837,11 @@ async function openAutoSelectModal() {
     return;
   }
 
+  // Réglages 1G1R à jour : ils ont pu changer dans la fenêtre des paramètres depuis
+  // la dernière ouverture de cette modale.
+  await refreshOneGameOneRomConfig();
+  ogorSessionOverride = null;
+
   // Restaurer les règles persistées dans la base
   try {
     const saved = await window.api.getDbMetadata('selection_rules');
@@ -5185,10 +5849,18 @@ async function openAutoSelectModal() {
       const parsed = JSON.parse(saved);
       asmBase = parsed.base === 'none' || parsed.base === 'current' ? parsed.base : 'all';
       asmRules = Array.isArray(parsed.rules) ? parsed.rules : [];
+      // Forme héritée `{ base, rules }` : l'absence de la clé vaut « non activé »,
+      // une base créée avant le 1G1R ne doit pas se mettre à filtrer toute seule.
+      if (typeof parsed.oneGameOneRom === 'boolean') {
+        ogorSessionOverride = parsed.oneGameOneRom;
+      }
     }
   } catch {
     // Metadata absente ou corrompue — on repart de zéro
   }
+
+  asmRenderOneGameOneRomSection();
+  await asmRefreshCloneListStatus();
 
   document.querySelectorAll<HTMLInputElement>('input[name="asm-base"]').forEach(r => {
     r.checked = r.value === asmBase;
@@ -5294,8 +5966,14 @@ async function asmApply() {
       }
     }
 
-    // Persister les règles dans la base pour la prochaine ouverture
-    await window.api.setDbMetadata('selection_rules', JSON.stringify({ base: asmBase, rules: asmRules }));
+    // Persister les règles dans la base pour la prochaine ouverture.
+    // `oneGameOneRom` s'ajoute à la forme héritée `{ base, rules }` : une base écrite
+    // par une version antérieure se relit sans la clé, donc 1G1R non activé.
+    await window.api.setDbMetadata('selection_rules', JSON.stringify({
+      base: asmBase,
+      rules: asmRules,
+      oneGameOneRom: ogorIsActive()
+    }));
 
     // Recalculer la cascade de dépendances et re-rendre
     await refreshDependencyResolution();
@@ -5343,6 +6021,14 @@ function setupAutoSelectModal() {
       }
     });
   });
+
+  // Case 1G1R de la modale : surcharge de session, et seul point d'activation ici.
+  document.getElementById('asm-ogor-enabled')?.addEventListener('change', (e) => {
+    ogorSessionOverride = (e.target as HTMLInputElement).checked;
+    asmSchedulePreview();
+  });
+
+  asmSetupCloneListActions();
 
   document.getElementById('asm-save-default')?.addEventListener('click', asmSaveAsDefault);
   document.getElementById('asm-restore-default')?.addEventListener('click', asmRestoreDefault);
@@ -5465,6 +6151,12 @@ function rebuildGroupByOptions() {
   if (allGames.some(g => g.change_status)) {
     opts.push({ value: 'change-status', label: t('index.filters.groupChangeStatus') });
   }
+  // Groupement par région : proposé dès que le DAT porte l'information sur au moins
+  // deux régions distinctes (sinon le groupement n'aurait qu'un seul groupe).
+  const distinctRegions = new Set(allGames.map(g => g.regions).filter(Boolean));
+  if (distinctRegions.size > 1) {
+    opts.push({ value: 'region', label: t('index.filters.region') });
+  }
   if (currentDatIsArcade) {
     opts.push({ value: 'manufacturer', label: t('index.filters.manufacturer') });
     opts.push({ value: 'emulation', label: t('index.filters.emulation') });
@@ -5574,6 +6266,11 @@ function updateGroupFilterSummary() {
     { label: t('index.filters.matching'), activeSet: activeMatchFilters, getDisplayName: (k) => `${matchStatusIcons[k]} ${matchStatusLabel(k)}`, containerId: 'match-status-filters-container' },
     { label: t('index.filters.groupSelection'), activeSet: activeSelectionFilters, getDisplayName: (k) => selectionLabels[k] || k, containerId: 'selection-filters-container' },
     { label: t('index.filters.groupChangeStatus'), activeSet: activeChangeFilters, getDisplayName: (k) => changeStatusLabels[k] || k, containerId: 'change-status-filters-container' },
+    { label: t('index.filters.region'), activeSet: activeRegionFilters, getDisplayName: (k) => `🌍 ${k}`, containerId: 'region-filters-container' },
+    { label: t('index.filters.language'), activeSet: activeLanguageFilters, getDisplayName: (k) => `💬 ${k}`, containerId: 'language-filters-container' },
+    { label: t('index.filters.videoMode'), activeSet: activeVideoModeFilters, getDisplayName: (k) => k === 'unset' ? `⚪ ${t('index.filters.videoModeUnset')}` : `📺 ${k}`, containerId: 'video-mode-filters-container' },
+    { label: t('index.filters.devStatus'), activeSet: activeDevStatusFilters, getDisplayName: (k) => `${k === 'production' ? '✅' : '🚧'} ${devStatusLabel(k)}`, containerId: 'dev-status-filters-container' },
+    { label: t('index.filters.releaseFlag'), activeSet: activeReleaseFlagFilters, getDisplayName: (k) => `🏷️ ${k}`, containerId: 'release-flag-filters-container' },
     { label: t('index.filters.manufacturer'), activeSet: activeManufacturerFilters, getDisplayName: (k) => k, containerId: 'manufacturer-filters-container' },
     { label: t('index.filters.disks'), activeSet: activeChdFilters, getDisplayName: (k) => diskLabels[k] || k, containerId: 'chd-filters-container' },
     { label: t('index.filters.emulation'), activeSet: activeDriverFilters, getDisplayName: (k) => driverLabels[k] || k, containerId: 'driver-status-filters-container' },

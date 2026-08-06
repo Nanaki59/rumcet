@@ -127,6 +127,10 @@ export function registerSettingsHandlers(
         title = t('dialogs.selectFolderIncomplete');
         defaultPath = settingsManager.get('incompleteRomsFolder') || '';
         break;
+      case 'clonelists':
+        title = t('dialogs.selectFolderCloneLists');
+        defaultPath = settingsManager.get('cloneLists')?.folder || '';
+        break;
     }
 
     const result = await dialog.showOpenDialog(mainWindow, {

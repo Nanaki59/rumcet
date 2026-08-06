@@ -10,7 +10,8 @@
     "copy-html": "copyfiles -f \"src/renderer/*.html\" dist/src/renderer",
     "copy-wasm": "echo 'No WASM files to copy'",
     "clean": "rimraf dist",
-    "sync-systems": "node scripts/generateSystems.mjs"
+    "sync-systems": "node scripts/generateSystems.mjs",
+    "check-naming": "node scripts/checkRomNaming.mjs"
   },
   "keywords": [
     "rom",

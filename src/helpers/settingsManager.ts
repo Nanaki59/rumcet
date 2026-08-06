@@ -50,6 +50,102 @@ export interface ExtensionPickerData {
   activeExtensions: DownloadExtensionEntry[];
 }
 
+// ─── Sélection 1G1R ────────────────────────────────────────────────
+/**
+ * Priorités d'arbitrage entre les variantes d'un même jeu.
+ *
+ * Les listes sont ORDONNÉES : la première valeur gagne. Une valeur absente d'une
+ * liste n'est pas exclue, elle reçoit simplement le rang le plus bas — exclure
+ * durement reste le rôle d'une règle d'auto-sélection (« région n'est pas Japan »),
+ * ce qui évite de dupliquer un second mécanisme d'exclusion.
+ */
+export interface OneGameOneRomSettings {
+  /** Interrupteur maître. FALSE par défaut : sans action de l'utilisateur, rien ne change. */
+  enabled: boolean;
+  /** Régions canoniques, de la plus souhaitée à la moins souhaitée. */
+  regionPriority: string[];
+  /** Codes langue No-Intro, de la plus souhaitée à la moins souhaitée. */
+  languagePriority: string[];
+  /**
+   * Si true, la langue prime sur la région dans l'arbitrage. Utile quand on veut
+   * « la version française d'où qu'elle vienne » plutôt que « la version Europe ».
+   */
+  languageOverRegion: boolean;
+  /** Modes vidéo, du plus souhaité au moins souhaité. */
+  videoPriority: string[];
+  /** Préférer la révision la plus récente à qualité régionale égale. */
+  preferLatestRevision: boolean;
+  /**
+   * Retomber sur une version effectivement possédée quand la version préférée est
+   * absente de la collection. Évite un trou dans le set là où un fichier existe.
+   * C'est ce que RUMCET peut faire et qu'un outil travaillant sur le seul DAT ne
+   * peut pas : il ignore ce que contient réellement la collection.
+   */
+  fallbackToOwned: boolean;
+  /** Surcharges par système (clé = systemId), fusionnées sur les valeurs globales. */
+  perSystem?: Record<string, Partial<Omit<OneGameOneRomSettings, 'perSystem'>>>;
+}
+
+// ─── Clone lists ───────────────────────────────────────────────────────────
+/**
+ * Listes de correspondance entre titres d'un même jeu portant des noms différents
+ * selon la région (« Biohazard » / « Resident Evil »). Aucune heuristique ne peut
+ * les deviner : c'est une donnée éditoriale curée à la main par la communauté.
+ *
+ * RUMCET les CONSOMME, ne les maintient pas. L'URL est un réglage précisément pour
+ * que le projet ne dépende du sort d'aucun dépôt : si la source retenue s'arrête, on
+ * en pointe une autre sans toucher au code.
+ */
+export interface CloneListSettings {
+  /** Base d'URL des fichiers JSON. Doit se terminer par un séparateur. */
+  sourceUrl: string;
+  /** Dossier local de dépôt. Vide = <userData>/clonelists. */
+  folder?: string;
+  /** Horodatage ISO du dernier téléchargement réussi. */
+  lastDownload?: string;
+  /**
+   * Réappliquer la liste locale après chaque chargement de DAT.
+   *
+   * Nécessaire parce qu'un chargement PRIMAIRE vide et réécrit la table des jeux :
+   * la colonne `group_key` posée par une application antérieure disparaît avec elle.
+   * Un chargement COMPLÉMENTAIRE ajoute des jeux dont la `group_key` est vide.
+   * Sans cette option, il faut rouvrir la sélection automatique et cliquer
+   * « Appliquer » à chaque fois.
+   */
+  autoApply: boolean;
+  /**
+   * Télécharger la liste correspondante si elle est absente localement, avant de
+   * l'appliquer. N'a d'effet qu'avec `autoApply`, et ne retélécharge jamais une
+   * liste déjà présente : le rafraîchissement reste une action manuelle.
+   */
+  autoDownload: boolean;
+}
+
+export const DEFAULT_CLONE_LISTS: CloneListSettings = {
+  // Dépôt d'origine (BSD-3-Clause). Son application n'est plus maintenue, mais les
+  // données continuent d'être mises à jour ; un fork peut être substitué ici.
+  sourceUrl: 'https://raw.githubusercontent.com/unexpectedpanda/retool-clonelists-metadata/main/clonelists/',
+  folder: '',
+  autoApply: false,
+  autoDownload: false
+};
+
+/**
+ * Priorités par défaut. Volontairement neutres et non vides : une liste vide
+ * rendrait l'arbitrage arbitraire dès la première utilisation. L'ordre retenu
+ * privilégie les versions les plus largement diffusées et anglophones, que
+ * l'utilisateur réordonne ensuite selon sa collection.
+ */
+export const DEFAULT_ONE_GAME_ONE_ROM: OneGameOneRomSettings = {
+  enabled: false,
+  regionPriority: ['World', 'Europe', 'USA', 'Japan'],
+  languagePriority: ['En', 'Fr', 'Ja'],
+  languageOverRegion: false,
+  videoPriority: ['PAL', 'PAL 60Hz', 'NTSC'],
+  preferLatestRevision: true,
+  fallbackToOwned: true
+};
+
 export interface AppSettings {
   // Dossiers par défaut
   defaultDatFolder: string;
@@ -114,6 +210,23 @@ export interface AppSettings {
    * Miroir per-base stocké dans la metadata 'custom_selection_presets'.
    */
   customSelectionPresets?: Array<{ id: string; name: string; scope: string; rules: any[] }>;
+
+  /**
+   * Sélection 1G1R (« 1 game, 1 rom ») : ne conserver qu'une version par jeu, en
+   * arbitrant les variantes régionales selon des priorités.
+   *
+   * STRICTEMENT OPT-IN. `enabled` vaut false par défaut et rien dans l'application
+   * ne doit l'activer implicitement : ni un preset de règles, ni le chargement d'une
+   * clone list, ni la détection d'un système. Tant qu'il est désactivé, le
+   * comportement doit être rigoureusement identique à celui d'avant la fonction.
+   */
+  oneGameOneRom?: OneGameOneRomSettings;
+
+  /**
+   * Clone lists : source, dépôt local et réapplication automatique.
+   * Sans effet tant qu'aucune liste n'a été téléchargée puis appliquée.
+   */
+  cloneLists?: CloneListSettings;
 
   // Autres paramètres
   theme: 'light' | 'dark';
@@ -196,7 +309,7 @@ export const compressionLevelToZip = {
   maximum: 9     // DEFLATE level 9 (best)
 };
 
-const CURRENT_SETTINGS_VERSION = 16;
+const CURRENT_SETTINGS_VERSION = 18;
 
 /**
  * Valeurs par défaut de compatibilité archives par système.
@@ -266,6 +379,12 @@ class SettingsManager {
 
       // Compatibilité archives par système
       systemCompatibility: DEFAULT_SYSTEM_COMPATIBILITY,
+
+      // Sélection 1G1R — désactivée par défaut (voir OneGameOneRomSettings)
+      oneGameOneRom: { ...DEFAULT_ONE_GAME_ONE_ROM },
+
+      // Clone lists — aucune liste téléchargée tant que l'utilisateur ne le demande pas
+      cloneLists: { ...DEFAULT_CLONE_LISTS },
 
       // Paramètres par défaut No-Intro
       noIntroDefaults: {
@@ -630,6 +749,37 @@ class SettingsManager {
       };
     }
 
+    // Migration v16 -> v17 : sélection 1G1R (désactivée par défaut).
+    // On ne fusionne PAS partiellement un objet existant : si la clé est absente on
+    // pose le défaut complet, sinon on complète uniquement les champs manquants, en
+    // préservant systématiquement le `enabled` déjà choisi par l'utilisateur.
+    if (version < 17) {
+      console.log('Migration v16 -> v17: adding oneGameOneRom (default off)');
+      const existing = migratedSettings.oneGameOneRom;
+      migratedSettings = {
+        ...migratedSettings,
+        oneGameOneRom: existing
+          ? { ...DEFAULT_ONE_GAME_ONE_ROM, ...existing }
+          : { ...DEFAULT_ONE_GAME_ONE_ROM },
+        settingsVersion: 17
+      };
+    }
+
+    // Migration v17 -> v18 : clone lists (aucune liste téléchargée par défaut).
+    // Le champ `sourceUrl` d'une installation existante est préservé : c'est
+    // précisément le réglage qui permet de basculer vers un autre dépôt.
+    if (version < 18) {
+      console.log('Migration v17 -> v18: adding cloneLists (nothing downloaded by default)');
+      const existing = migratedSettings.cloneLists;
+      migratedSettings = {
+        ...migratedSettings,
+        cloneLists: existing
+          ? { ...DEFAULT_CLONE_LISTS, ...existing }
+          : { ...DEFAULT_CLONE_LISTS },
+        settingsVersion: 18
+      };
+    }
+
     return migratedSettings as AppSettings;
   }
 
@@ -661,7 +811,48 @@ class SettingsManager {
       console.warn('No valid format found, using default values');
       settings.archiveFormatPriority = this.defaultSettings.archiveFormatPriority;
     }
-    
+
+    // ── Sélection 1G1R ──
+    // Une liste de priorité corrompue (doublons, valeurs non textuelles) rendrait
+    // l'arbitrage non déterministe sans qu'aucune erreur ne remonte : on nettoie
+    // plutôt que de faire confiance au fichier.
+    if (settings.oneGameOneRom) {
+      const ogor = settings.oneGameOneRom;
+      const cleanList = (list: unknown, fallback: string[]): string[] => {
+        if (!Array.isArray(list)) return [...fallback];
+        const cleaned = [...new Set(
+          list.filter((v): v is string => typeof v === 'string' && v.trim().length > 0)
+              .map(v => v.trim())
+        )];
+        // Une liste vidée par le nettoyage est acceptée telle quelle : l'utilisateur
+        // a le droit de ne pas vouloir arbitrer sur ce critère.
+        return cleaned;
+      };
+      ogor.regionPriority = cleanList(ogor.regionPriority, DEFAULT_ONE_GAME_ONE_ROM.regionPriority);
+      ogor.languagePriority = cleanList(ogor.languagePriority, DEFAULT_ONE_GAME_ONE_ROM.languagePriority);
+      ogor.videoPriority = cleanList(ogor.videoPriority, DEFAULT_ONE_GAME_ONE_ROM.videoPriority);
+      ogor.enabled = ogor.enabled === true;
+      ogor.languageOverRegion = ogor.languageOverRegion === true;
+      ogor.preferLatestRevision = ogor.preferLatestRevision !== false;
+      ogor.fallbackToOwned = ogor.fallbackToOwned !== false;
+    } else {
+      settings.oneGameOneRom = { ...DEFAULT_ONE_GAME_ONE_ROM };
+    }
+
+    // ── Clone lists ──
+    // Une URL vide ou non http(s) empêcherait tout téléchargement en silence.
+    if (settings.cloneLists) {
+      const cl = settings.cloneLists;
+      const url = typeof cl.sourceUrl === 'string' ? cl.sourceUrl.trim() : '';
+      cl.sourceUrl = /^https?:\/\//i.test(url) ? url : DEFAULT_CLONE_LISTS.sourceUrl;
+      // La concaténation avec le nom de fichier suppose un séparateur final.
+      if (!cl.sourceUrl.endsWith('/')) cl.sourceUrl += '/';
+      cl.autoApply = cl.autoApply === true;
+      cl.autoDownload = cl.autoDownload === true;
+    } else {
+      settings.cloneLists = { ...DEFAULT_CLONE_LISTS };
+    }
+
     return true;
   }
 

@@ -1263,6 +1263,33 @@
       gap: 6px;
     }
 
+    /* Poignée de préhension : seul point d'accroche du glisser-déposer, pour ne pas
+       empêcher la sélection de texte dans le champ de valeur de la règle. */
+    .asm-rule-grip {
+      cursor: grab;
+      color: #b0b8c0;
+      font-size: 14px;
+      line-height: 1;
+      padding: 0 2px;
+      user-select: none;
+    }
+
+    .asm-rule-grip:active {
+      cursor: grabbing;
+    }
+
+    .asm-rule:hover .asm-rule-grip {
+      color: #7f8c8d;
+    }
+
+    .asm-rule.asm-dragging {
+      opacity: 0.45;
+    }
+
+    .asm-rule.asm-drag-over {
+      box-shadow: 0 -2px 0 0 #3498db;
+    }
+
     .asm-rule select,
     .asm-rule input[type="text"] {
       padding: 5px 8px;
@@ -1304,6 +1331,47 @@
     .asm-rule-btn.asm-delete:hover {
       background: #fdecea;
       border-color: #e74c3c;
+    }
+
+    .asm-ogor {
+      padding: 10px 12px;
+      background: #fdf6ec;
+      border: 1px solid #f0d9b5;
+      border-radius: 6px;
+      display: flex;
+      flex-direction: column;
+      gap: 6px;
+    }
+
+    .asm-ogor-summary {
+      font-size: 12px;
+      color: #8a6d3b;
+      font-family: monospace;
+    }
+
+    .asm-ogor-hint {
+      font-size: 12px;
+      color: #95a5a6;
+    }
+
+    .asm-clonelist {
+      border-top: 1px solid #f0d9b5;
+      padding-top: 8px;
+      margin-top: 2px;
+      display: flex;
+      flex-direction: column;
+      gap: 6px;
+    }
+
+    .asm-clonelist-status {
+      font-size: 12px;
+      color: #8a6d3b;
+    }
+
+    .asm-clonelist-actions {
+      display: flex;
+      gap: 8px;
+      flex-wrap: wrap;
     }
 
     .asm-preview {
@@ -2358,6 +2426,7 @@
                   <option value="match-status" data-i18n="index.filters.groupMatchStatus">Statut de matching</option>
                   <option value="selection" data-i18n="index.filters.groupSelection">Sélection</option>
                   <option value="change-status" data-i18n="index.filters.groupChangeStatus">Évolution DAT</option>
+                  <option value="region" data-i18n="index.filters.groupRegion">Région</option>
                 </select>
               </div>
               <span class="filter-label" data-i18n="index.filters.label">Filtres :</span>
@@ -2366,6 +2435,13 @@
               <div id="match-status-filters-container"></div>
               <div id="selection-filters-container"></div>
               <div id="change-status-filters-container"></div>
+              <!-- Métadonnées extraites du nom (schéma v2.1). Chaque dropdown ne
+                   s'affiche que si le DAT courant porte réellement l'information. -->
+              <div id="region-filters-container"></div>
+              <div id="language-filters-container"></div>
+              <div id="video-mode-filters-container"></div>
+              <div id="dev-status-filters-container"></div>
+              <div id="release-flag-filters-container"></div>
               <!-- Filtres spécifiques aux DAT Arcade, ajoutés à la suite -->
               <div id="manufacturer-filters-container"></div>
               <div id="chd-filters-container"></div>
@@ -2513,6 +2589,31 @@
       <div style="display:flex; align-items:center; gap:10px;">
         <button id="asm-add-rule" class="asm-btn-secondary" data-i18n="index.autoSelect.addRule">＋ Ajouter une règle</button>
         <button id="asm-clear-rules" class="asm-btn-secondary" style="margin-left:auto;" data-i18n="index.autoSelect.clearRules" data-i18n-title="index.autoSelect.clearRulesTitle" title="Retirer toutes les règles en cours">🗑 Tout effacer</button>
+      </div>
+
+      <!-- Sélection 1G1R : seul point d'activation côté liste de jeux.
+           S'applique APRÈS les règles ci-dessus, qui font donc office de pré-filtres. -->
+      <div class="asm-ogor">
+        <label style="display:flex; align-items:center; gap:8px; font-weight:600;">
+          <input type="checkbox" id="asm-ogor-enabled">
+          <span data-i18n="index.asm.ogorEnable">🎯 Ne garder qu'une version par jeu (1G1R)</span>
+        </label>
+        <div id="asm-ogor-summary" class="asm-ogor-summary"></div>
+        <div class="asm-ogor-hint" data-i18n-html="index.asm.ogorHint">
+          Les règles ci-dessus s'appliquent d'abord : ce qu'elles écartent ne participe pas à
+          l'arbitrage. Les priorités se règlent dans <strong>Paramètres → Consolidation → 1G1R</strong>.
+        </div>
+
+        <!-- Clone list : regroupe les titres publiés sous des noms différents selon
+             la région, que l'analyse du nom seule ne peut pas rapprocher. -->
+        <div class="asm-clonelist">
+          <div id="asm-clonelist-status" class="asm-clonelist-status"></div>
+          <div class="asm-clonelist-actions">
+            <button id="asm-clonelist-download" class="asm-btn-secondary" data-i18n="index.asm.cloneListDownload">⬇ Télécharger la clone list</button>
+            <button id="asm-clonelist-apply" class="asm-btn-secondary" data-i18n="index.asm.cloneListApply">🔗 Appliquer</button>
+            <button id="asm-clonelist-clear" class="asm-btn-secondary" data-i18n="index.asm.cloneListClear">✖ Retirer</button>
+          </div>
+        </div>
       </div>
 
       <div id="asm-preview" class="asm-preview"></div>

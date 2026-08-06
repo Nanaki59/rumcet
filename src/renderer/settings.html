@@ -787,6 +787,10 @@
         <span class="tab-icon">🎰</span>
         <span data-i18n="settings.tabs.arcade">Arcade (MAME)</span>
       </button>
+      <button class="tab-button" data-tab="onegameonerom">
+        <span class="tab-icon">🎯</span>
+        <span data-i18n="settings.tabs.oneGameOneRom">1G1R</span>
+      </button>
       <button class="tab-button" data-tab="download">
         <span class="tab-icon">⬇</span>
         <span data-i18n="settings.tabs.download">Téléchargement</span>
@@ -1300,6 +1304,169 @@
             Pour un jeu sans aucune ROM classique (uniquement un CHD), crée un placeholder
             <code>&lt;jeu&gt;.zip</code> vide à côté du sous-dossier <code>&lt;jeu&gt;/</code>.
             Recalbox liste les jeux via les <code>.zip</code> présents. Implique le rangement du CHD en sous-dossier.
+          </p>
+        </div>
+      </div>
+    </div>
+
+    <!-- ===== ONGLET 1G1R ===== -->
+    <div id="tab-onegameonerom" class="tab-pane">
+      <h3 data-i18n="settings.oneGameOneRom.title">1G1R — 1 jeu, 1 ROM</h3>
+
+      <div class="settings-section">
+        <div class="setting-row">
+          <label>
+            <input type="checkbox" id="ogorEnabled">
+            <span data-i18n="settings.oneGameOneRom.enable">Activer la sélection 1G1R</span>
+          </label>
+          <p class="info-text" data-i18n-html="settings.oneGameOneRom.enableInfo">
+            Désactivé, <strong>rien ne change</strong> : RUMCET se comporte exactement comme sans
+            cette fonction. Activé, la sélection automatique ne conserve qu'une version par jeu,
+            en arbitrant les variantes selon les priorités ci-dessous. La sélection reste
+            entièrement modifiable à la main ensuite.
+          </p>
+        </div>
+      </div>
+
+      <div id="ogorSettings" class="settings-section">
+        <h4 data-i18n="settings.oneGameOneRom.prioritySection">Priorités d'arbitrage</h4>
+        <p class="info-text" style="margin-bottom: 12px;" data-i18n="settings.oneGameOneRom.priorityInfo">
+          La première entrée de chaque liste gagne. Une valeur absente d'une liste n'est pas exclue :
+          elle passe simplement en dernier. Pour exclure fermement une région ou une langue, utilisez
+          une règle de sélection automatique.
+        </p>
+
+        <div class="setting-row-vertical">
+          <label data-i18n="settings.oneGameOneRom.regionPriority">Régions, de la plus souhaitée à la moins souhaitée :</label>
+          <div class="format-priority-container">
+            <div class="format-priority-list" id="ogorRegionList"></div>
+          </div>
+          <div class="setting-row-inline" style="margin-top: 8px;">
+            <select id="ogorRegionAdd"></select>
+            <button class="btn-secondary" id="ogorRegionAddBtn" data-i18n="settings.oneGameOneRom.addEntry">Ajouter</button>
+          </div>
+        </div>
+
+        <div class="setting-row">
+          <label>
+            <input type="checkbox" id="ogorLanguageOverRegion">
+            <span data-i18n="settings.oneGameOneRom.languageOverRegion">La langue prime sur la région</span>
+          </label>
+          <p class="info-text" data-i18n="settings.oneGameOneRom.languageOverRegionInfo">
+            Pour préférer « la version française d'où qu'elle vienne » plutôt que « la version Europe ».
+          </p>
+        </div>
+
+        <div class="setting-row-vertical">
+          <label data-i18n="settings.oneGameOneRom.languagePriority">Langues, de la plus souhaitée à la moins souhaitée :</label>
+          <div class="format-priority-container">
+            <div class="format-priority-list" id="ogorLanguageList"></div>
+          </div>
+          <div class="setting-row-inline" style="margin-top: 8px;">
+            <select id="ogorLanguageAdd"></select>
+            <button class="btn-secondary" id="ogorLanguageAddBtn" data-i18n="settings.oneGameOneRom.addEntry">Ajouter</button>
+          </div>
+        </div>
+
+        <div class="setting-row-vertical">
+          <label data-i18n="settings.oneGameOneRom.videoPriority">Modes vidéo, du plus souhaité au moins souhaité :</label>
+          <div class="format-priority-container">
+            <div class="format-priority-list" id="ogorVideoList"></div>
+          </div>
+          <div class="setting-row-inline" style="margin-top: 8px;">
+            <select id="ogorVideoAdd"></select>
+            <button class="btn-secondary" id="ogorVideoAddBtn" data-i18n="settings.oneGameOneRom.addEntry">Ajouter</button>
+          </div>
+        </div>
+      </div>
+
+      <div id="ogorOptions" class="settings-section">
+        <h4 data-i18n="settings.oneGameOneRom.optionsSection">Options d'arbitrage</h4>
+
+        <div class="setting-row">
+          <label>
+            <input type="checkbox" id="ogorPreferLatestRevision" checked>
+            <span data-i18n="settings.oneGameOneRom.preferLatestRevision">Préférer la révision la plus récente</span>
+          </label>
+          <p class="info-text" data-i18n-html="settings.oneGameOneRom.preferLatestRevisionInfo">
+            À qualité régionale égale, <code>(Rev 2)</code> l'emporte sur <code>(Rev 1)</code>,
+            qui l'emporte sur l'édition d'origine sans tag.
+          </p>
+        </div>
+
+        <div class="setting-row">
+          <label>
+            <input type="checkbox" id="ogorFallbackToOwned" checked>
+            <span data-i18n="settings.oneGameOneRom.fallbackToOwned">Retomber sur une version que je possède</span>
+          </label>
+          <p class="info-text" data-i18n-html="settings.oneGameOneRom.fallbackToOwnedInfo">
+            Quand la version préférée est absente de votre collection mais qu'une autre est présente,
+            garder celle que vous avez plutôt que de laisser un trou. <strong>C'est ce qu'un outil
+            travaillant sur le seul fichier DAT ne peut pas faire</strong> : il ignore ce que vous
+            possédez réellement. Décochez pour un 1G1R strict, calculé sur le DAT seul.
+          </p>
+        </div>
+      </div>
+
+      <div class="settings-section">
+        <h4 data-i18n="settings.oneGameOneRom.cloneListSection">Clone lists</h4>
+        <p class="info-text" style="margin-bottom: 12px;" data-i18n-html="settings.oneGameOneRom.cloneListInfo">
+          Un même jeu paraît parfois sous des noms sans rapport selon la région
+          (<em>Pokémon Version Or</em> / <em>Pokémon Goldene Edition</em> / <em>Pocket Monsters Kin</em>).
+          Aucune analyse de titre ne peut le deviner : ces relations sont une donnée éditoriale,
+          curée à la main par la communauté. RUMCET les <strong>consomme</strong> sans les maintenir.
+        </p>
+
+        <div class="setting-row">
+          <label for="cloneListSourceUrl" data-i18n="settings.oneGameOneRom.cloneListSource">Source des listes :</label>
+          <input type="text" id="cloneListSourceUrl" style="width: 100%;">
+          <p class="info-text" data-i18n="settings.oneGameOneRom.cloneListSourceInfo">
+            URL du dossier contenant les fichiers .json. Modifiable : c'est ce qui rend RUMCET
+            indépendant du sort d'un dépôt en particulier.
+          </p>
+        </div>
+
+        <div class="setting-row">
+          <label for="cloneListFolder" data-i18n="settings.oneGameOneRom.cloneListFolder">Dossier local :</label>
+          <div class="setting-row-inline">
+            <input type="text" id="cloneListFolder" style="flex: 1;">
+            <button class="btn-secondary" onclick="browseFolder('cloneListFolder')" data-i18n="common.browse">Parcourir</button>
+          </div>
+          <p class="info-text" data-i18n="settings.oneGameOneRom.cloneListFolderInfo">
+            Laissez vide pour utiliser le dossier de données de l'application.
+          </p>
+        </div>
+
+        <div class="setting-row">
+          <label>
+            <input type="checkbox" id="cloneListAutoApply">
+            <span data-i18n="settings.oneGameOneRom.cloneListAutoApply">Réappliquer automatiquement après chaque chargement de DAT</span>
+          </label>
+          <p class="info-text" data-i18n-html="settings.oneGameOneRom.cloneListAutoApplyInfo">
+            Charger un DAT <strong>principal</strong> vide et réécrit la table des jeux : les
+            regroupements posés par une clone list disparaissent avec elle. Charger un DAT
+            <strong>complémentaire</strong> ajoute des jeux qui n'en ont pas encore.
+            Sans cette option, il faut rouvrir « Sélection auto » et cliquer « Appliquer » à chaque fois.
+          </p>
+        </div>
+
+        <div class="setting-row">
+          <label>
+            <input type="checkbox" id="cloneListAutoDownload">
+            <span data-i18n="settings.oneGameOneRom.cloneListAutoDownload">Télécharger la liste manquante avant de l'appliquer</span>
+          </label>
+          <p class="info-text" data-i18n="settings.oneGameOneRom.cloneListAutoDownloadInfo">
+            Sous-option de la précédente. Au chargement d'un DAT, si aucune clone list locale ne
+            correspond au système, elle est téléchargée puis appliquée. Une liste déjà présente
+            n'est jamais retéléchargée : la mise à jour reste une action manuelle.
+          </p>
+        </div>
+
+        <div class="warning-box" style="margin-top: 12px;">
+          <p class="info-text" style="margin: 0;" data-i18n-html="settings.oneGameOneRom.cloneListAttribution">
+            Le format des clone lists et le dépôt proposé par défaut proviennent du projet
+            <strong>Retool</strong> de unexpectedpanda, sous licence <strong>BSD-3-Clause</strong>.
+            RUMCET n'en est ni l'auteur ni le mainteneur. Voir <code>THIRD_PARTY_NOTICES.md</code>.
           </p>
         </div>
       </div>
