@@ -51,12 +51,12 @@ export function registerSettingsHandlers(
       }
       
       // 3. Mettre à jour les autres chemins d'outils si nécessaire
-      if (newSettings.chdmanPath) {
-        archiveManager.setChdmanPath(newSettings.chdmanPath);
-      }
+      // chdman : re-résolution complète (chemin utilisateur, binaire embarqué, PATH)
+      await archiveManager.refreshChdmanPath(settingsManager.getAll());
       
-      if (newSettings.sevenZipPath) {
-        archiveManager.setSevenZipPath(newSettings.sevenZipPath);
+      // 7-Zip : un chemin vide ramène au 7za embarqué
+      if (newSettings.sevenZipPath !== undefined) {
+        archiveManager.setSevenZipPath(newSettings.sevenZipPath || '');
       }
 
       sendLogToRenderer(mainWindow, 'info', 'settings', 'logs.settings.updated');
@@ -78,6 +78,10 @@ export function registerSettingsHandlers(
       
       // Réinitialiser les chemins RAR à vide
       archiveManager.setRarToolPaths({});
+
+      // Revenir au chdman par défaut (binaire embarqué ou PATH) et au 7za embarqué
+      await archiveManager.refreshChdmanPath(defaultSettings);
+      archiveManager.setSevenZipPath('');
       
       // Réappliquer la priorité par défaut
       if (defaultSettings.rarToolPriority && Array.isArray(defaultSettings.rarToolPriority)) {

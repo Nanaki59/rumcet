@@ -1,0 +1,116 @@
+/*
+ * RUMCET - ROM's Ultimate Manager, Conversion and Editor Tool
+ * Copyright (C) 2025 Nanaki59
+ *
+ * This program is free software: you can redistribute it and/or modify
+ * it under the terms of the GNU Affero General Public License as published
+ * by the Free Software Foundation, either version 3 of the License, or
+ * (at your option) any later version.
+ *
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU Affero General Public License for more details.
+ *
+ * You should have received a copy of the GNU Affero General Public License
+ * along with this program.  If not, see <https://www.gnu.org/licenses/>.
+ */
+/* Formulaire des dossiers d'une base (dbFoldersForm.ts) */
+
+.dbf {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  font-size: 13px;
+}
+
+.dbf-label {
+  font-weight: 600;
+  color: #34495e;
+  font-size: 12px;
+  margin-top: 4px;
+}
+
+.dbf-path-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.dbf-input {
+  flex: 1;
+  min-width: 0;
+  padding: 7px 10px;
+  border: 1px solid #ced4da;
+  border-radius: 4px;
+  font-size: 12px;
+  font-family: monospace;
+  color: #2c3e50;
+  background: white;
+}
+
+.dbf-input::placeholder {
+  color: #95a5a6;
+  font-style: italic;
+}
+
+.dbf-btn {
+  padding: 7px 10px;
+  background: #ecf0f1;
+  border: 1px solid #ced4da;
+  border-radius: 4px;
+  cursor: pointer;
+  font-size: 12px;
+  font-family: inherit;
+  white-space: nowrap;
+}
+
+.dbf-btn:hover {
+  background: #dee2e6;
+}
+
+.dbf-checkbox {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-top: 4px;
+  cursor: pointer;
+  color: #2c3e50;
+}
+
+.dbf-info {
+  margin: 0;
+  font-size: 11px;
+  color: #7f8c8d;
+}
+
+.dbf-effective {
+  margin: 0;
+  font-size: 11px;
+  font-family: monospace;
+  color: #2980b9;
+}
+
+.dbf-advanced {
+  margin-top: 8px;
+  border: 1px solid #e9ecef;
+  border-radius: 6px;
+  padding: 6px 10px 10px;
+  background: #fbfcfc;
+}
+
+.dbf-advanced summary {
+  cursor: pointer;
+  font-weight: 600;
+  color: #34495e;
+  font-size: 12px;
+  padding: 4px 0;
+}
+
+.dbf-advanced[open] summary {
+  margin-bottom: 4px;
+}
+
+.dbf-advanced .dbf {
+  gap: 4px;
+}

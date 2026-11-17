@@ -17,6 +17,7 @@ import { ZipHandler } from './ZipHandler.js';
 import { SevenZipHandler } from './SevenZipHandler.js';
 import { RarHandler } from './RarHandler.js';
 import { ChdHandler } from './ChdHandler.js';
+import { resolveChdmanPath, setCurrentChdmanPath, type ChdmanVersionChoice } from '../toolPaths.js';
 import { IsoHandler } from './IsoHandler.js';
 import { CsoHandler } from './CsoHandler.js';
 
@@ -681,7 +682,25 @@ export class ArchiveManager extends EventEmitter {
   }
   
   /**
-   * Configure le chemin vers 7zip
+   * Résout le chemin de chdman selon les paramètres (chemin utilisateur,
+   * version choisie parmi l'embarquée et les téléchargées, PATH système) et l'applique.
+   * Le chemin est aussi partagé avec les autres instances (consolidation, scan…).
+   * Retourne le chemin retenu, ou null si chdman est introuvable.
+   */
+  async refreshChdmanPath(settings: { chdmanPath?: string; chdmanVersion?: ChdmanVersionChoice }): Promise<string | null> {
+    const resolved = await resolveChdmanPath(settings);
+    setCurrentChdmanPath(resolved);
+    if (resolved) {
+      this.setChdmanPath(resolved);
+      console.log('🔧 chdman path resolved:', resolved);
+    } else {
+      console.warn('chdman not found (configured path, embedded binary, PATH)');
+    }
+    return resolved;
+  }
+  
+  /**
+   * Configure le chemin vers 7zip (chemin vide : retour au 7za embarqué)
    */
   setSevenZipPath(sevenZipPath: string): void {
     const handler = this.getHandlerByFormat('7z');

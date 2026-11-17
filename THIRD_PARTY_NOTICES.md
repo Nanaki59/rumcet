@@ -61,6 +61,23 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
 ---
 
+## chdman (MAME)
+
+- **Project**: [MAME](https://github.com/mamedev/mame)
+- **Licence**: GPL-2.0-or-later for the project as a whole (many individual source
+  files, including the CHD code, are BSD-3-Clause)
+- **Used for**: creating and extracting CHD images. RUMCET runs it as a separate
+  program and never links against it.
+
+RUMCET ships unmodified `chdman` binaries in `resources/bin/<platform>-<arch>/`.
+They are built from the official MAME source tag recorded in
+`.github/workflows/build-chdman.yml`, and that tag's source code is available
+from the MAME repository. Users can also turn off the embedded binary and point
+RUMCET at their own `chdman`. If no path is set, RUMCET looks for `chdman` on the
+system `PATH`.
+
+---
+
 ## DAT files
 
 DAT files (No-Intro, Redump, MAME, Pleasuredome, Progetto Snaps) remain the property

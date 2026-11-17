@@ -225,10 +225,13 @@ export async function applyCloneList(db: Database, list: CloneListFile): Promise
   }
 
   // Écriture. Le nettoyage préalable rend l'opération idempotente et permet de
-  // repartir d'une base saine quand on change de liste.
+  // repartir d'une base saine quand on met à jour ou change de liste : sans lui, un
+  // regroupement ou une catégorie posés par une version antérieure survivraient à
+  // leur disparition de la liste.
   await db.exec('BEGIN TRANSACTION');
   try {
     await db.run('UPDATE games SET group_key = NULL WHERE group_key IS NOT NULL');
+    await db.run('UPDATE games SET category = dat_category WHERE category IS NOT dat_category');
     for (const [id, groupKey] of groupOf) {
       const category = categoryOf.get(id);
       if (category !== undefined) {
@@ -240,7 +243,8 @@ export async function applyCloneList(db: Database, list: CloneListFile): Promise
     }
     await db.exec('COMMIT');
   } catch (error) {
-    await db.exec('ROLLBACK');
+    // L'échec du ROLLBACK ne doit pas masquer l'erreur d'origine.
+    try { await db.exec('ROLLBACK'); } catch { /* pas de transaction active */ }
     throw error;
   }
 

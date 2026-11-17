@@ -25,44 +25,36 @@ export function calculateHashesFromBuffer(buffer: Buffer): FileHash {
 
 /**
  * Calcule les hashes d'un fichier en utilisant des streams (pour gros fichiers)
- * Optimisé pour ne pas charger tout le fichier en mémoire
+ * Optimisé pour ne pas charger tout le fichier en mémoire : le CRC32 est calculé
+ * incrémentalement. Attention : le premier chunk doit être hashé SANS valeur
+ * précédente (`crc32(chunk, 0)` ne donne pas le même résultat que `crc32(chunk)`).
+ *
+ * @param signal Permet d'interrompre la lecture (arrêt forcé d'un scan)
  */
-export function calculateFileHashesStream(filePath: string): Promise<FileHash> {
+export function calculateFileHashesStream(filePath: string, signal?: AbortSignal): Promise<FileHash> {
   return new Promise((resolve, reject) => {
-    const stream = fs.createReadStream(filePath);
-    
+    const stream = fs.createReadStream(filePath, { signal });
+
     const md5Hash = crypto.createHash('md5');
     const sha1Hash = crypto.createHash('sha1');
-    const chunks: Buffer[] = [];
-    //let crcValue = 0;
-    
-    stream.on('data', (chunk: string | Buffer) => {
-      // Convertir en Buffer si c'est une string
-      const bufferChunk = typeof chunk === 'string' ? Buffer.from(chunk) : chunk;
+    let crcValue: number | undefined;
 
-      // MD5 et SHA1 peuvent être calculés incrémentalement
+    stream.on('data', (chunk: string | Buffer) => {
+      const bufferChunk = typeof chunk === 'string' ? Buffer.from(chunk) : chunk;
       md5Hash.update(bufferChunk);
       sha1Hash.update(bufferChunk);
-      
-      // CORRECTION CRITIQUE: Utiliser >>> 0 pour forcer unsigned à chaque fois
-      //crcValue = crc32(bufferChunk, crcValue) >>> 0;
-      
-      // Stocker le chunk pour calculer CRC à la fin
-      chunks.push(bufferChunk);
+      crcValue = (crcValue === undefined ? crc32(bufferChunk) : crc32(bufferChunk, crcValue)) >>> 0;
     });
-    
+
     stream.on('end', () => {
-      // Concaténer tous les chunks et calculer le CRC une seule fois
-      const fullBuffer = Buffer.concat(chunks);
-      const crcValue = crc32(fullBuffer) >>> 0;
-      
+      const finalCrc = crcValue === undefined ? crc32(Buffer.alloc(0)) >>> 0 : crcValue;
       resolve({
-        crc32: crcValue.toString(16).padStart(8, '0').toUpperCase(),
+        crc32: finalCrc.toString(16).padStart(8, '0').toUpperCase(),
         md5: md5Hash.digest('hex').toUpperCase(),
         sha1: sha1Hash.digest('hex').toUpperCase()
       });
     });
-    
+
     stream.on('error', (error) => {
       reject(error);
     });
@@ -72,17 +64,19 @@ export function calculateFileHashesStream(filePath: string): Promise<FileHash> {
 /**
  * Calcule les hashes d'un fichier en choisissant automatiquement la méthode
  * selon la taille du fichier
+ *
+ * @param signal Permet d'interrompre la lecture (arrêt forcé d'un scan)
  */
-export async function calculateFileHashes(filePath: string, sizeThreshold: number = 100 * 1024 * 1024): Promise<FileHash> {
+export async function calculateFileHashes(filePath: string, sizeThreshold: number = 100 * 1024 * 1024, signal?: AbortSignal): Promise<FileHash> {
   const stats = await fs.promises.stat(filePath);
   
   if (stats.size < sizeThreshold) {
     // Pour les petits fichiers, on peut les charger en mémoire
-    const buffer = await fs.promises.readFile(filePath);
+    const buffer = await fs.promises.readFile(filePath, { signal });
     return calculateHashesFromBuffer(buffer);
   } else {
     // Pour les gros fichiers, utiliser des streams
-    return calculateFileHashesStream(filePath);
+    return calculateFileHashesStream(filePath, signal);
   }
 }
 

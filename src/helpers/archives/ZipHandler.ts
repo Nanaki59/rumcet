@@ -2,7 +2,8 @@
 
 import AdmZip from 'adm-zip';
 import Seven from 'node-7z';
-import sevenBin from '7zip-bin';
+import { getBundled7zaPath } from '../toolPaths.js';
+import { trackProcess } from './processRegistry.js';
 import path from 'path';
 import fs from 'fs/promises';
 import {
@@ -14,7 +15,8 @@ import {
   ArchiveDeleteOptions
 } from './types.js';
 
-const pathTo7zip = sevenBin.path7za;
+// 7za de 7zip-bin, hors de app.asar dans la version packagée
+const pathTo7zip = getBundled7zaPath();
 
 /**
  * Handler pour les archives ZIP utilisant AdmZip (pure Node.js)
@@ -193,6 +195,8 @@ export class ZipHandler implements IArchiveHandler {
       } finally {
         if (options.workingDirectory) process.chdir(originalCwd);
       }
+      // Suivi du processus 7z (lancé de façon synchrone) pour l'arrêt forcé
+      trackProcess(myStream?._childProcess);
 
       myStream.on('end', () => {
         console.log(`[ZIP] ✓ archive created: ${options.outputPath}`);

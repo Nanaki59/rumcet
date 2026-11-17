@@ -65,10 +65,7 @@ contextBridge.exposeInMainWorld('api', {
     title?: string;
     defaultPath?: string;
     multiSelections?: boolean;
-  }) => ipcRenderer.invoke('dialog:select-folders', {
-    ...options,
-    properties: options?.multiSelections ? ['openDirectory', 'multiSelections'] : ['openDirectory']
-  }),
+  }) => ipcRenderer.invoke('dialog:select-folder', options),
 
   showMessageBox: (options: any) => ipcRenderer.invoke('dialog:show-message', options),
 
@@ -179,7 +176,9 @@ contextBridge.exposeInMainWorld('api', {
   getGameDiff: (gameName: string) => ipcRenderer.invoke('dat:get-game-diff', gameName),
   getDisappearedGames: () => ipcRenderer.invoke('dat:get-disappeared-games'),
   selectRomFolders: () => ipcRenderer.invoke('roms:select-folders'),
-  addRomsFolder: (folderPaths: string | string[]) => ipcRenderer.invoke('roms:add', folderPaths),
+  addRomsFolder: (folderPaths: string | string[], options?: { mode?: 'quick' | 'full' }) => ipcRenderer.invoke('roms:add', folderPaths, options),
+  cancelRomScan: () => ipcRenderer.invoke('roms:cancel-scan'),
+  forceCancelRomScan: () => ipcRenderer.invoke('roms:force-cancel-scan'),
   quickLoadDatabase: (datPath: string) => ipcRenderer.invoke('database:quick-load', datPath),
   
   // Nouvelles fonctions pour ouvrir/fermer une DB
@@ -192,6 +191,14 @@ contextBridge.exposeInMainWorld('api', {
 
   // Dossier cible effectif (avec sous-dossier système si mode multi-système)
   getEffectiveValidatedFolder: () => ipcRenderer.invoke('database:get-effective-validated-folder') as Promise<string>,
+  getDbFolderSettings: () => ipcRenderer.invoke('database:get-folder-settings'),
+  setDbFolderSettings: (input: {
+    targetFolder: string;
+    targetSystemSubfolder: boolean;
+    unmatchedFolder?: string;
+    incompleteFolder?: string;
+    tempFolder?: string;
+  }) => ipcRenderer.invoke('database:set-folder-settings', input),
 
   // Fonction pour supprimer un dossier
   removeFolder: (folderPath: string) => ipcRenderer.invoke('roms:remove-folder', folderPath),
@@ -234,6 +241,8 @@ contextBridge.exposeInMainWorld('api', {
   // ========================================
 
   runConsolidation: () => ipcRenderer.invoke('consolidation:run'),
+  cancelConsolidation: () => ipcRenderer.invoke('consolidation:cancel'),
+  forceCancelConsolidation: () => ipcRenderer.invoke('consolidation:force-cancel'),
   getConsolidationLog: () => ipcRenderer.invoke('consolidation:get-log'),
   onConsolidationProgress: (callback: (data: any) => void) => {
     const handler = (_event: any, data: any) => callback(data);
@@ -261,16 +270,36 @@ contextBridge.exposeInMainWorld('api', {
   resetSettings: () => ipcRenderer.invoke('settings:reset'),
 
   // ========================================
+  // API des profils de consolidation
+  // ========================================
+
+  profiles: {
+    /** Profils et identifiant du profil courant. */
+    list: () => ipcRenderer.invoke('profiles:list'),
+    /** Change le profil courant (refusé pendant une consolidation). */
+    setActive: (id: string) => ipcRenderer.invoke('profiles:set-active', id),
+    /** Enregistre l'ensemble des profils (fenêtre des paramètres). */
+    saveAll: (profiles: any[]) => ipcRenderer.invoke('profiles:save-all', profiles),
+    /** Valeurs par défaut d'un profil intégré (réinitialisation). */
+    getBuiltinDefaults: (id: string) => ipcRenderer.invoke('profiles:builtin-defaults', id),
+    /** Les profils ou le profil courant ont changé (toutes fenêtres). */
+    onChanged: (callback: () => void) => {
+      ipcRenderer.on('profiles:changed', () => callback());
+    }
+  },
+
+  // ========================================
   // API des clone lists (regroupement 1G1R)
   // ========================================
 
   cloneList: {
     /** État vis-à-vis de la base ouverte : fichier correspondant, application, dossier. */
     getStatus: () => ipcRenderer.invoke('clone-list:get-status'),
-    /** Sans argument : télécharge la liste correspondant au DAT ouvert. */
-    download: (fileName?: string) => ipcRenderer.invoke('clone-list:download', fileName),
-    /** Sans argument : applique la liste locale correspondant au DAT ouvert. */
-    apply: (fileName?: string) => ipcRenderer.invoke('clone-list:apply', fileName),
+    /**
+     * Synchronise (requête conditionnelle) puis applique la liste du DAT ouvert.
+     * `force` ignore l'ETag connu pour retélécharger dans tous les cas.
+     */
+    sync: (options?: { force?: boolean }) => ipcRenderer.invoke('clone-list:sync', options),
     /** Retire les regroupements posés par une liste. */
     clear: () => ipcRenderer.invoke('clone-list:clear'),
     listLocal: () => ipcRenderer.invoke('clone-list:list-local')
@@ -286,13 +315,45 @@ contextBridge.exposeInMainWorld('api', {
   downloadDat: (params: any) => ipcRenderer.invoke('dat-download:download', params),
   openDatPage: (params: any) => ipcRenderer.invoke('dat-download:open-page', params),
   openDatDownloadWindow: () => ipcRenderer.invoke('dat-download:open-window'),
-  selectDownloadFolder: () => ipcRenderer.invoke('dat-download:select-folder'),
+  selectDownloadFolder: (defaultPath?: string) => ipcRenderer.invoke('dat-download:select-folder', defaultPath),
+
+  // ========================================
+  // API chdman (version utilisée, mise à jour depuis les releases MAME)
+  // ========================================
+
+  chdman: {
+    getInfo: () => ipcRenderer.invoke('chdman:get-info'),
+    checkUpdate: () => ipcRenderer.invoke('chdman:check-update'),
+    update: () => ipcRenderer.invoke('chdman:update'),
+    deleteVersion: (tag: string) => ipcRenderer.invoke('chdman:delete-version', tag),
+    onUpdateProgress: (callback: (progress: { key: string; params?: Record<string, string | number> }) => void) => {
+      ipcRenderer.removeAllListeners('chdman:update-progress');
+      ipcRenderer.on('chdman:update-progress', (_event, progress) => callback(progress));
+    }
+  },
+
+  // ========================================
+  // API registre des systèmes (mise à jour Recalbox)
+  // ========================================
+
+  systems: {
+    getOverlay: () => ipcRenderer.invoke('systems:get-overlay'),
+    listRecalboxTags: () => ipcRenderer.invoke('systems:list-recalbox-tags'),
+    previewUpdate: (ref: string) => ipcRenderer.invoke('systems:preview-update', ref),
+    applyUpdate: (ref: string, systemIds: string[]) => ipcRenderer.invoke('systems:apply-update', ref, systemIds),
+    resetToBundled: () => ipcRenderer.invoke('systems:reset-to-bundled'),
+    setUserDatSources: (systemId: string, sources: { noIntroId?: string; redumpSlug?: string } | null) =>
+      ipcRenderer.invoke('systems:set-user-dat-sources', systemId, sources),
+    onUpdated: (callback: () => void) => {
+      ipcRenderer.on('systems:updated', () => callback());
+    }
+  },
   // Écran unifié de chargement DAT (primaire / complémentaire)
   getDatDownloadContext: () => ipcRenderer.invoke('dat-download:get-context'),
   selectLocalDat: () => ipcRenderer.invoke('dat-download:select-local-dat'),
   getDefaultDbPath: (datPath: string) => ipcRenderer.invoke('dat-download:get-default-db-path', datPath),
   browseDbPath: (suggestedPath?: string) => ipcRenderer.invoke('dat-download:browse-db-path', suggestedPath),
-  loadDatUnified: (params: { datPath: string; dbPath?: string; overwrite?: boolean }) =>
+  loadDatUnified: (params: { datPath: string; dbPath?: string; overwrite?: boolean; folders?: any }) =>
     ipcRenderer.invoke('dat-download:load', params),
   onDatDownloadLoaded: (callback: (payload: any) => void) => {
     const listener = (_event: any, payload: any) => callback(payload);
@@ -307,6 +368,7 @@ contextBridge.exposeInMainWorld('api', {
   downloadRom: (gameIds: number[]) => ipcRenderer.invoke('rom-download:start', gameIds),
   downloadAllMissingRoms: () => ipcRenderer.invoke('rom-download:start-all-missing'),
   cancelRomDownload: () => ipcRenderer.invoke('rom-download:cancel'),
+  forceCancelRomDownload: () => ipcRenderer.invoke('rom-download:force-cancel'),
   onRomDownloadProgress: (callback: (data: any) => void) => {
     const handler = (_event: any, data: any) => callback(data);
     ipcRenderer.on('rom-download-progress', handler);

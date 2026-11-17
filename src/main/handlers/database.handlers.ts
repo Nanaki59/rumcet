@@ -2,9 +2,16 @@
 import { IpcMain, dialog, BrowserWindow, app } from 'electron';
 import path from 'path';
 import fs from 'fs/promises';
-import { initDatabase, getMetadata, setMetadata } from '../../database/init.js';
+import { initDatabase, getMetadata, setMetadata, Database } from '../../database/init.js';
 import { databaseService } from '../services/database.service.js';
-import { settingsManager, getEffectiveValidatedRomsFolder } from '../../helpers/settingsManager.js';
+import {
+  settingsManager,
+  getEffectiveValidatedRomsFolder,
+  DB_FOLDER_METADATA_KEYS,
+  loadDbFolderSettings,
+  resolveEffectiveFolder,
+  EMPTY_DB_FOLDER_SETTINGS
+} from '../../helpers/settingsManager.js';
 import { detectSystemFromDatName } from '../../config/systems.js';
 
 export interface CreateDatabaseResult {
@@ -100,6 +107,50 @@ export async function createDatabaseAndLoadDat(datPath: string, dbPath: string):
       url: datUrl
     }
   };
+}
+
+/** Dossiers d'une base tels que saisis par l'utilisateur (vide = paramètre global). */
+export interface DbFolderInput {
+  targetFolder: string;
+  targetSystemSubfolder: boolean;
+  unmatchedFolder?: string;
+  incompleteFolder?: string;
+  tempFolder?: string;
+}
+
+/**
+ * Enregistre les dossiers propres à une base dans ses métadonnées et retourne
+ * le dossier cible effectif (avant/après). `target_folder` reçoit le chemin effectif
+ * (affichage de la sidebar, rétrocompatibilité).
+ */
+export async function saveDbFolderSettings(
+  database: Database,
+  input: DbFolderInput
+): Promise<{ previousTarget: string; target: string }> {
+  const systemId = await getMetadata(database, 'system_id');
+  const previousTarget = resolveEffectiveFolder('validatedRomsFolder', await loadDbFolderSettings(database), systemId);
+
+  const setOrClear = async (key: string, value: string | undefined) => {
+    const trimmed = (value || '').trim();
+    if (trimmed) await setMetadata(database, key, trimmed);
+    else await database.run('DELETE FROM metadata WHERE key = ?', [key]);
+  };
+  await setOrClear('target_folder_base', input.targetFolder);
+  await setMetadata(database, 'target_system_subfolder', input.targetSystemSubfolder ? '1' : '0');
+  await setOrClear('unmatched_folder', input.unmatchedFolder);
+  await setOrClear('incomplete_folder', input.incompleteFolder);
+  await setOrClear('temp_folder', input.tempFolder);
+
+  const dbFolders = await loadDbFolderSettings(database);
+  // Sans dossier cible saisi, l'ancien `target_folder` ne doit pas masquer le paramètre global
+  const target = resolveEffectiveFolder('validatedRomsFolder', { ...dbFolders, targetFolderLegacy: null }, systemId);
+  await setOrClear('target_folder', target);
+  if (target) await fs.mkdir(target, { recursive: true });
+
+  if (databaseService.getDatabase() === database) {
+    await databaseService.refreshFolders();
+  }
+  return { previousTarget, target };
 }
 
 export function registerDatabaseHandlers(ipcMain: IpcMain, mainWindow: BrowserWindow) {
@@ -239,6 +290,47 @@ export function registerDatabaseHandlers(ipcMain: IpcMain, mainWindow: BrowserWi
     if (key === 'system_id') {
       settingsManager.setActiveSystemId(value || null);
     }
+    if (DB_FOLDER_METADATA_KEYS.includes(key)) {
+      await databaseService.refreshFolders();
+    }
+  });
+
+  // Dossiers de la base active (valeurs saisies + effectives) et paramètres globaux.
+  // Sans base ouverte, seuls les paramètres globaux sont renseignés (écran de chargement DAT).
+  ipcMain.handle('database:get-folder-settings', async () => {
+    const settings = settingsManager.getAll();
+    const database = databaseService.getDatabase();
+    const dbFolders = database ? await loadDbFolderSettings(database) : { ...EMPTY_DB_FOLDER_SETTINGS };
+    const systemId = database ? await getMetadata(database, 'system_id') : null;
+    return {
+      dbOpen: !!database,
+      systemId,
+      // Valeur affichée dans le champ « Dossier cible » : le dossier saisi pour cette
+      // base, à défaut le dossier cible courant (bases antérieures), sinon le paramètre global.
+      targetFolder: dbFolders.targetFolderBase || dbFolders.targetFolderLegacy || settings.validatedRomsFolder || '',
+      targetSystemSubfolder: dbFolders.targetFolderBase
+        ? (dbFolders.systemSubfolder ?? !!settings.validatedRomsMultiSystem)
+        : (dbFolders.targetFolderLegacy ? false : !!settings.validatedRomsMultiSystem),
+      unmatchedFolder: dbFolders.unmatchedFolder || '',
+      incompleteFolder: dbFolders.incompleteFolder || '',
+      tempFolder: dbFolders.tempFolder || '',
+      effectiveTarget: resolveEffectiveFolder('validatedRomsFolder', dbFolders, systemId),
+      effectiveUnmatched: resolveEffectiveFolder('unmatchedRomsFolder', dbFolders, systemId),
+      globals: {
+        validatedRomsFolder: settings.validatedRomsFolder || '',
+        validatedRomsMultiSystem: !!settings.validatedRomsMultiSystem,
+        unmatchedRomsFolder: settings.unmatchedRomsFolder || '',
+        incompleteRomsFolder: settings.incompleteRomsFolder || '',
+        tempExtractionFolder: settings.tempExtractionFolder || ''
+      }
+    };
+  });
+
+  // Enregistre les dossiers de la base active ; retourne l'ancien et le nouveau dossier cible effectif
+  ipcMain.handle('database:set-folder-settings', async (_event, input: DbFolderInput) => {
+    const database = databaseService.getDatabase();
+    if (!database) throw new Error('Aucune base de données active.');
+    return saveDbFolderSettings(database, input);
   });
 
   // Retourne le dossier cible effectif (avec sous-dossier système si mode multi-système)
@@ -329,7 +421,8 @@ async function getDBInfo(database: any) {
         folder_path,
         (SELECT COUNT(*) FROM scanned_files WHERE folder_id IN 
           (SELECT id FROM scanned_folders WHERE folder_path LIKE sf.folder_path || '%')
-        ) as file_count
+        ) as file_count,
+        scan_status
       FROM scanned_folders sf
       WHERE is_root = 1`
     );
@@ -347,7 +440,8 @@ async function getDBInfo(database: any) {
       hasMatching: hasMatching,
       folders: foldersResult.map(f => ({
         path: f.folder_path,
-        fileCount: f.file_count
+        fileCount: f.file_count,
+        scanStatus: f.scan_status || 'complete'
       })),
       datInfo: datName ? {
         name: datName,

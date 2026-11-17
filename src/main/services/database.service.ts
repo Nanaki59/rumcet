@@ -1,5 +1,6 @@
 // src/main/services/database.service.ts
 import { Database } from '../../database/init.js';
+import { refreshActiveDbFolders } from '../../helpers/settingsManager.js';
 
 /**
  * Service singleton pour gérer la base de données courante
@@ -41,6 +42,13 @@ export class DatabaseService {
   // Setters
   setDatabase(db: Database | null): void {
     this.currentDatabase = db;
+    // Dossiers propres à la base (cible, non-référencées…) pour les composants synchrones
+    refreshActiveDbFolders(db).catch(err => console.error('Unable to load the database folders:', err));
+  }
+
+  /** À appeler après une modification des métadonnées de dossiers de la base active. */
+  async refreshFolders(): Promise<void> {
+    await refreshActiveDbFolders(this.currentDatabase);
   }
 
   setDbPath(path: string | null): void {
@@ -63,10 +71,12 @@ export class DatabaseService {
       this.currentDbPath = null;
       this.currentDatPath = null;
       this.isDatLoadedInDb = false;
+      refreshActiveDbFolders(null).catch(() => { /* sans base : rien à lire */ });
     }
   }
 
   reset(): void {
+    refreshActiveDbFolders(null).catch(() => { /* sans base : rien à lire */ });
     this.currentDatabase = null;
     this.currentDbPath = null;
     this.currentDatPath = null;

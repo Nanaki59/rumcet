@@ -15,47 +15,40 @@
 
 // scripts/generateSystems.mjs
 //
-// Génère src/config/systems.ts en agrégant 3 sources :
+// Génère src/config/systemsData.ts (données embarquées du registre des systèmes)
+// en agrégant 3 sources :
 //   1. Recalbox (system.ini) — fullname, manufacturer, type, releaseDate, formats
 //      https://gitlab.com/recalbox/recalbox/.../package/recalbox-romfs2/systems/
-//   2. no-intro DAT-o-MATIC — IDs des DAT par système
+//   2. no-intro DAT-o-MATIC — IDs des DAT par système (UNE requête, User-Agent navigateur)
 //      https://datomatic.no-intro.org/index.php?page=download
 //   3. redump.org — slugs des DAT par système
 //      https://redump.org/downloads/
 //
-// Les patterns de détection (systemId à partir du nom du DAT) et les
-// mappings nom-source → systemId sont maintenus à la main dans ce fichier.
+// Le parsing Recalbox et l'accès GitLab sont partagés avec la mise à jour des
+// systèmes à la demande dans l'application (src/shared/recalboxSystems.ts,
+// src/helpers/recalboxGitlab.ts) : le script consomme leur sortie compilée.
+// DAT-o-MATIC n'est interrogé QUE par ce script de build, jamais par l'application.
 //
-// Usage : npm run sync-systems
+// Les patterns de détection (systemId à partir du nom du DAT), les formats bruts
+// des DATs, les profils et les mappings nom-source → systemId sont maintenus à la
+// main dans ce fichier.
+//
+// Usage : npm run sync-systems [-- --ref <tag Recalbox>]   (défaut : master)
 
 import fs from 'node:fs/promises';
 import path from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
-const OUTPUT_PATH = path.join(__dirname, '..', 'src', 'config', 'systems.ts');
+const ROOT = path.join(__dirname, '..');
+const OUTPUT_PATH = path.join(ROOT, 'src', 'config', 'systemsData.ts');
+// En-tête de licence lu depuis le fichier (et non recopié ici) : un outil d'insertion
+// d'en-têtes avait corrompu ce script en matchant le commentaire de licence du template.
+const LICENSE_HEADER_PATH = path.join(ROOT, 'LICENSE_HEADER');
 
-// ============================================================
-// SOURCE 1 : RECALBOX
-// ============================================================
-
-const RECALBOX_PROJECT_ID = 'recalbox%2Frecalbox';
-const RECALBOX_SYSTEMS_PATH = 'package/recalbox-romfs2/systems';
-const GITLAB_API = 'https://gitlab.com/api/v4';
-
-// Systèmes à exclure (entrées Recalbox qui ne sont pas de vrais systèmes de jeu)
-const EXCLUDED_RECALBOX_SYSTEMS = new Set([
-  '.templates',
-  '2048',
-  '240ptestsuite'
-]);
-
-// Types Recalbox conservés (les autres comme 'port', 'engine', 'virtual',
-// 'fantasy' sont des ports de jeux ou consoles fantasy non ROM-based)
-const KEPT_TYPES = new Set(['console', 'computer', 'handheld', 'arcade']);
-
-// Formats cibles pris en compte par RUMCET
-const TARGET_FORMATS = ['chd', '7z', 'zip'];
+// Le script consomme la sortie compilée : pathToFileURL est indispensable sous Windows
+// (une URL « file:// » construite à la main perd la lettre de lecteur).
+const distUrl = (...segments) => pathToFileURL(path.join(ROOT, 'dist', 'src', ...segments)).href;
 
 // ============================================================
 // MAPPINGS MANUELS (à compléter au besoin)
@@ -403,6 +396,16 @@ const DAT_SOURCE_NAMES = {
   palm:          { nointro: 'Mobile - Palm OS',                    redump: 'Palm OS' }
 };
 
+// Profils de règles de matching/consolidation explicites (voir src/helpers/systemProfiles).
+// Absent : inféré (arcade si type='arcade', sinon 'cartridge').
+const SYSTEM_PROFILES = {
+  dreamcast: 'disc',
+  pcenginecd: 'disc',
+  psx: 'disc',
+  saturn: 'disc',
+  segacd: 'disc'
+};
+
 // ============================================================
 // HTTP
 // ============================================================
@@ -419,66 +422,6 @@ async function httpGet(url) {
     throw new Error(`HTTP ${res.status} pour ${url}`);
   }
   return res.text();
-}
-
-// ============================================================
-// PARSING — RECALBOX system.ini
-// ============================================================
-
-function parseSystemIni(content) {
-  const result = {
-    fullname: null,
-    manufacturer: null,
-    type: null,
-    releaseDate: null,
-    extensionsPerCore: []
-  };
-
-  const scalarKeys = {
-    fullname: 'fullname',
-    manufacturer: 'manufacturer',
-    type: 'type',
-    releaseDate: 'release.date'
-  };
-
-  for (const [resultKey, iniKey] of Object.entries(scalarKeys)) {
-    const escaped = iniKey.replace(/\./g, '\\.');
-    const re = new RegExp(`^\\s*${escaped}\\s*=\\s*"?([^"\\r\\n]*?)"?\\s*$`, 'm');
-    const m = content.match(re);
-    if (m) result[resultKey] = m[1].trim();
-  }
-
-  // Extensions par core (une ligne extensions = "..." par section [emulator.X])
-  // Les tokens ont la forme ".ext" ou ".ext!" (suffixe ! = archive front-end)
-  const extRe = /^\s*extensions\s*=\s*"([^"\r\n]+)"\s*$/gm;
-  let m;
-  while ((m = extRe.exec(content)) !== null) {
-    const tokens = m[1].split(/\s+/).map(e => e.trim()).filter(Boolean);
-    const exts = new Set();
-    for (const tok of tokens) {
-      if (tok.includes('=') || tok.startsWith('*')) continue;
-      const norm = tok.replace(/^\./, '').replace(/!$/, '').toLowerCase();
-      if (/^[a-z0-9]+$/.test(norm)) exts.add(norm);
-    }
-    if (exts.size > 0) result.extensionsPerCore.push(exts);
-  }
-
-  return result;
-}
-
-function classifyFormats(extensionsPerCore) {
-  if (extensionsPerCore.length === 0) {
-    return { supportedFormats: [], warningFormats: [], unsupportedFormats: [...TARGET_FORMATS] };
-  }
-
-  const supported = [], warning = [], unsupported = [];
-  for (const fmt of TARGET_FORMATS) {
-    const presence = extensionsPerCore.map(s => s.has(fmt));
-    if (presence.every(p => p)) supported.push(fmt);
-    else if (presence.some(p => p)) warning.push(fmt);
-    else unsupported.push(fmt);
-  }
-  return { supportedFormats: supported, warningFormats: warning, unsupportedFormats: unsupported };
 }
 
 // ============================================================
@@ -530,66 +473,6 @@ function parseRedumpPage(html) {
 }
 
 // ============================================================
-// FETCH RECALBOX
-// ============================================================
-
-async function fetchRecalboxSystemList() {
-  const url = `${GITLAB_API}/projects/${RECALBOX_PROJECT_ID}/repository/tree?path=${encodeURIComponent(RECALBOX_SYSTEMS_PATH)}&per_page=300`;
-  const json = await httpGet(url);
-  const tree = JSON.parse(json);
-  return tree
-    .filter(e => e.type === 'tree')
-    .map(e => e.name)
-    .filter(name => !EXCLUDED_RECALBOX_SYSTEMS.has(name))
-    .sort();
-}
-
-async function fetchSystemIni(systemId) {
-  const filePath = `${RECALBOX_SYSTEMS_PATH}/${systemId}/system.ini`;
-  const encoded = encodeURIComponent(filePath);
-  const url = `${GITLAB_API}/projects/${RECALBOX_PROJECT_ID}/repository/files/${encoded}/raw?ref=master`;
-  return httpGet(url);
-}
-
-async function processRecalboxSystem(systemId) {
-  try {
-    const content = await fetchSystemIni(systemId);
-    const parsed = parseSystemIni(content);
-    if (parsed.type && !KEPT_TYPES.has(parsed.type)) {
-      return { skipped: true, reason: `type=${parsed.type}` };
-    }
-
-    // Calcul des raw formats
-    const datRawFormats = DAT_RAW_FORMATS[systemId] ?? [];
-    const allRawExtensions = new Set();
-    for (const coreExts of parsed.extensionsPerCore) {
-      for (const ext of coreExts) {
-        // Exclure les containers d'archive (gérés séparément)
-        if (TARGET_FORMATS.includes(ext)) continue;
-        allRawExtensions.add(ext);
-      }
-    }
-    // extraRawFormats = tout ce que les émulateurs acceptent, moins les containers,
-    // moins les datRawFormats (pour éviter le doublon)
-    const datRawSet = new Set(datRawFormats);
-    const extraRawFormats = [...allRawExtensions].filter(e => !datRawSet.has(e)).sort();
-
-    return {
-      systemId,
-      fullname: parsed.fullname || systemId,
-      manufacturer: parsed.manufacturer,
-      type: parsed.type,
-      releaseDate: parsed.releaseDate,
-      ...classifyFormats(parsed.extensionsPerCore),
-      datRawFormats,
-      extraRawFormats
-    };
-  } catch (err) {
-    return { skipped: true, reason: `fetch error: ${err.message}` };
-  }
-}
-
-// ============================================================
 // GÉNÉRATION DU FICHIER TS
 // ============================================================
 
@@ -617,11 +500,14 @@ function formatDatSources(noIntroId, redumpSlug) {
   return `{ ${parts.join(', ')}, recommended: ${recommended} }`;
 }
 
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU Affero General Public License for more details.
+/**
+ * Contenu de src/config/systemsData.ts.
+ * @param systems entrées { systemId, fullname, manufacturer, type, releaseDate,
+ *   supportedFormats, warningFormats, unsupportedFormats, datRawFormats, extraRawFormats }
+ * @param datSourcesById systemId → { nointroId, redumpSlug }
  */
+export function generateDataFile(licenseHeader, systems, datSourcesById, datDetectionOrder) {
+  const header = `${licenseHeader.trimEnd()}
 
 // ============================================================
 // FICHIER GÉNÉRÉ AUTOMATIQUEMENT — NE PAS ÉDITER MANUELLEMENT
@@ -630,48 +516,20 @@ function formatDatSources(noIntroId, redumpSlug) {
 //   - Recalbox : https://gitlab.com/recalbox/recalbox/
 //   - no-intro : https://datomatic.no-intro.org/index.php?page=download
 //   - redump  : https://redump.org/downloads/
+// Le registre (types, surcharge Recalbox, détection) vit dans systems.ts.
 // ============================================================
 
-import type { ArchiveFormat } from '../helpers/settingsManager.js';
+import type { SystemDefinition } from './systems.js';
 
-export interface DatSourceConfig {
-  'no-intro'?: { id: string };
-  'redump'?: { slug: string };
-  recommended?: 'no-intro' | 'redump';
-}
-
-export interface SystemDefinition {
-  systemId: string;
-  fullname: string;
-  manufacturer: string | null;
-  type: string | null;
-  releaseDate: string | null;
-  /** Formats archive supportés par tous les cores de l'émulateur. */
-  supportedFormats: ArchiveFormat[];
-  /** Formats archive supportés par certains cores seulement (à éviter si possible). */
-  warningFormats: ArchiveFormat[];
-  /** Formats archive non supportés par les cores. */
-  unsupportedFormats: ArchiveFormat[];
-  /** Extensions canoniques listées dans les DATs (ex: 'bin', 'cue' pour PSX). */
-  datRawFormats: string[];
-  /** Extensions supplémentaires acceptées par les émulateurs au-delà des DATs (ex: 'iso', 'pbp', 'ecm' pour PSX). */
-  extraRawFormats: string[];
-  /** Patterns regex testés contre le <header><name> du DAT pour identifier le système. */
-  datNamePatterns: RegExp[];
-  /** Sources publiques de DAT pour ce système. */
-  datSources?: DatSourceConfig;
-}
-
-export const SYSTEMS: SystemDefinition[] = [
+export const BUNDLED_SYSTEMS: SystemDefinition[] = [
 `;
 
   const entries = systems.map(s => {
     const patterns = SYSTEM_DAT_PATTERNS[s.systemId] ?? [];
-    const info = enrichedDatSources[s.systemId];
-    const noIntroId = info?.nointroId ?? null;
-    const redumpSlug = info?.redumpSlug ?? null;
+    const info = datSourcesById[s.systemId];
+    const profile = SYSTEM_PROFILES[s.systemId];
     return `  {
-    systemId: '${s.systemId}',
+    systemId: '${s.systemId}',${profile ? `\n    profile: '${profile}',` : ''}
     fullname: ${jsonStringNullable(s.fullname)},
     manufacturer: ${jsonStringNullable(s.manufacturer)},
     type: ${jsonStringNullable(s.type)},
@@ -682,7 +540,7 @@ export const SYSTEMS: SystemDefinition[] = [
     datRawFormats: ${formatStringArray(s.datRawFormats)},
     extraRawFormats: ${formatStringArray(s.extraRawFormats)},
     datNamePatterns: ${formatRegexArray(patterns)},
-    datSources: ${formatDatSources(noIntroId, redumpSlug)}
+    datSources: ${formatDatSources(info?.nointroId ?? null, info?.redumpSlug ?? null)}
   }`;
   }).join(',\n');
 
@@ -690,51 +548,81 @@ export const SYSTEMS: SystemDefinition[] = [
 ];
 
 // Ordre de détection (du plus spécifique au plus général)
-const DAT_DETECTION_ORDER: string[] = ${JSON.stringify(datDetectionOrder, null, 2).split('\n').map((l, i) => i === 0 ? l : '  ' + l).join('\n')};
-
-const SYSTEMS_BY_ID = new Map<string, SystemDefinition>(SYSTEMS.map(s => [s.systemId, s]));
-
-/** Détecte un système à partir du nom du DAT (header <name>). Retourne null si aucun match. */
-export function detectSystemFromDatName(datName: string): SystemDefinition | null {
-  for (const systemId of DAT_DETECTION_ORDER) {
-    const sys = SYSTEMS_BY_ID.get(systemId);
-    if (!sys) continue;
-    for (const pattern of sys.datNamePatterns) {
-      if (pattern.test(datName)) return sys;
-    }
-  }
-  return null;
-}
-
-/** Retourne un système par son systemId, ou null s'il n'existe pas. */
-export function getSystemById(systemId: string): SystemDefinition | null {
-  return SYSTEMS_BY_ID.get(systemId) ?? null;
-}
-
-/** Retourne tous les systèmes connus. */
-export function getAllSystems(): SystemDefinition[] {
-  return SYSTEMS;
-}
-
-/** Groupe les systèmes par manufacturer puis par type (utile pour la modale de sélection). */
-export function getSystemsGrouped(): Map<string, Map<string, SystemDefinition[]>> {
-  const grouped = new Map<string, Map<string, SystemDefinition[]>>();
-  for (const sys of SYSTEMS) {
-    const manufacturer = sys.manufacturer ?? 'Autres';
-    const type = sys.type ?? 'autres';
-    if (!grouped.has(manufacturer)) grouped.set(manufacturer, new Map());
-    const byType = grouped.get(manufacturer)!;
-    if (!byType.has(type)) byType.set(type, []);
-    byType.get(type)!.push(sys);
-  }
-  return grouped;
-}
+export const DAT_DETECTION_ORDER: string[] = ${JSON.stringify(datDetectionOrder, null, 2).split('\n').map((l, i) => i === 0 ? l : '  ' + l).join('\n')};
 `;
 
   return header + entries + footer;
 }
 
-main().catch(err => {
-  console.error('Erreur :', err);
-  process.exit(1);
-});
+// ============================================================
+// MAIN
+// ============================================================
+
+function parseArgs(argv) {
+  const refIndex = argv.indexOf('--ref');
+  return { ref: refIndex >= 0 && argv[refIndex + 1] ? argv[refIndex + 1] : 'master' };
+}
+
+async function main() {
+  const { ref } = parseArgs(process.argv.slice(2));
+
+  const [{ computeExtraRawFormats }, { fetchRecalboxSystems }] = await Promise.all([
+    import(distUrl('shared', 'recalboxSystems.js')),
+    import(distUrl('helpers', 'recalboxGitlab.js'))
+  ]).catch(() => {
+    console.error('❌ dist/ introuvable. Lance « npm run build » avant ce script (npm run sync-systems le fait).');
+    process.exit(1);
+  });
+
+  // 1. Recalbox
+  console.log(`Recalbox (${ref}) : récupération des system.ini...`);
+  const recalbox = await fetchRecalboxSystems(ref, (done, total) => console.log(`  ${done}/${total}`));
+  const systems = recalbox.map(data => {
+    const datRawFormats = DAT_RAW_FORMATS[data.systemId] ?? [];
+    return {
+      ...data,
+      datRawFormats,
+      extraRawFormats: computeExtraRawFormats(data.emulatorRawFormats, datRawFormats)
+    };
+  });
+  console.log(`  ${systems.length} systèmes conservés`);
+  const knownIds = new Set(systems.map(s => s.systemId));
+  for (const s of systems) {
+    if (!DAT_RAW_FORMATS[s.systemId] && s.type !== 'arcade') console.warn(`  ⚠️ ${s.systemId} : pas d'entrée DAT_RAW_FORMATS`);
+    if (!SYSTEM_DAT_PATTERNS[s.systemId]) console.warn(`  ⚠️ ${s.systemId} : pas de pattern de détection DAT`);
+  }
+
+  // 2 & 3. Sources DAT (une requête chacune — erreur fatale plutôt que de perdre les sources)
+  console.log('no-intro : récupération de la page de téléchargement...');
+  const noIntroByName = parseNoIntroPage(await httpGet('https://datomatic.no-intro.org/index.php?page=download'));
+  console.log(`  ${noIntroByName.size} DATs`);
+  console.log('redump : récupération de la page de téléchargement...');
+  const redumpByName = parseRedumpPage(await httpGet('https://redump.org/downloads/'));
+  console.log(`  ${redumpByName.size} systèmes`);
+  if (noIntroByName.size === 0 || redumpByName.size === 0) {
+    throw new Error('Page no-intro ou redump vide (format changé ou accès refusé) : génération annulée.');
+  }
+
+  const datSourcesById = {};
+  for (const [systemId, names] of Object.entries(DAT_SOURCE_NAMES)) {
+    if (!knownIds.has(systemId)) continue;
+    const nointroId = names.nointro ? noIntroByName.get(names.nointro) ?? null : null;
+    const redumpSlug = names.redump ? redumpByName.get(names.redump) ?? null : null;
+    if (names.nointro && !nointroId) console.warn(`  ⚠️ no-intro : « ${names.nointro} » introuvable (${systemId})`);
+    if (names.redump && !redumpSlug) console.warn(`  ⚠️ redump : « ${names.redump} » introuvable (${systemId})`);
+    datSourcesById[systemId] = { nointroId, redumpSlug };
+  }
+
+  const licenseHeader = await fs.readFile(LICENSE_HEADER_PATH, 'utf8');
+  const content = generateDataFile(licenseHeader.replace(/\r\n/g, '\n'), systems, datSourcesById, DAT_DETECTION_ORDER);
+  await fs.writeFile(OUTPUT_PATH, content, 'utf8');
+  console.log(`✅ ${path.relative(ROOT, OUTPUT_PATH)} généré (${systems.length} systèmes, Recalbox ${ref})`);
+}
+
+// Exécuté seulement en ligne de commande (importable pour vérifier le format)
+if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
+  main().catch(err => {
+    console.error('Erreur :', err);
+    process.exit(1);
+  });
+}

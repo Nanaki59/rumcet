@@ -35,6 +35,19 @@ export async function sendLogToRenderer(
 }
 
 /**
+ * Journalise un message (clé i18n) dans le fichier de log uniquement, en anglais :
+ * détails techniques utiles au support mais sans intérêt pour le panneau.
+ */
+export async function writeLogFile(
+  severity: 'info' | 'warning' | 'error',
+  context: string,
+  key: string,
+  params?: MessageParams
+): Promise<void> {
+  await logManager.writeFormatted(severity, context, tEn(key, params));
+}
+
+/**
  * Log une erreur avec stack trace
  */
 export async function logError(

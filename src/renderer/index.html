@@ -5,6 +5,11 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>RUMCET - ROM's Ultimate Manager, Conversion and Editor Tool</title>
+  <!-- Widget de listes de priorité, partagé avec la fenêtre des paramètres.
+       Utilisé ici par les priorités 1G1R de la modale de sélection automatique. -->
+  <link rel="stylesheet" href="priorityList.css">
+  <link rel="stylesheet" href="dbFolders.css">
+  <link rel="stylesheet" href="scanModal.css">
   <style>
     * {
       box-sizing: border-box;
@@ -114,6 +119,31 @@
       border-right: none;
       margin-right: 0;
       padding-right: 0;
+    }
+
+    .header .workflow-profile {
+      margin-left: auto;
+      gap: 8px;
+    }
+
+    .workflow-profile label {
+      font-size: 13px;
+      color: #bdc3c7;
+      white-space: nowrap;
+    }
+
+    .workflow-profile select {
+      padding: 8px 10px;
+      border-radius: 4px;
+      border: 1px solid #4a6278;
+      background: #34495e;
+      color: white;
+      font-size: 13px;
+      max-width: 220px;
+    }
+
+    .workflow-profile select:disabled {
+      opacity: 0.6;
     }
 
     .workflow-arrow {
@@ -1213,14 +1243,47 @@
 
     .asm-custom-create {
       display: flex;
-      align-items: center;
+      flex-direction: column;
+      gap: 6px;
+      padding: 10px;
+      background: #f8f9fa;
+      border: 1px solid #e9ecef;
+      border-radius: 6px;
+    }
+
+    .asm-custom-create-title {
+      font-size: 12px;
+      font-weight: 600;
+      color: #2c3e50;
+    }
+
+    .asm-custom-create-fields {
+      display: flex;
+      align-items: flex-end;
       gap: 8px;
       flex-wrap: wrap;
     }
 
-    .asm-custom-create input[type="text"] {
+    /* Chaque champ porte son intitulé au-dessus : un placeholder disparaît à la
+       saisie, et ne dit donc plus à quoi sert le champ une fois rempli. */
+    .asm-field {
+      display: flex;
+      flex-direction: column;
+      gap: 3px;
+    }
+
+    .asm-field-name {
       flex: 1;
       min-width: 160px;
+    }
+
+    .asm-field-label {
+      font-size: 11px;
+      color: #7f8c8d;
+    }
+
+    .asm-custom-create input[type="text"] {
+      width: 100%;
       padding: 6px 10px;
       border: 1px solid #ced4da;
       border-radius: 4px;
@@ -1236,17 +1299,193 @@
       font-family: inherit;
     }
 
+    /* Pas de max-height ni d'overflow ici : le corps de la modale défile déjà,
+       un second défilement imbriqué rendrait la liste pénible à parcourir. */
     .asm-rules {
       display: flex;
       flex-direction: column;
       gap: 6px;
-      max-height: 300px;
-      overflow-y: auto;
       border: 1px solid #dee2e6;
       border-radius: 6px;
       padding: 8px;
       background: #fafbfc;
       min-height: 46px;
+    }
+
+    /* ===== Structure de la modale : en-tête et pied fixes, corps défilant ===== */
+    .asm-modal-box {
+      background: #fff;
+      border-radius: 8px;
+      max-width: 940px;
+      width: 94%;
+      max-height: 88vh;
+      display: flex;
+      flex-direction: column;
+      box-shadow: 0 8px 32px rgba(0, 0, 0, 0.25);
+      overflow: hidden;
+    }
+
+    .asm-modal-head {
+      padding: 18px 20px 12px;
+      border-bottom: 1px solid #e9ecef;
+    }
+
+    /* Le corps est la SEULE zone défilante. */
+    .asm-modal-body {
+      flex: 1;
+      overflow-y: auto;
+      padding: 14px 20px;
+      display: flex;
+      flex-direction: column;
+      gap: 14px;
+      min-height: 0;
+    }
+
+    /* Le pied reste visible : l'aperçu est le retour visuel du réglage en cours,
+       il ne doit jamais défiler hors de vue pendant qu'on modifie les priorités. */
+    .asm-modal-foot {
+      padding: 12px 20px 16px;
+      border-top: 1px solid #e9ecef;
+      background: #fff;
+      display: flex;
+      flex-direction: column;
+      gap: 10px;
+    }
+
+    /* ===== Groupes repliables ===== */
+    /* flex: 0 0 auto est INDISPENSABLE : le corps de la modale est un conteneur
+       flex, dont les enfants se compriment par défaut au lieu de déborder. Les
+       groupes étaient donc rétrécis puis rognés par leur overflow:hidden, sans
+       qu'aucune barre de défilement n'apparaisse — le contenu excédentaire
+       devenait purement inatteignable. */
+    .asm-group {
+      flex: 0 0 auto;
+      border: 1px solid #e1e5ea;
+      border-radius: 8px;
+      overflow: hidden;
+    }
+
+    .asm-group-head {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      padding: 10px 12px;
+      background: #f8f9fa;
+      border-bottom: 1px solid #e9ecef;
+    }
+
+    .asm-group-head h3 {
+      margin: 0;
+      font-size: 14px;
+      color: #2c3e50;
+    }
+
+    .asm-group-head .collapse-btn {
+      margin-left: auto;
+      color: #7f8c8d;
+    }
+
+    /* max-height: none écrase le plafond de 2000px hérité de .section-content, qui
+       tronquerait une longue liste de règles. Le repli devient instantané plutôt
+       qu'animé : un contenu inaccessible serait un prix bien plus élevé. */
+    .asm-group-body {
+      padding: 12px;
+      display: flex;
+      flex-direction: column;
+      gap: 10px;
+      max-height: none;
+    }
+
+    /* Le conteneur replié doit aussi perdre son padding, sinon il reste une bande. */
+    .asm-group-body.collapsed {
+      max-height: 0;
+      padding-top: 0;
+      padding-bottom: 0;
+    }
+
+    /* ===== Bloc 1G1R ===== */
+    .asm-ogor-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(230px, 1fr));
+      gap: 12px;
+    }
+
+    .asm-ogor-col > label {
+      display: block;
+      font-size: 12px;
+      font-weight: 600;
+      color: #34495e;
+      margin-bottom: 6px;
+    }
+
+    .asm-ogor-add {
+      display: flex;
+      gap: 6px;
+      margin-top: 6px;
+    }
+
+    .asm-ogor-add select {
+      flex: 1;
+      min-width: 0;
+      padding: 4px 6px;
+      border: 1px solid #ced4da;
+      border-radius: 4px;
+      font-size: 12px;
+    }
+
+    .asm-ogor-opts {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 6px 20px;
+      font-size: 13px;
+    }
+
+    .asm-ogor-opts label {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      cursor: pointer;
+    }
+
+    /* Barre « modèle du système », distincte des actions sur la base courante. */
+    .asm-model-bar {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      flex-wrap: wrap;
+      padding: 8px 10px;
+      background: #f8f9fa;
+      border: 1px solid #e9ecef;
+      border-radius: 6px;
+    }
+
+    .asm-model-group {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      flex-wrap: wrap;
+    }
+
+    .asm-model-label {
+      font-size: 12px;
+      font-weight: 600;
+      color: #5a6a7a;
+    }
+
+    .asm-model-bar select {
+      padding: 6px 8px;
+      border: 1px solid #ced4da;
+      border-radius: 4px;
+      font-size: 12px;
+      max-width: 220px;
+    }
+
+    .asm-model-hint {
+      font-size: 11px;
+      color: #95a5a6;
+      flex: 1;
+      min-width: 220px;
+      line-height: 1.4;
     }
 
     .asm-rules-empty {
@@ -1334,44 +1573,26 @@
     }
 
     .asm-ogor {
-      padding: 10px 12px;
+      padding: 8px 12px;
       background: #fdf6ec;
       border: 1px solid #f0d9b5;
       border-radius: 6px;
       display: flex;
-      flex-direction: column;
-      gap: 6px;
+      align-items: baseline;
+      flex-wrap: wrap;
+      gap: 4px 12px;
     }
 
     .asm-ogor-summary {
-      font-size: 12px;
+      font-size: 11px;
       color: #8a6d3b;
       font-family: monospace;
     }
 
-    .asm-ogor-hint {
-      font-size: 12px;
-      color: #95a5a6;
-    }
-
-    .asm-clonelist {
-      border-top: 1px solid #f0d9b5;
-      padding-top: 8px;
-      margin-top: 2px;
-      display: flex;
-      flex-direction: column;
-      gap: 6px;
-    }
-
-    .asm-clonelist-status {
-      font-size: 12px;
-      color: #8a6d3b;
-    }
-
-    .asm-clonelist-actions {
-      display: flex;
-      gap: 8px;
-      flex-wrap: wrap;
+    .context-menu-separator {
+      height: 1px;
+      background: #e1e5ea;
+      margin: 4px 0;
     }
 
     .asm-preview {
@@ -2336,6 +2557,11 @@
             🧹 4. Consolider
           </button>
         </div>
+        <!-- Profil de consolidation courant -->
+        <div class="workflow-group workflow-profile">
+          <label for="profile-select" data-i18n="index.profiles.label">⚙️ Profil :</label>
+          <select id="profile-select" data-i18n-title="index.profiles.title" title="Profil de consolidation utilisé (Paramètres → profils)"></select>
+        </div>
       </div>
     </div>
 
@@ -2540,13 +2766,28 @@
 
   <!-- Modale de sélection automatique par règles (Phase 10) -->
   <div id="auto-select-modal" style="display:none; position:fixed; inset:0; background:rgba(0,0,0,0.65); z-index:9998; align-items:center; justify-content:center;">
-    <div style="background:#fff; border-radius:8px; padding:20px; max-width:900px; width:94%; max-height:88vh; display:flex; flex-direction:column; gap:12px; box-shadow:0 8px 32px rgba(0,0,0,0.25);">
-      <h2 style="margin:0; color:#2c3e50; font-size:18px;" data-i18n="index.autoSelect.title">⚙️ Sélection automatique</h2>
-      <p style="margin:0; color:#7f8c8d; font-size:12px; line-height:1.5;" data-i18n-html="index.autoSelect.description">
-        Les règles sont appliquées <strong>de haut en bas</strong> — pour chaque jeu, la dernière règle
-        qui correspond l'emporte. Les BIOS, devices et jeux disparus ne sont pas affectés
-        (ils sont gérés automatiquement par la cascade de dépendances).
-      </p>
+    <div class="asm-modal-box">
+      <div class="asm-modal-head">
+        <h2 style="margin:0; color:#2c3e50; font-size:18px;" data-i18n="index.autoSelect.title">⚙️ Sélection automatique</h2>
+        <p style="margin:8px 0 0; color:#7f8c8d; font-size:12px; line-height:1.5;" data-i18n-html="index.autoSelect.description">
+          Les règles sont appliquées <strong>de haut en bas</strong> — pour chaque jeu, la dernière règle
+          qui correspond l'emporte. Les BIOS, devices et jeux disparus ne sont pas affectés
+          (ils sont gérés automatiquement par la cascade de dépendances).
+        </p>
+      </div>
+
+      <!-- Corps défilant : les deux groupes apparaissent dans l'ordre où ils
+           s'appliquent — les règles font office de pré-filtres du 1G1R. -->
+      <div class="asm-modal-body">
+
+      <div class="asm-group">
+        <div class="asm-group-head">
+          <h3 data-i18n="index.autoSelect.groupRules">1. Règles de sélection</h3>
+          <button class="collapse-btn" data-target="asm-group-rules" data-i18n-title="index.sidebar.collapseTitle" title="Replier/Déplier">
+            <span class="chevron">▲</span>
+          </button>
+        </div>
+        <div id="asm-group-rules" class="section-content asm-group-body">
 
       <div class="asm-row">
         <span class="asm-row-label" data-i18n="index.autoSelect.baseLabel">Partir de :</span>
@@ -2557,17 +2798,18 @@
 
       <div class="asm-row asm-presets">
         <span class="asm-row-label" data-i18n="index.autoSelect.presetsLabel">Modèles rapides :</span>
-        <!-- Communs / non-arcade -->
-        <button data-preset="no-proto" data-preset-scope="both" data-i18n="index.autoSelect.presetNoProto" data-i18n-title="index.autoSelect.presetNoProtoTitle" title="Ajoute des règles excluant les noms/descriptions contenant (Proto, (Beta, (Demo, (Sample">🚫 Proto/Beta/Demo</button>
-        <button data-preset="no-bios" data-preset-scope="nonarcade" data-i18n="index.autoSelect.presetNoBios" data-i18n-title="index.autoSelect.presetNoBiosTitle" title="Ajoute une règle excluant les entrées [BIOS] (convention No-Intro/Redump — les BIOS MAME sont déjà gérés par la cascade de dépendances)">🚫 BIOS</button>
-        <button data-preset="no-aftermarket-unl" data-preset-scope="nonarcade" data-i18n="index.autoSelect.presetNoAftermarket" data-i18n-title="index.autoSelect.presetNoAftermarketTitle" title="Ajoute des règles excluant les noms/descriptions contenant (Aftermarket) et (Unl) (convention No-Intro/Redump)">🚫 Aftermarket/Unl</button>
-        <button data-preset="complete-only" data-preset-scope="both" data-i18n="index.autoSelect.presetCompleteOnly" data-i18n-title="index.autoSelect.presetCompleteOnlyTitle" title="Ajoute une règle excluant les jeux non complets au matching">✅ Complets uniquement</button>
+        <!-- Visibilité par famille de DAT (no-intro, redump, arcade, other) -->
+        <button data-preset="games-only" data-preset-families="no-intro redump arcade other" data-i18n="index.autoSelect.presetGamesOnly" data-i18n-title="index.autoSelect.presetGamesOnlyTitle" title="Ne garde que les jeux (règles adaptées au type de DAT)">🎮 Jeux uniquement</button>
+        <button data-preset="no-proto" data-preset-families="no-intro redump arcade other" data-i18n="index.autoSelect.presetNoProto" data-i18n-title="index.autoSelect.presetNoProtoTitle" title="Ajoute une règle excluant les jeux dont le statut de développement n'est pas « Production »">🚫 Proto/Beta/Demo</button>
+        <button data-preset="no-bios" data-preset-families="no-intro other" data-i18n="index.autoSelect.presetNoBios" data-i18n-title="index.autoSelect.presetNoBiosTitle" title="Ajoute une règle excluant les entrées [BIOS]">🚫 BIOS</button>
+        <button data-preset="no-aftermarket-unl" data-preset-families="no-intro redump other" data-i18n="index.autoSelect.presetNoAftermarket" data-i18n-title="index.autoSelect.presetNoAftermarketTitle" title="Ajoute des règles excluant les noms/descriptions contenant (Aftermarket) et (Unl)">🚫 Aftermarket/Unl</button>
+        <button data-preset="complete-only" data-preset-families="no-intro redump arcade other" data-i18n="index.autoSelect.presetCompleteOnly" data-i18n-title="index.autoSelect.presetCompleteOnlyTitle" title="Ajoute une règle excluant les jeux non complets au matching">✅ Complets uniquement</button>
         <!-- Spécifiques arcade -->
-        <button data-preset="no-clones" data-preset-scope="arcade" data-i18n="index.autoSelect.presetNoClones" data-i18n-title="index.autoSelect.presetNoClonesTitle" title="Ajoute une règle excluant les clones (jeux avec un parent)">🚫 Clones</button>
-        <button data-preset="good-only" data-preset-scope="arcade" data-i18n="index.autoSelect.presetGoodOnly" data-i18n-title="index.autoSelect.presetGoodOnlyTitle" title="Ajoute une règle excluant les jeux dont le driver MAME n'est pas « good »">🟢 Driver good uniquement</button>
-        <button data-preset="playable-only" data-preset-scope="arcade" data-i18n="index.autoSelect.presetPlayable" data-i18n-title="index.autoSelect.presetPlayableTitle" title="Ne garde que les jeux jouables : exclut les statuts d'émulation « preliminary » et « non spécifié » (garde good + imperfect)">✅ Jouables (good+imperfect)</button>
-        <button data-preset="no-chd" data-preset-scope="arcade" data-i18n="index.autoSelect.presetNoChd" data-i18n-title="index.autoSelect.presetNoChdTitle" title="Ajoute une règle excluant les jeux nécessitant un CHD">🚫 CHD</button>
-        <button data-preset="no-mechanical" data-preset-scope="arcade" data-i18n="index.autoSelect.presetNoMechanical" data-i18n-title="index.autoSelect.presetNoMechanicalTitle" title="Ajoute une règle excluant les machines électromécaniques (flippers, machines à sous… — non jouables au pad, ex : pour un set Recalbox)">🚫 Mécaniques</button>
+        <button data-preset="no-clones" data-preset-families="arcade" data-i18n="index.autoSelect.presetNoClones" data-i18n-title="index.autoSelect.presetNoClonesTitle" title="Ajoute une règle excluant les clones (jeux avec un parent)">🚫 Clones</button>
+        <button data-preset="good-only" data-preset-families="arcade" data-i18n="index.autoSelect.presetGoodOnly" data-i18n-title="index.autoSelect.presetGoodOnlyTitle" title="Ajoute une règle excluant les jeux dont le driver MAME n'est pas « good »">🟢 Driver good uniquement</button>
+        <button data-preset="playable-only" data-preset-families="arcade" data-i18n="index.autoSelect.presetPlayable" data-i18n-title="index.autoSelect.presetPlayableTitle" title="Ne garde que les jeux jouables : exclut les statuts d'émulation « preliminary » et « non spécifié » (garde good + imperfect)">✅ Jouables (good+imperfect)</button>
+        <button data-preset="no-chd" data-preset-families="arcade" data-i18n="index.autoSelect.presetNoChd" data-i18n-title="index.autoSelect.presetNoChdTitle" title="Ajoute une règle excluant les jeux nécessitant un CHD">🚫 CHD</button>
+        <button data-preset="no-mechanical" data-preset-families="arcade" data-i18n="index.autoSelect.presetNoMechanical" data-i18n-title="index.autoSelect.presetNoMechanicalTitle" title="Ajoute une règle excluant les machines électromécaniques (flippers, machines à sous… — non jouables au pad, ex : pour un set Recalbox)">🚫 Mécaniques</button>
       </div>
 
       <!-- Presets personnalisés créés par l'utilisateur -->
@@ -2576,13 +2818,25 @@
         <div id="asm-custom-presets" class="asm-custom-presets"></div>
       </div>
       <div class="asm-custom-create">
-        <input type="text" id="asm-custom-name" data-i18n-placeholder="index.autoSelect.customNamePlaceholder" placeholder="Nom du modèle…">
-        <select id="asm-custom-scope" title="Type de DAT pour lequel ce modèle est disponible">
-          <option value="arcade" data-i18n="index.autoSelect.scopeArcade">Arcade</option>
-          <option value="nointro-redump" data-i18n="index.autoSelect.scopeNoIntroRedump">No-Intro + Redump</option>
-          <option value="global" data-i18n="index.autoSelect.scopeGlobal">Global (tous)</option>
-        </select>
-        <button id="asm-custom-save-btn" class="asm-btn-secondary" data-i18n="index.autoSelect.customSave" data-i18n-title="index.autoSelect.customSaveTitle" title="Enregistrer les règles en cours comme modèle personnalisé">💾 Enregistrer comme modèle</button>
+        <div class="asm-custom-create-title" data-i18n="index.autoSelect.customCreateTitle">Ajouter toutes les règles ci-dessous à « Mes modèles »</div>
+        <div class="asm-custom-create-fields">
+          <label class="asm-field asm-field-name">
+            <span class="asm-field-label" data-i18n="index.autoSelect.customNameLabel">Nom du modèle</span>
+            <input type="text" id="asm-custom-name" data-i18n-placeholder="index.autoSelect.customNamePlaceholder" placeholder="Nom du modèle…">
+          </label>
+          <label class="asm-field">
+            <span class="asm-field-label" data-i18n="index.autoSelect.customScopeLabel">Type de DAT</span>
+            <select id="asm-custom-scope" data-i18n-title="index.autoSelect.customScopeTitle" title="Type de DAT pour lequel ce modèle est disponible">
+              <option value="arcade" data-i18n="index.autoSelect.scopeArcade">Arcade</option>
+              <option value="nointro-redump" data-i18n="index.autoSelect.scopeNoIntroRedump">No-Intro + Redump</option>
+              <option value="no-intro" data-i18n="index.autoSelect.scopeNoIntro">No-Intro</option>
+              <option value="redump" data-i18n="index.autoSelect.scopeRedump">Redump</option>
+              <option value="other" data-i18n="index.autoSelect.scopeOther">Autres DAT</option>
+              <option value="global" data-i18n="index.autoSelect.scopeGlobal">Global (tous)</option>
+            </select>
+          </label>
+          <button id="asm-custom-save-btn" class="asm-btn-secondary" data-i18n="index.autoSelect.customSave" data-i18n-title="index.autoSelect.customSaveTitle" title="Enregistrer les règles en cours comme modèle personnalisé">💾 Ajouter</button>
+        </div>
       </div>
 
       <div id="asm-rules" class="asm-rules"></div>
@@ -2591,41 +2845,110 @@
         <button id="asm-clear-rules" class="asm-btn-secondary" style="margin-left:auto;" data-i18n="index.autoSelect.clearRules" data-i18n-title="index.autoSelect.clearRulesTitle" title="Retirer toutes les règles en cours">🗑 Tout effacer</button>
       </div>
 
-      <!-- Sélection 1G1R : seul point d'activation côté liste de jeux.
-           S'applique APRÈS les règles ci-dessus, qui font donc office de pré-filtres. -->
-      <div class="asm-ogor">
-        <label style="display:flex; align-items:center; gap:8px; font-weight:600;">
-          <input type="checkbox" id="asm-ogor-enabled">
-          <span data-i18n="index.asm.ogorEnable">🎯 Ne garder qu'une version par jeu (1G1R)</span>
-        </label>
-        <div id="asm-ogor-summary" class="asm-ogor-summary"></div>
-        <div class="asm-ogor-hint" data-i18n-html="index.asm.ogorHint">
-          Les règles ci-dessus s'appliquent d'abord : ce qu'elles écartent ne participe pas à
-          l'arbitrage. Les priorités se règlent dans <strong>Paramètres → Consolidation → 1G1R</strong>.
         </div>
+      </div>
 
-        <!-- Clone list : regroupe les titres publiés sous des noms différents selon
-             la région, que l'analyse du nom seule ne peut pas rapprocher. -->
-        <div class="asm-clonelist">
-          <div id="asm-clonelist-status" class="asm-clonelist-status"></div>
-          <div class="asm-clonelist-actions">
-            <button id="asm-clonelist-download" class="asm-btn-secondary" data-i18n="index.asm.cloneListDownload">⬇ Télécharger la clone list</button>
-            <button id="asm-clonelist-apply" class="asm-btn-secondary" data-i18n="index.asm.cloneListApply">🔗 Appliquer</button>
-            <button id="asm-clonelist-clear" class="asm-btn-secondary" data-i18n="index.asm.cloneListClear">✖ Retirer</button>
+      <!-- Groupe 1G1R. L'en-tête porte la case d'activation ET le résumé des
+           priorités : replier le groupe ne doit rien masquer d'essentiel avant
+           d'appliquer. S'exécute APRÈS les règles ci-dessus. -->
+      <div class="asm-group">
+        <div class="asm-group-head">
+          <label style="display:flex; align-items:center; gap:8px; font-weight:600; font-size:14px; color:#2c3e50;">
+            <input type="checkbox" id="asm-ogor-enabled">
+            <span data-i18n="index.autoSelect.groupOgor">2. 1G1R — une seule version par jeu</span>
+          </label>
+          <div id="asm-ogor-summary" class="asm-ogor-summary"></div>
+          <button class="collapse-btn" data-target="asm-group-ogor" data-i18n-title="index.sidebar.collapseTitle" title="Replier/Déplier">
+            <span class="chevron">▲</span>
+          </button>
+        </div>
+        <div id="asm-group-ogor" class="section-content asm-group-body">
+          <div class="asm-ogor-grid priority-compact">
+            <div class="asm-ogor-col">
+              <label data-i18n="index.asm.ogorRegions">Régions</label>
+              <div class="format-priority-container">
+                <div class="format-priority-list" id="asmOgorRegionList"></div>
+              </div>
+              <div class="asm-ogor-add">
+                <select id="asmOgorRegionAdd"></select>
+                <button id="asmOgorRegionAddBtn" class="asm-btn-secondary" data-i18n="settings.oneGameOneRom.addEntry">Ajouter</button>
+              </div>
+            </div>
+            <div class="asm-ogor-col">
+              <label data-i18n="index.asm.ogorLanguages">Langues</label>
+              <div class="format-priority-container">
+                <div class="format-priority-list" id="asmOgorLanguageList"></div>
+              </div>
+              <div class="asm-ogor-add">
+                <select id="asmOgorLanguageAdd"></select>
+                <button id="asmOgorLanguageAddBtn" class="asm-btn-secondary" data-i18n="settings.oneGameOneRom.addEntry">Ajouter</button>
+              </div>
+            </div>
+            <div class="asm-ogor-col">
+              <label data-i18n="index.asm.ogorVideo">Modes vidéo</label>
+              <div class="format-priority-container">
+                <div class="format-priority-list" id="asmOgorVideoList"></div>
+              </div>
+              <div class="asm-ogor-add">
+                <select id="asmOgorVideoAdd"></select>
+                <button id="asmOgorVideoAddBtn" class="asm-btn-secondary" data-i18n="settings.oneGameOneRom.addEntry">Ajouter</button>
+              </div>
+            </div>
+          </div>
+
+          <div class="asm-ogor-opts">
+            <label>
+              <input type="checkbox" id="asmOgorLanguageOverRegion">
+              <span data-i18n="settings.oneGameOneRom.languageOverRegion">La langue prime sur la région</span>
+            </label>
+            <label>
+              <input type="checkbox" id="asmOgorPreferLatestRevision">
+              <span data-i18n="settings.oneGameOneRom.preferLatestRevision">Préférer la révision la plus récente</span>
+            </label>
+            <label>
+              <input type="checkbox" id="asmOgorFallbackToOwned">
+              <span data-i18n="settings.oneGameOneRom.fallbackToOwned">Retomber sur une version que je possède</span>
+            </label>
+            <!-- Réinitialise les priorités aux valeurs de l'onglet Paramètres.
+                 Ne touche pas à la case d'activation, qui est dans l'en-tête du
+                 groupe : on réinitialise l'arbitrage, on ne coupe pas la fonction. -->
+            <button id="asm-ogor-reset" class="asm-btn-secondary" style="margin-left:auto;" data-i18n="index.asm.ogorReset" data-i18n-title="index.asm.ogorResetTitle" title="Revenir aux priorités définies dans Paramètres → Consolidation → 1G1R">↺ Réinitialiser</button>
           </div>
         </div>
       </div>
 
-      <div id="asm-preview" class="asm-preview"></div>
+      </div><!-- /.asm-modal-body -->
 
-      <div style="display:flex; justify-content:space-between; gap:10px; align-items:center; flex-wrap:wrap;">
-        <div style="display:flex; gap:8px; flex-wrap:wrap;">
-          <button id="asm-save-default" class="asm-btn-secondary" data-i18n="index.autoSelect.saveDefault" data-i18n-title="index.autoSelect.saveDefaultTitle" title="Enregistrer les règles actuelles comme modèle par défaut pour ce type de DAT">💾 Enregistrer par défaut</button>
-          <button id="asm-restore-default" class="asm-btn-secondary" data-i18n="index.autoSelect.restoreDefault" data-i18n-title="index.autoSelect.restoreDefaultTitle" title="Recharger le modèle par défaut enregistré pour ce type de DAT">↩️ Restaurer par défaut</button>
+      <div class="asm-modal-foot">
+        <div id="asm-preview" class="asm-preview"></div>
+
+        <!-- Barre « modèle » : agit sur le SYSTÈME, pas sur la base ouverte.
+             Les libellés portent le mot « modèle » pour la distinguer du bouton
+             « Enregistrer » du bas, qui écrit dans la base courante. -->
+        <div class="asm-model-bar">
+          <span class="asm-model-label" data-i18n="index.autoSelect.modelLabel">Modèle du système :</span>
+          <button id="asm-save-default" class="asm-btn-secondary" data-i18n="index.autoSelect.saveDefault" data-i18n-title="index.autoSelect.saveDefaultTitle" title="Mémoriser ces réglages comme modèle de ce système">💾 Enregistrer</button>
+
+          <!-- Une seule commande de chargement : le système courant figure en tête de
+               liste, marqué « (ce système) ». Deux boutons distincts pour la même
+               opération ne se distinguaient que par leur source, ce qui était opaque.
+               Masqué tant qu'aucun modèle n'existe. -->
+          <span class="asm-model-group" id="asm-model-load-wrap" style="display:none;">
+            <select id="asm-model-select" data-i18n-title="index.autoSelect.loadModelTitle" title="Charger un modèle enregistré"></select>
+            <button id="asm-model-load" class="asm-btn-secondary" data-i18n="index.autoSelect.loadModel" data-i18n-title="index.autoSelect.loadModelTitle" title="Charger un modèle enregistré">↩️ Charger</button>
+          </span>
         </div>
-        <div style="display:flex; gap:10px;">
-          <button id="asm-cancel" class="asm-btn-secondary" data-i18n="common.cancel">Annuler</button>
-          <button id="asm-apply" class="asm-btn-primary" data-i18n="common.apply">Appliquer</button>
+
+        <div style="display:flex; justify-content:space-between; gap:12px; align-items:center; flex-wrap:wrap;">
+          <span class="asm-model-hint" data-i18n="index.autoSelect.modelHint">
+            Un modèle mémorise ces réglages pour un système et sert de point de départ à ses
+            futures bases. La liste « Copier depuis » ne propose que les autres systèmes.
+          </span>
+          <div style="display:flex; gap:10px;">
+            <button id="asm-cancel" class="asm-btn-secondary" data-i18n="common.cancel">Annuler</button>
+            <button id="asm-save" class="asm-btn-secondary" data-i18n="index.autoSelect.save" data-i18n-title="index.autoSelect.saveTitle" title="Enregistrer ces réglages dans la base, sans modifier la sélection">💾 Enregistrer et fermer</button>
+            <button id="asm-apply" class="asm-btn-primary" data-i18n="common.apply">Appliquer</button>
+          </div>
         </div>
       </div>
     </div>

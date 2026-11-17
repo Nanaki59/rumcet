@@ -2,8 +2,8 @@
 
 import path from 'path';
 import fs from 'fs/promises';
-import { exec } from 'child_process';
-import { promisify } from 'util';
+import { trackedExecFileAsync } from './processRegistry.js';
+import { detectSevenZip, detectRar, detectUnrar, rarCliPath } from '../toolPaths.js';
 import { 
   IArchiveHandler, 
   ArchiveContent, 
@@ -11,7 +11,7 @@ import {
   ArchiveExtractOptions 
 } from './types.js';
 
-const execAsync = promisify(exec);
+const execFileAsync = trackedExecFileAsync;
 
 /**
  * Handler pour les archives RAR
@@ -69,43 +69,6 @@ export class RarHandler implements IArchiveHandler {
     this.availableTools.clear();
   }
   
-  /**
-   * Obtenir le chemin par défaut de 7-Zip selon la plateforme
-   */
-  private getDefault7ZipPath(): string {
-    if (process.platform === 'win32') {
-      const possiblePaths = [
-        'C:\\Program Files\\7-Zip\\7z.exe',
-        'C:\\Program Files (x86)\\7-Zip\\7z.exe',
-        process.env.ProgramFiles ? process.env.ProgramFiles + '\\7-Zip\\7z.exe' : '',
-        process.env['ProgramFiles(x86)'] ? process.env['ProgramFiles(x86)'] + '\\7-Zip\\7z.exe' : ''
-      ].filter(p => p);
-      
-      return possiblePaths[0] || 'C:\\Program Files\\7-Zip\\7z.exe';
-    }
-    return '7z';
-  }
-  
-  /**
-   * Obtenir le chemin par défaut de WinRAR (Windows uniquement)
-   */
-  private getDefaultWinRarPath(): string {
-    if (process.platform === 'win32') {
-      return 'C:\\Program Files\\WinRAR\\WinRAR.exe';
-    }
-    return '';
-  }
-  
-  /**
-   * Obtenir le chemin par défaut de UnRAR (Windows uniquement)
-   */
-  private getDefaultUnrarPath(): string {
-    if (process.platform === 'win32') {
-      return 'C:\\Program Files\\UnRAR\\UnRAR.exe';
-    }
-    return 'unrar'; // Linux/Mac (dans PATH)
-  }
-  
   canRead(filePath: string): boolean {
     return filePath.toLowerCase().endsWith('.rar');
   }
@@ -120,52 +83,39 @@ export class RarHandler implements IArchiveHandler {
     
     console.log('🔍 Detecting available RAR tools...');
     
-    // Test 7-Zip
-    if (!this.sevenZipPath) {
-      this.sevenZipPath = this.getDefault7ZipPath();
-    }
-    
-    if (await this.isToolAvailable(this.sevenZipPath, `"${this.sevenZipPath}" --help`)) {
+    // Test 7-Zip : chemin configuré, sinon détection (Program Files, PATH, Homebrew…)
+    if (this.sevenZipPath && await this.isToolAvailable(this.sevenZipPath)) {
       this.availableTools.add('7zip');
       console.log(`✅ 7-Zip available: ${this.sevenZipPath}`);
     } else {
-      const altPath = await this.find7ZipAlternativePath();
-      if (altPath) {
-        this.sevenZipPath = altPath;
+      const detected = await detectSevenZip();
+      if (detected) {
+        this.sevenZipPath = detected;
         this.availableTools.add('7zip');
-        console.log(`✅ 7-Zip found: ${altPath}`);
+        console.log(`✅ 7-Zip found: ${detected}`);
       } else {
         console.log('❌ 7-Zip not available');
       }
     }
     
-    // Test WinRAR (Rar.exe)
-    if (!this.winrarPath) {
-      this.winrarPath = this.getDefaultWinRarPath();
-    }
-    
-    if (this.winrarPath) {
-      const rarExe = this.winrarPath.replace('WinRAR.exe', 'Rar.exe');
-      if (await this.isToolAvailable(rarExe, `"${rarExe}" -?"`)) {
-        this.availableTools.add('winrar');
-        console.log(`✅ WinRAR (Rar.exe) disponible: ${rarExe}`);
-      } else {
-        console.log('❌ WinRAR not available');
-      }
+    // Test WinRAR (version ligne de commande : Rar.exe sous Windows, rar ailleurs)
+    this.winrarPath = this.winrarPath ? rarCliPath(this.winrarPath) : (await detectRar()) || undefined;
+    if (this.winrarPath && await this.isToolAvailable(this.winrarPath)) {
+      this.availableTools.add('winrar');
+      console.log(`✅ WinRAR (Rar) disponible: ${this.winrarPath}`);
+    } else {
+      console.log('❌ WinRAR not available');
     }
     
     // Test UnRAR
     if (!this.unrarPath) {
-      this.unrarPath = this.getDefaultUnrarPath();
+      this.unrarPath = (await detectUnrar()) || undefined;
     }
-    
-    if (this.unrarPath) {
-      if (await this.isToolAvailable(this.unrarPath, `"${this.unrarPath}" -?"`)) {
-        this.availableTools.add('unrar');
-        console.log(`✅ UnRAR available: ${this.unrarPath}`);
-      } else {
-        console.log('❌ UnRAR not available');
-      }
+    if (this.unrarPath && await this.isToolAvailable(this.unrarPath)) {
+      this.availableTools.add('unrar');
+      console.log(`✅ UnRAR available: ${this.unrarPath}`);
+    } else {
+      console.log('❌ UnRAR not available');
     }
     
     this.toolsDetected = true;
@@ -173,49 +123,24 @@ export class RarHandler implements IArchiveHandler {
   }
   
   /**
-   * Cherche 7z.exe à plusieurs emplacements alternatifs
+   * Vérifie si un outil est disponible : fichier existant, ou nom de commande
+   * (ex. « unrar ») que le système sait lancer.
    */
-  private async find7ZipAlternativePath(): Promise<string | null> {
-    if (process.platform !== 'win32') return null;
-    
-    const possiblePaths = [
-      'C:\\Program Files\\7-Zip\\7z.exe',
-      'C:\\Program Files (x86)\\7-Zip\\7z.exe',
-      process.env.ProgramFiles ? process.env.ProgramFiles + '\\7-Zip\\7z.exe' : '',
-      process.env['ProgramFiles(x86)'] ? process.env['ProgramFiles(x86)'] + '\\7-Zip\\7z.exe' : ''
-    ].filter(p => p);
-    
-    for (const testPath of possiblePaths) {
-      try {
-        await fs.access(testPath);
-        return testPath;
-      } catch {
-        continue;
-      }
-    }
-    
-    return null;
-  }
-  
-  /**
-   * Vérifie si un outil est disponible
-   */
-  private async isToolAvailable(toolPath: string, testCommand: string): Promise<boolean> {
+  private async isToolAvailable(toolPath: string): Promise<boolean> {
     if (!toolPath) return false;
     
     try {
       await fs.access(toolPath);
       return true;
     } catch {
-      if (testCommand) {
-        try {
-          await execAsync(testCommand, { timeout: 3000 });
-          return true;
-        } catch {
-          return false;
-        }
+      try {
+        await execFileAsync(toolPath, [], { timeout: 3000 });
+        return true;
+      } catch (error: any) {
+        // Un code de sortie numérique signifie que l'outil s'est lancé (sans
+        // argument, il affiche son aide et sort en erreur) ; ENOENT = introuvable
+        return typeof error?.code === 'number';
       }
-      return false;
     }
   }
   
@@ -229,27 +154,19 @@ export class RarHandler implements IArchiveHandler {
       '7zip': { 
         tool: '7zip' as const,
         path: this.sevenZipPath,
-        cmd: () => `"${this.sevenZipPath}" l -slt "${filePath}"`,
-        testCmd: `"${this.sevenZipPath}" --help`,
+        args: ['l', '-slt', filePath],
         parser: this.parse7zipOutput.bind(this)
       },
       'winrar': { 
         tool: 'winrar' as const,
-        path: this.winrarPath ? this.winrarPath.replace('WinRAR.exe', 'Rar.exe') : '',
-        cmd: () => {
-          const rarExe = this.winrarPath ? this.winrarPath.replace('WinRAR.exe', 'Rar.exe') : '';
-          return rarExe ? `"${rarExe}" lt "${filePath}"` : '';
-        },
-        testCmd: this.winrarPath ? `"${this.winrarPath.replace('WinRAR.exe', 'Rar.exe')}" -?"` : '',
+        path: this.winrarPath,
+        args: ['lt', filePath],
         parser: this.parseWinRarOutput.bind(this)
       },
       'unrar': { 
         tool: 'unrar' as const,
         path: this.unrarPath,
-        cmd: () => {
-          return this.unrarPath ? `"${this.unrarPath}" lt "${filePath}"` : '';
-        },
-        testCmd: this.unrarPath ? `"${this.unrarPath}" -?"` : '',
+        args: ['lt', filePath],
         parser: this.parseUnrarOutput.bind(this)
       }
     };
@@ -273,21 +190,15 @@ export class RarHandler implements IArchiveHandler {
 
     let lastError: Error | null = null;
     
-    for (const { tool, path: toolPath, cmd, parser } of commands) {
+    for (const { tool, path: toolPath, args, parser } of commands) {
       console.log(`\n📄 Trying with ${tool}...`);
-      console.log(`   Chemin: ${toolPath || 'PATH'}`);
+      console.log(`   Chemin: ${toolPath}`);
       
       try {
-        const command = cmd();
-        if (!command) {
-          console.log(`⚠️  ${tool}: no command generated`);
-          continue;
-        }
-        
-        console.log(`🔍 Commande: ${command}`);
+        console.log(`🔍 Commande: ${toolPath} ${args.join(' ')}`);
         console.log(`⏳ Running the command...`);
         
-        const { stdout } = await execAsync(command, { maxBuffer: 10 * 1024 * 1024 });
+        const { stdout } = await execFileAsync(toolPath!, args, { maxBuffer: 10 * 1024 * 1024 });
         
         console.log(`✅ Command executed, parsing the output...`);
         console.log(`📄 Raw output (${stdout.length} characters):`);
@@ -474,27 +385,23 @@ export class RarHandler implements IArchiveHandler {
     await fs.mkdir(options.outputDir, { recursive: true });
     await this.detectAvailableTools();
 
+    // RAR/UnRAR exigent un séparateur final pour traiter la destination comme un dossier
+    const outputDirArg = options.outputDir.endsWith(path.sep) ? options.outputDir : options.outputDir + path.sep;
     const allCommands = {
       '7zip': { 
         tool: '7zip' as const,
         path: this.sevenZipPath,
-        cmd: () => `"${this.sevenZipPath}" x -y "${options.archivePath}" -o"${options.outputDir}"`
+        args: ['x', '-y', options.archivePath, `-o${options.outputDir}`]
       },
       'winrar': { 
         tool: 'winrar' as const,
-        path: this.winrarPath ? this.winrarPath.replace('WinRAR.exe', 'Rar.exe') : '',
-        cmd: () => {
-          const rarExe = this.winrarPath ? this.winrarPath.replace('WinRAR.exe', 'Rar.exe') : '';
-          return rarExe ? `"${rarExe}" x -y -o+ "${options.archivePath}" "${options.outputDir}\\"` : '';
-        }
+        path: this.winrarPath,
+        args: ['x', '-y', '-o+', options.archivePath, outputDirArg]
       },
       'unrar': { 
         tool: 'unrar' as const,
         path: this.unrarPath,
-        cmd: () => {
-          return this.unrarPath ? 
-            `"${this.unrarPath}" x -y -o+ "${options.archivePath}" "${options.outputDir}\\"` : '';
-        }
+        args: ['x', '-y', '-o+', options.archivePath, outputDirArg]
       }
     };
     
@@ -509,13 +416,10 @@ export class RarHandler implements IArchiveHandler {
 
     let lastError: Error | null = null;
     
-    for (const { tool, cmd } of commands) {
+    for (const { tool, path: toolPath, args } of commands) {
       try {
-        const command = cmd();
-        if (!command) continue;
-        
-        console.log(`Extraction with ${tool}: ${command}`);
-        await execAsync(command, { maxBuffer: 50 * 1024 * 1024 });
+        console.log(`Extraction with ${tool}: ${toolPath} ${args.join(' ')}`);
+        await execFileAsync(toolPath!, args, { maxBuffer: 50 * 1024 * 1024 });
         
         console.log(`✅ RAR extracted with ${tool}`);
         return;

@@ -1,5 +1,19 @@
 {
   "logs": {
+    "chdman": {
+      "latestFound": "Dernière release MAME : {tag} (chdman {version})",
+      "checkError": "Impossible de récupérer la dernière release MAME : {error}",
+      "downloadStarted": "Téléchargement de {tag} : {url} ({size} octets) vers {path}",
+      "downloadCompleted": "Téléchargement terminé ({size} octets reçus)",
+      "extracting": "Extraction de chdman depuis {archive}",
+      "extracted": "chdman extrait, version {version}",
+      "installed": "chdman installé dans {path}",
+      "tempCleaned": "Dossier temporaire supprimé (archive MAME comprise) : {path}",
+      "tempCleanupFailed": "Impossible de supprimer le dossier temporaire {path} : {error}",
+      "updated": "chdman {version} téléchargé et installé",
+      "updateError": "Échec de la mise à jour de chdman : {error}",
+      "deleted": "chdman {version} supprimé"
+    },
     "welcome": {
       "ready": "RUMCET est prêt ! Utilisez le menu Fichier ou les boutons pour commencer."
     },
@@ -52,7 +66,11 @@
       "targetAddError": "Impossible d'ajouter le dossier cible : {error}",
       "rescanStart": "Re-scan du dossier : {path}...",
       "rescanDone": "Re-scan terminé : {count} fichiers trouvés.",
-      "rescanError": "Erreur lors du re-scan : {error}"
+      "rescanError": "Erreur lors du re-scan : {error}",
+      "scanStartFull": "Début du scan complet : {path}",
+      "scanCancelled": "Scan interrompu : {path} ({count}/{total} fichiers enregistrés). Utilisez « Reprendre le scan » sur le dossier pour le terminer.",
+      "foldersSaved": "Dossiers de la base enregistrés",
+      "targetChanged": "Dossier cible modifié : {path}"
     },
     "romfile": {
       "found": "Fichier trouvé : {file}",
@@ -109,11 +127,14 @@
       "reportInitialized": "📊 Rapport de matching initialisé"
     },
     "consolidation": {
-      "start": "🧹 Début de la consolidation des ROMs...",
+      "start": "🧹 Début de la consolidation des ROMs (profil « {profile} »)...",
       "launching": "Lancement de la consolidation des ROMs...",
       "finished": "Consolidation terminée !",
       "done": "✅ Consolidation terminée ! {games} jeux consolidés, {archives} archives créées, {unmatched} fichiers non matchés déplacés",
       "errorsCount": "⚠️ {count} erreur(s) durant la consolidation",
+      "m3uFormatOverride": "💿 {count} jeu(x) multi-disques détecté(s) : leurs disques n'ont pas été compressés en 7z/zip (CHD ou fichiers bruts) pour pouvoir être référencés par un .m3u",
+      "m3uCreated": "💿 {count} fichier(s) .m3u créé(s)",
+      "m3uSkipped": "⚠️ {count} jeu(x) multi-disques sans .m3u (disque non consolidé ou non lisible directement)",
       "error": "❌ Erreur consolidation : {error}",
       "runError": "Erreur lors de la consolidation : {error}",
       "progress": {
@@ -122,7 +143,12 @@
         "deletingMatched": "Suppression des fichiers matchés restants (doublons)...",
         "movingUnmatched": "Déplacement des fichiers non matchés...",
         "complete": "Consolidation terminée : {count} jeux consolidés"
-      }
+      },
+      "gameDone": "✅ {game} → {format}",
+      "gameSkipped": "⏭️ {game} : rien à consolider",
+      "gameError": "❌ {game} : {error}",
+      "gameAborted": "⏹️ {game} : abandonné (arrêt forcé) — rien n'a été écrit dans le dossier cible",
+      "cancelled": "⏹️ Consolidation interrompue : {games} jeu(x) consolidé(s), {remaining} non traité(s). Les phases de nettoyage ont été sautées."
     },
     "download": {
       "done": "Téléchargement terminé : {consolidated} consolidé(s), {failed} échec(s)",
@@ -137,7 +163,8 @@
         "allFoundLocally": "{game} : tous les fichiers trouvés localement",
         "consolidating": "{game} : consolidation...",
         "incomplete": "{game} : {found}/{total} fichiers trouvés, stockés dans le dossier des ROMs incomplètes"
-      }
+      },
+      "cancelled": "⏹️ Téléchargement interrompu : {consolidated} consolidé(s), {failed} en échec, {remaining} non traité(s)"
     },
     "dat": {
       "noUpdateReport": "Aucun rapport de mise à jour disponible.",
@@ -156,17 +183,27 @@
       "refreshAfterLoadError": "Erreur lors du rafraîchissement après chargement du DAT : {error}"
     },
     "cloneList": {
-      "listing": "Recherche des clone lists disponibles...",
+      "listing": "Recherche de la clone list de ce système...",
       "noMatch": "Aucune clone list ne correspond à « {dat} ».",
       "downloaded": "Clone list téléchargée : {file} ({variants} variantes)",
+      "upToDate": "Clone list déjà à jour : {file}",
+      "usingLocal": "Utilisation de la copie locale de la clone list : {file}",
       "applied": "Clone list appliquée : {list} — {games} jeux regroupés sur {variants} variantes",
+      "categories": "{count} catégorie(s) de jeu surchargée(s) par la clone list",
       "unmatched": "{count} terme(s) de recherche sans correspondance dans ce DAT (normal si le DAT et la liste datent d'époques différentes)",
+      "unreachable": "Source des clone lists injoignable : {error}",
+      "httpError": "Téléchargement de la clone list refusé pour {file} : {error}",
+      "invalidRemote": "Le fichier téléchargé n'est pas une clone list valide ({file}) : {error}",
+      "unreadable": "Clone list locale illisible ({file}) : {error}",
+      "applyFailed": "Échec de l'application de la clone list ({file}) : {error}",
       "cleared": "Regroupements de la clone list retirés.",
+      "arcade": "Les clone lists ne concernent pas les DAT arcade : les relations parent/clone y viennent déjà du DAT.",
       "error": "Erreur de clone list : {error}"
     },
     "game": {
       "loadDatFirst": "Chargez d'abord un DAT pour utiliser la sélection automatique.",
       "autoSelectApplied": "Sélection automatique appliquée : {selected} sélectionné(s), {deselected} désélectionné(s).",
+      "autoSelectSaved": "Réglages de sélection automatique enregistrés (sélection inchangée).",
       "autoSelectError": "Erreur lors de la sélection automatique : {error}",
       "defaultPresetsSaved": "Règles enregistrées comme modèle par défaut pour ce type de DAT.",
       "defaultPresetsRestored": "Modèle par défaut restauré.",
@@ -175,6 +212,27 @@
       "customPresetDeleted": "Modèle personnalisé supprimé.",
       "customPresetNameRequired": "Veuillez saisir un nom pour le modèle.",
       "customPresetNeedsRules": "Ajoutez au moins une règle avant d'enregistrer un modèle."
+    },
+    "scan": {
+      "fileArchive": "📦 {file} ({type}) — {count} fichier(s)",
+      "fileLoose": "💾 {file}",
+      "fileAborted": "Analyse de « {file} » abandonnée (arrêt forcé) : il sera ré-analysé au prochain scan",
+      "fileError": "Impossible d'analyser « {file} » : {error}",
+      "summary": "{path} : {scanned} fichier(s) analysé(s), {unchanged} inchangé(s), {removed} retiré(s)",
+      "stopRequested": "Interruption demandée : le scan s'arrête après le fichier en cours",
+      "forceStopRequested": "Arrêt forcé demandé"
+    },
+    "systemsUpdate": {
+      "tagsError": "Impossible de récupérer les versions de Recalbox : {error}",
+      "fetching": "Récupération des données systèmes de Recalbox {ref}...",
+      "previewReady": "Recalbox {ref} : {added} nouveau(x) système(s), {changed} système(s) modifié(s)",
+      "fetchError": "Impossible de récupérer les données systèmes de Recalbox {ref} : {error}",
+      "applied": "Systèmes mis à jour depuis Recalbox {ref} ({count} système(s))",
+      "applyError": "Échec de la mise à jour des systèmes : {error}",
+      "reset": "Données systèmes restaurées à celles intégrées à Rumcet"
+    },
+    "profiles": {
+      "activated": "⚙️ Profil de consolidation courant : {profile}"
     }
   },
   "common": {
@@ -254,7 +312,11 @@
     "selectFolderValidated": "Sélectionner le dossier pour les ROMs validées",
     "selectFolderTemp": "Sélectionner le dossier temporaire d'extraction",
     "selectFolderIncomplete": "Sélectionner le dossier pour les ROMs incomplètes",
-    "selectFolderCloneLists": "Sélectionner le dossier des clone lists"
+    "selectFolderCloneLists": "Sélectionner le dossier des clone lists",
+    "selectChdman": "Sélectionner l'exécutable chdman",
+    "select7zip": "Sélectionner l'exécutable 7-Zip (7z)",
+    "selectRar": "Sélectionner l'exécutable RAR en ligne de commande (Rar.exe / rar)",
+    "selectUnrar": "Sélectionner l'exécutable UnRAR"
   },
   "matching": {
     "overview": "Vue d'ensemble",
@@ -332,7 +394,8 @@
       "collapseTitle": "Replier/Déplier",
       "foldersSection": "📂 Dossiers ROMs",
       "foldersAddTitle": "Ajouter un ou plusieurs dossiers de ROMs",
-      "matchingSection": "📊 Rapport de matching"
+      "matchingSection": "📊 Rapport de matching",
+      "scanIncomplete": "Scan incomplet — clic droit › « Reprendre le scan »"
     },
     "search": {
       "placeholder": "🔍 Rechercher dans les jeux, ROMs et archives...",
@@ -361,6 +424,7 @@
       "bios": "BIOS",
       "device": "Device",
       "mechanical": "Mécanique",
+      "countersExtraTitle": "{count} entrée(s) affichée(s) non sélectionnable(s) (BIOS, devices, jeux disparus), non comptée(s)",
       "games": "Jeux",
       "type": "Type",
       "manufacturer": "Fabricant",
@@ -446,13 +510,21 @@
       "rescan": "🔄 Re-scanner le dossier",
       "removeFromDb": "❌ Retirer le dossier de la base",
       "deletePhysical": "🗑️ Supprimer le dossier",
-      "setTarget": "📁 Définir comme dossier cible"
+      "setTarget": "📁 Définir comme dossier cible",
+      "resumeScan": "⏯️ Reprendre le scan",
+      "quickRescan": "🔄 Re-scan rapide",
+      "fullRescan": "♻️ Re-scan complet",
+      "editFolders": "✏️ Modifier les dossiers de la base"
     },
     "datMenu": {
       "update": "🔄 Mettre à jour le DAT",
       "showReport": "📋 Voir le dernier rapport de mise à jour",
       "showReportTitleAvailable": "Voir le rapport de la dernière mise à jour",
-      "showReportTitleNone": "Aucune mise à jour du DAT effectuée"
+      "showReportTitleNone": "Aucune mise à jour du DAT effectuée",
+      "updateCloneList": "🔗 Mettre à jour la clone list",
+      "updateCloneListTitle": "Forcer le retéléchargement de la clone list de ce système, puis l'appliquer",
+      "clearCloneList": "✖ Retirer les regroupements de clone list",
+      "clearCloneListTitle": "Revenir au regroupement par titre normalisé seul"
     },
     "gameMenu": {
       "downloadRom": "Télécharger la ROM",
@@ -476,7 +548,9 @@
       "deleteFolderMessage": "Êtes-vous sûr de vouloir supprimer le dossier « {folder} » ?",
       "deleteFolderDetail": "Cette action déplacera le dossier et tout son contenu vers la corbeille. Vous pourrez le restaurer depuis la corbeille si nécessaire.",
       "deleteFolderError": "Impossible de supprimer le dossier",
-      "moveToTrash": "Déplacer vers la corbeille"
+      "moveToTrash": "Déplacer vers la corbeille",
+      "matchWithPartialScan": "Le scan du ou des dossiers suivants est incomplet :\n\n{folders}\n\nLe matching n'utilisera que les fichiers déjà analysés. Continuer quand même ?",
+      "fullRescan": "Ré-analyser tous les fichiers de « {path} » ?\n\nTous les fichiers sont à nouveau hashés, ce qui peut être long. Un re-scan rapide n'analyse que les fichiers nouveaux ou modifiés."
     },
     "datUpdate": {
       "title": "Mise à jour du DAT",
@@ -534,7 +608,8 @@
     "folders": {
       "targetBadge": "CIBLE",
       "filesCount": "{count} fichier(s)",
-      "removeTitle": "Retirer le dossier de la base de données"
+      "removeTitle": "Retirer le dossier de la base de données",
+      "editFoldersTitle": "Modifier les dossiers de la base (cible, dossiers de travail)"
     },
     "folderView": {
       "empty": "Dossier vide",
@@ -650,7 +725,9 @@
       "confirmButton": "Consolider",
       "inProgress": "⏳ Consolidation...",
       "doneAlert": "🧹 Consolidation terminée !\n\nJeux consolidés : {games}\nArchives créées : {archives}\nFichiers non matchés déplacés : {unmatched}\nErreurs : {errors}",
-      "errorAlert": "❌ Erreur lors de la consolidation. Consultez les logs."
+      "errorAlert": "❌ Erreur lors de la consolidation. Consultez les logs.",
+      "cancelledAlert": "⏹️ Consolidation interrompue\n\nJeux consolidés : {games}\nJeux non traités : {remaining}\nErreurs : {errors}\n\nLe nettoyage des sources et le déplacement des fichiers non référencés ont été sautés.",
+      "profile": "⚙️ PROFIL : {name}"
     },
     "missingModal": {
       "none": "Aucune ROM manquante !",
@@ -684,11 +761,11 @@
       "baseCurrent": "Sélection actuelle",
       "presetsLabel": "Modèles rapides :",
       "presetNoProto": "🚫 Proto/Beta/Demo",
-      "presetNoProtoTitle": "Ajoute des règles excluant les entrées dont le nom ou la description contient (Proto, (Beta, (Demo, (Sample, Prototype",
+      "presetNoProtoTitle": "Ajoute une règle excluant les jeux dont le statut de développement n'est pas « Production » (proto, beta, démo, sample…)",
       "presetNoBios": "🚫 BIOS",
-      "presetNoBiosTitle": "Ajoute une règle excluant les entrées [BIOS] (convention No-Intro/Redump — les BIOS MAME sont déjà gérés par la cascade de dépendances)",
+      "presetNoBiosTitle": "Ajoute une règle excluant les entrées [BIOS] (convention No-Intro)",
       "presetNoAftermarket": "🚫 Aftermarket/Unl",
-      "presetNoAftermarketTitle": "Ajoute des règles excluant les entrées dont le nom ou la description contient (Aftermarket) et (Unl) (convention No-Intro/Redump)",
+      "presetNoAftermarketTitle": "Ajoute des règles excluant les entrées dont le nom ou la description contient (Aftermarket) et (Unl)",
       "presetNoClones": "🚫 Clones",
       "presetNoClonesTitle": "Ajoute une règle excluant les clones (jeux avec un parent)",
       "presetGoodOnly": "🟢 Driver good uniquement",
@@ -699,20 +776,33 @@
       "presetCompleteOnlyTitle": "Ajoute une règle excluant les jeux non complets au matching",
       "presetNoMechanical": "🚫 Mécaniques",
       "presetNoMechanicalTitle": "Ajoute une règle excluant les machines électromécaniques (flippers, machines à sous… — non jouables au pad, ex : pour un set Recalbox)",
+      "presetGamesOnly": "🎮 Jeux uniquement",
+      "presetGamesOnlyTitle": "Ne garde que les jeux, avec des règles adaptées au type de DAT — Redump : catégorie « Games » ; No-Intro : production, hors [BIOS] et hors catégories autres que « Games » ; Arcade : production, hors machines mécaniques",
       "presetPlayable": "✅ Jouables (good+imperfect)",
       "presetPlayableTitle": "Ne garde que les jeux jouables : exclut les statuts d'émulation « preliminary » et « non spécifié » (garde good + imperfect)",
-      "saveDefault": "💾 Enregistrer par défaut",
-      "saveDefaultTitle": "Enregistrer les règles actuelles comme modèle par défaut pour ce type de DAT",
-      "restoreDefault": "↩️ Restaurer par défaut",
-      "restoreDefaultTitle": "Recharger le modèle par défaut enregistré pour ce type de DAT",
+      "groupRules": "1. Règles de sélection",
+      "groupOgor": "2. 1G1R — une seule version par jeu",
+      "save": "💾 Enregistrer et fermer",
+      "saveTitle": "Enregistrer ces réglages dans la base, sans modifier la sélection",
+      "modelLabel": "Modèle du système :",
+      "modelHint": "Un modèle mémorise ces réglages pour un système et sert de point de départ à ses futures bases. Vous pouvez charger celui de ce système, ou reprendre celui d'un autre.",
+      "loadModel": "↩️ Charger",
+      "loadModelTitle": "Charger un modèle enregistré dans cet éditeur (remplace les règles et les réglages 1G1R ci-dessous)",
+      "thisSystem": "ce système",
+      "saveDefault": "💾 Enregistrer",
+      "saveDefaultTitle": "Mémoriser ces réglages comme modèle de ce système",
+      "customCreateTitle": "Ajouter toutes les règles ci-dessous à « Mes modèles »",
+      "customNameLabel": "Nom du modèle",
+      "customScopeLabel": "Type de DAT",
+      "customScopeTitle": "Type de DAT pour lequel ce modèle est proposé",
       "addRule": "＋ Ajouter une règle",
       "clearRules": "🗑 Tout effacer",
       "clearRulesTitle": "Retirer toutes les règles en cours",
       "customPresetsLabel": "Mes modèles :",
       "customEmpty": "Aucun modèle personnalisé.",
       "customNamePlaceholder": "Nom du modèle…",
-      "customSave": "💾 Enregistrer comme modèle",
-      "customSaveTitle": "Enregistrer les règles en cours comme modèle personnalisé",
+      "customSave": "💾 Ajouter",
+      "customSaveTitle": "Ajouter les règles en cours à « Mes modèles » sous ce nom",
       "customApplyTitle": "Ajouter les règles de ce modèle aux règles en cours",
       "customDeleteTitle": "Supprimer ce modèle",
       "customDragTitle": "Glisser pour réordonner",
@@ -720,6 +810,9 @@
       "customMoveDownTitle": "Descendre",
       "scopeArcade": "Arcade",
       "scopeNoIntroRedump": "No-Intro + Redump",
+      "scopeNoIntro": "No-Intro",
+      "scopeRedump": "Redump",
+      "scopeOther": "Autres DAT",
       "scopeGlobal": "Global (tous)"
     },
     "asm": {
@@ -727,6 +820,7 @@
       "fieldDescription": "Description",
       "fieldNameOrDescription": "Nom ou description",
       "fieldCategory": "Catégorie",
+      "fieldManufacturer": "Fabricant",
       "fieldDriverStatus": "Statut driver",
       "fieldHasChd": "Possède un CHD",
       "fieldIsClone": "Est un clone",
@@ -739,19 +833,16 @@
       "fieldReleaseFlag": "Marqueur de diffusion",
       "dragTitle": "Glisser pour réordonner cette règle",
       "ogorEnable": "🎯 Ne garder qu'une version par jeu (1G1R)",
-      "ogorHint": "Les règles ci-dessus s'appliquent d'abord : ce qu'elles écartent ne participe pas à l'arbitrage. Les priorités se règlent dans <strong>Paramètres → Consolidation → 1G1R</strong>.",
+      "ogorHint": "Les règles ci-dessus s'appliquent d'abord : ce qu'elles écartent ne participe pas à l'arbitrage. Les priorités se règlent dans Paramètres → Consolidation → 1G1R.",
       "ogorNotConfigured": "Priorités non configurées — voir Paramètres → Consolidation → 1G1R.",
       "ogorLatestRevision": "révision la plus récente",
       "ogorFallbackToOwned": "repli sur les versions possédées",
       "ogorDropped": "{count} doublon(s) écarté(s) par le 1G1R",
-      "cloneListDownload": "⬇ Télécharger la clone list",
-      "cloneListApply": "🔗 Appliquer",
-      "cloneListClear": "✖ Retirer",
-      "cloneListReady": "Clone list disponible : {file} — pas encore appliquée.",
-      "cloneListApplied": "Clone list appliquée : {list} ({date}).",
-      "cloneListMissing": "Aucune clone list locale pour « {dat} ». Téléchargez-la pour regrouper les titres publiés sous des noms différents selon la région.",
-      "cloneListArcade": "Les clone lists ne concernent pas les DAT arcade : les relations parent/clone y viennent déjà du DAT.",
-      "cloneListUnavailable": "État des clone lists indisponible.",
+      "ogorReset": "↺ Réinitialiser",
+      "ogorResetTitle": "Revenir aux priorités définies dans Paramètres → Consolidation → 1G1R. Ne modifie pas la case d'activation.",
+      "ogorRegions": "Régions",
+      "ogorLanguages": "Langues",
+      "ogorVideo": "Modes vidéo",
       "opContains": "contient",
       "opNotContains": "ne contient pas",
       "opStarts": "commence par",
@@ -777,6 +868,140 @@
     "systemSelect": {
       "title": "🎮 Sélection du système",
       "description": "Le système n'a pas pu être détecté automatiquement à partir du nom du DAT. Sélectionnez-le manuellement pour continuer."
+    },
+    "scanModal": {
+      "title": "📂 Scan des dossiers de ROMs",
+      "modeQuick": "Scan rapide : seuls les fichiers nouveaux ou modifiés sont analysés",
+      "modeFull": "Scan complet : tous les fichiers sont ré-analysés",
+      "folderCount": "Dossier {index} sur {count}",
+      "counting": "Inventaire des fichiers… {count} trouvé(s)",
+      "folder": "Dossier",
+      "file": "Fichier",
+      "progress": "{current} / {total} fichiers",
+      "unchanged": "{count} inchangé(s)",
+      "elapsed": "Temps écoulé : {time}",
+      "fileElapsed": "Fichier en cours : {time}",
+      "hint": "Si vous interrompez le scan, les fichiers déjà analysés sont conservés et le scan pourra être repris plus tard.",
+      "stopHint": "Le scan s'arrêtera automatiquement dès que l'analyse du fichier en cours sera terminée. S'il semble bloqué ou si c'est trop long, vous pouvez tenter un arrêt forcé : le fichier en cours sera alors ré-analysé au prochain scan.",
+      "cancel": "Interrompre",
+      "cancelling": "Arrêt après le fichier en cours…",
+      "forceStop": "Forcer l'arrêt"
+    },
+    "targetFolder": {
+      "modalTitle": "📁 Dossiers de la base",
+      "confirmScanTitle": "Nouveau dossier cible",
+      "confirmScanMessage": "Le dossier cible va devenir :\n{path}",
+      "confirmScanDetail": "Ce dossier va maintenant être scanné. Selon son contenu, cela peut prendre du temps.",
+      "confirmScanButton": "Modifier et scanner"
+    },
+    "consolidationModal": {
+      "title": "🧹 Consolidation des ROMs",
+      "phases": {
+        "preparing": "Préparation…",
+        "consolidating": "Consolidation des jeux",
+        "moving-unmatched": "Nettoyage…",
+        "complete": "Finalisation…"
+      },
+      "gameCount": "Jeu {current} / {total}",
+      "counters": "{consolidated} consolidé(s) · {errored} erreur(s) · {skipped} ignoré(s)",
+      "steps": {
+        "analyzing": "Analyse du jeu…",
+        "direct-copy": "Recherche d'une archive source réutilisable…",
+        "extracting": "Extraction des fichiers sources…",
+        "compressing": "Création de l'archive…",
+        "copying": "Copie vers le dossier cible…",
+        "done": "✅ Consolidé",
+        "skipped": "⏭️ Ignoré (rien à consolider)",
+        "error": "❌ Erreur",
+        "aborted": "⏹️ Abandonné"
+      },
+      "modes": {
+        "standard": "Mode standard",
+        "best": "Meilleure compression : tous les formats compatibles sont testés",
+        "direct": "Copie directe d'une archive source",
+        "raw": "Fichiers bruts (sans archive)",
+        "chd-copy": "Disques CHD copiés tels quels"
+      },
+      "formats": "Formats cibles étudiés",
+      "formatRaw": "Brut",
+      "status": {
+        "pending": "En attente",
+        "running": "En cours",
+        "done": "Créé",
+        "failed": "Échec",
+        "skipped": "Ignoré",
+        "rejected": "Écarté",
+        "chosen": "Retenu"
+      },
+      "notes": {
+        "chdNoEntryPoint": "Pas de .cue/.gdi/.iso",
+        "creationFailed": "Échec de création",
+        "sourceMissing": "Fichier introuvable",
+        "listFailed": "Archive illisible",
+        "contentMismatch": "Contenu ou noms différents"
+      },
+      "chosen": "Format retenu : {format}",
+      "chosenPending": "Format retenu : —",
+      "elapsed": "Temps écoulé : {time}",
+      "gameElapsed": "Jeu en cours : {time}",
+      "hint": "Si vous interrompez, les jeux déjà consolidés sont conservés ; le nettoyage des sources et le déplacement des fichiers non référencés sont alors sautés.",
+      "stopHint": "La consolidation s'arrêtera automatiquement dès que le jeu en cours sera terminé. Si elle semble bloquée ou si c'est trop long, vous pouvez tenter un arrêt forcé : le jeu en cours est alors abandonné et rien n'est écrit dans le dossier cible.",
+      "cancel": "Interrompre",
+      "cancelling": "Arrêt après le jeu en cours…",
+      "forceStop": "Forcer l'arrêt"
+    },
+    "downloadModal": {
+      "title": "⬇️ Téléchargement et consolidation des ROMs",
+      "phases": {
+        "preparing": "Préparation…",
+        "downloadingGames": "Téléchargement des jeux",
+        "consolidating": "Consolidation du jeu téléchargé",
+        "complete": "Finalisation…"
+      },
+      "steps": {
+        "local-search": "Recherche des fichiers en local…",
+        "downloading": "Téléchargement depuis {source} ({ext})…",
+        "extracting": "Extraction de l'archive téléchargée…",
+        "hashing": "Vérification de {file}…",
+        "matching": "Tous les fichiers ont été trouvés en local",
+        "incomplete": "Incomplet : {found}/{total} fichiers — rangé dans le dossier des ROMs incomplètes"
+      },
+      "counters": "{consolidated} consolidé(s) · {failed} en échec",
+      "hint": "Chaque jeu complet est consolidé juste après son téléchargement. Si vous interrompez, les jeux déjà consolidés sont conservés.",
+      "stopHint": "Le téléchargement s'arrêtera automatiquement dès que le jeu en cours sera terminé. S'il semble bloqué ou si c'est trop long, vous pouvez tenter un arrêt forcé : le jeu en cours est alors abandonné et rien n'est écrit dans le dossier cible.",
+      "attempts": "Tentatives de téléchargement",
+      "localSource": "Téléchargement précédent",
+      "verifiedCount": "{matched}/{total} vérifié(s)",
+      "attemptStatus": {
+        "pending": "En attente",
+        "running": "Téléchargement",
+        "extracting": "Extraction",
+        "verifying": "Vérification",
+        "verified": "Vérifié",
+        "partial": "Partiel",
+        "mismatch": "Ne correspond pas",
+        "notFound": "Introuvable",
+        "failed": "Échec",
+        "skipped": "Non tenté"
+      },
+      "attemptNotes": {
+        "notNeeded": "Inutile"
+      },
+      "kindArchive": "Archive contenant le jeu",
+      "kindFile": "Fichier de ROM individuel",
+      "kindLocal": "Fichiers conservés d'un téléchargement précédent incomplet (dossier des ROMs incomplètes)",
+      "columns": {
+        "ext": "Extension",
+        "source": "Source",
+        "target": "Fichier tenté",
+        "status": "État",
+        "detail": "Détail"
+      }
+    },
+    "profiles": {
+      "label": "⚙️ Profil :",
+      "title": "Profil de consolidation utilisé (modifiable dans les paramètres)",
+      "busyAlert": "Impossible de changer de profil pendant une consolidation."
     }
   },
   "settings": {
@@ -798,10 +1023,13 @@
       "groupConsolidation": "Consolidation",
       "archives": "Compression",
       "compatibility": "Compatibilité par système",
+      "multiDisc": "Multi-disques",
       "cleanup": "Nettoyage",
       "arcade": "Arcade (MAME)",
       "oneGameOneRom": "1G1R",
-      "download": "Téléchargement"
+      "download": "Téléchargement",
+      "groupProfile": "Paramètres du profil",
+      "cloneLists": "Clone lists"
     },
     "general": {
       "interfaceSection": "Interface",
@@ -847,23 +1075,44 @@
       "unmatchedFolderDisabledMsg": "⚠ Ce dossier ne sera utilisé que si <strong>« Activer le nettoyage des dossiers sources »</strong> et <strong>« Déplacer les fichiers non matchés vers le dossier dédié »</strong> sont activés (<a href=\"#\" id=\"unmatchedGoToCleanup\" style=\"color:#3498db; text-decoration:underline;\">aller aux paramètres de nettoyage</a>)."
     },
     "tools": {
-      "sevenZipPath": "Chemin vers 7z.exe :",
+      "sevenZipPath": "Chemin vers 7-Zip (7z) :",
       "sevenZipInfo": "Utilisé pour lire et créer les archives .7z et .rar",
       "sevenZipRecommended": "7-Zip (Recommandé)",
       "autoDetect": "Auto-détection",
       "autoDetectPlaceholder": "Détection automatique",
       "optionalPlaceholder": "Optionnel",
-      "embeddedByDefault": "Version embarquée par défaut",
       "detectedAlert": "{tool} détecté : {path}",
       "notFoundAlert": "{tool} non trouvé. Veuillez sélectionner manuellement le fichier {file}",
       "detectErrorAlert": "Erreur lors de la détection automatique de {tool}",
-      "useEmbeddedChdman": "Utiliser la version embarquée de chdman",
-      "useEmbeddedChdmanInfo": "Version fournie avec l'application (recommandé)",
-      "chdmanPath": "Chemin vers chdman personnalisé :",
-      "chdmanInfo": "Utilisé pour créer/extraire les images CD/DVD au format CHD (si version embarquée désactivée)",
-      "winrarPath": "Chemin vers Rar.exe :",
+      "chdmanPath": "Chemin vers chdman :",
+      "chdmanInfo": "Utilisé pour créer/extraire les images au format CHD : jeux sur CD/DVD/GD-ROM/UMD, certains ordinateurs (Amiga…) et disques des jeux arcade MAME.",
+      "chdmanVersionLabel": "Version à utiliser :",
+      "chdmanVersionLatest": "Plus récente",
+      "chdmanVersionDefault": "Par défaut ({version})",
+      "chdmanVersionManual": "Sélection manuelle",
+      "chdmanCurrent": "Version utilisée : {version} ({source})",
+      "chdmanNotFound": "chdman introuvable",
+      "chdmanCheckUpdate": "🔄 Rechercher une mise à jour",
+      "chdmanChecking": "Recherche de la dernière version de MAME…",
+      "chdmanUpToDate": "chdman est à jour (version {version}).",
+      "chdmanUpdateConfirm": "chdman {version} est disponible.\n\nLa release MAME officielle (environ {size} Mo) va être téléchargée pour en extraire chdman. Continuer ?",
+      "chdmanDownloadProgress": "Téléchargement de MAME {version} : {percent} %",
+      "chdmanExtracting": "Extraction de chdman…",
+      "chdmanUpdateDone": "chdman {version} est installé. Il est utilisé si « Plus récente » est sélectionné.",
+      "chdmanUpdateError": "Erreur lors de la mise à jour de chdman : {error}",
+      "chdmanDelete": "Supprimer",
+      "chdmanDeleteConfirm": "Supprimer chdman {version} du disque ?",
+      "chdmanDeleteInUse": "Cette version est actuellement utilisée. Sélectionnez une autre version et enregistrez avant de la supprimer.",
+      "chdmanUpdateUnsupported": "La mise à jour automatique n'est disponible que sous Windows. Pour utiliser une version plus récente, installez chdman avec votre gestionnaire de paquets (mame-tools, rom-tools…), choisissez « Sélection manuelle » puis renseignez son chemin.",
+      "chdmanSource": {
+        "custom": "sélection manuelle",
+        "downloaded": "téléchargée",
+        "embedded": "par défaut",
+        "path": "PATH système"
+      },
+      "winrarPath": "Chemin vers Rar (Rar.exe / rar) :",
       "winrarInfo": "Alternative pour créer des archives .rar (optionnel)",
-      "unrarPath": "Chemin vers UnRAR.exe :",
+      "unrarPath": "Chemin vers UnRAR :",
       "unrarInfo": "Alternative pour extraire les archives .rar (optionnel, si 7-Zip n'est pas disponible)",
       "rarPrioritySection": "Ordre de priorité pour les archives RAR",
       "rarPriorityDrag": "Glissez-déposez pour réordonner les outils :",
@@ -873,6 +1122,7 @@
       "prioritySection": "Ordre de priorité des formats d'archives cibles",
       "priorityDrag": "Glissez-déposez pour réordonner :",
       "priorityInfo": "Les formats d'archives seront choisis dans cet ordre en fonction de la compatibilité avec le système du fichier DAT.",
+      "m3uPriorityNotice": "<strong>💿 La création de .m3u est activée pour ce profil :</strong> les jeux multi-disques ignorent le 7Z et le ZIP. Leurs disques sont produits en CHD (si autorisé pour le système), sinon en fichiers bruts. Voir l'<a href=\"#\" data-goto-tab=\"multidisc\">onglet « Multi-disques »</a>.",
       "optionsSection": "Options de compression",
       "compressionLevel": "Niveau de compression :",
       "levelFastest": "Rapide (compression minimale)",
@@ -902,7 +1152,16 @@
       "residualSection": "Déplacement des fichiers résiduels",
       "moveUnmatched": "Déplacer les fichiers non matchés vers le dossier dédié",
       "moveUnmatchedInfo": "Les fichiers qui ne correspondent à aucun jeu du DAT seront déplacés dans le dossier ci-dessous",
-      "syncedWithFolders": "Synchronisé avec le champ identique dans l'onglet « Dossiers »."
+      "unmatchedFolderGlobal": "Le dossier de destination est un paramètre global, commun à tous les profils : <a href=\"#\" data-goto-tab=\"folders\">onglet « Dossiers »</a>.",
+      "unmatchedFolderCurrent": "Dossier actuel :",
+      "unmatchedFolderNotSet": "aucun dossier défini",
+      "unmatchedMultiSystemOn": "Dossiers cibles multi-systèmes activé : les fichiers iront dans un sous-dossier par système (ex : {example})"
+    },
+    "multiDisc": {
+      "section": "Listes de lecture .m3u",
+      "generateM3u": "Créer un fichier .m3u pour les jeux multi-disques / multi-supports",
+      "generateM3uInfo": "Les jeux découpés en plusieurs entrées du DAT — « (Disc 1) », « (Disk 1 of 2) », « (Tape 1) », « (Side A) »… — reçoivent un fichier <code>&lt;jeu&gt;.m3u</code> placé à côté de leurs disques, qui permet à l'émulateur de changer de disque. Seuls les systèmes qui acceptent les .m3u sont concernés ; les DAT arcade sont ignorés. Seuls les disques sélectionnés et consolidés sont listés.",
+      "warning": "<strong>⚠️ Impact sur la compression :</strong> un .m3u ne peut pas référencer une archive 7Z ou ZIP. Quand cette option est activée, les disques des jeux multi-disques ne sont <strong>jamais compressés en 7Z ou ZIP</strong>, quel que soit l'ordre de priorité des formats : ils sont produits en CHD si ce format est autorisé pour le système (et que le disque a un point d'entrée .cue / .gdi / .iso), sinon copiés en fichiers bruts. Les jeux mono-disque gardent la compression habituelle."
     },
     "arcade": {
       "setModeSection": "Mode du set cible",
@@ -924,7 +1183,8 @@
     "oneGameOneRom": {
       "title": "1G1R — 1 jeu, 1 ROM",
       "enable": "Activer la sélection 1G1R",
-      "enableInfo": "Désactivé, <strong>rien ne change</strong> : RUMCET se comporte exactement comme sans cette fonction. Activé, la sélection automatique ne conserve qu'une version par jeu, en arbitrant les variantes selon les priorités ci-dessous. La sélection reste entièrement modifiable à la main ensuite.",
+      "tabIntro": "Ces valeurs servent de <strong>point de départ</strong> pour un système dont aucun modèle n'a encore été enregistré. Les réglages réellement appliqués à une base se modifient dans <strong>Sélection auto</strong>, depuis la fenêtre principale, et sont propres à chaque base.",
+      "enableInfo": "Détermine si le 1G1R est coché d'emblée pour une nouvelle base. La sélection automatique ne conserve alors qu'une version par jeu, en arbitrant les variantes selon les priorités ci-dessous. Rien n'est appliqué tant que vous ne cliquez pas sur « Appliquer » dans l'écran de sélection automatique.",
       "prioritySection": "Priorités d'arbitrage",
       "priorityInfo": "La première entrée de chaque liste gagne. Une valeur absente d'une liste n'est pas exclue : elle passe simplement en dernier. Pour exclure fermement une région ou une langue, utilisez une règle de sélection automatique.",
       "regionPriority": "Régions, de la plus souhaitée à la moins souhaitée :",
@@ -936,26 +1196,24 @@
       "preferLatestRevision": "Préférer la révision la plus récente",
       "preferLatestRevisionInfo": "À qualité régionale égale, <code>(Rev 2)</code> l'emporte sur <code>(Rev 1)</code>, qui l'emporte sur l'édition d'origine sans tag.",
       "fallbackToOwned": "Retomber sur une version que je possède",
-      "fallbackToOwnedInfo": "Quand la version préférée est absente de votre collection mais qu'une autre est présente, garder celle que vous avez plutôt que de laisser un trou. <strong>C'est ce qu'un outil travaillant sur le seul fichier DAT ne peut pas faire</strong> : il ignore ce que vous possédez réellement. Décochez pour un 1G1R strict, calculé sur le DAT seul.",
+      "fallbackToOwnedInfo": "Quand la version préférée est absente de votre collection mais qu'une autre est présente, garder celle que vous possédez plutôt que de laisser un trou. Décochez pour appliquer les priorités à la lettre : le jeu sera alors signalé manquant tant que la version préférée n'aura pas été trouvée.",
       "addEntry": "Ajouter",
       "removeEntry": "Retirer cette entrée",
       "cloneListSection": "Clone lists",
-      "cloneListInfo": "Un même jeu paraît parfois sous des noms sans rapport selon la région (<em>Pokémon Version Or</em> / <em>Pokémon Goldene Edition</em> / <em>Pocket Monsters Kin</em>). Aucune analyse de titre ne peut le deviner : ces relations sont une donnée éditoriale, curée à la main par la communauté. RUMCET les <strong>consomme</strong> sans les maintenir.",
+      "cloneListInfo": "Un même jeu paraît parfois sous des noms sans rapport selon la région — <em>Pokémon Version Or</em>, <em>Pokémon Goldene Edition</em> et <em>Pocket Monsters Kin</em> sont tous Pokémon Or. Les clone lists consignent ces correspondances, qu'aucune analyse de titre ne peut deviner, pour que le 1G1R n'en garde qu'une.",
       "cloneListSource": "Source des listes :",
-      "cloneListSourceInfo": "URL du dossier contenant les fichiers .json. Modifiable : c'est ce qui rend RUMCET indépendant du sort d'un dépôt en particulier.",
+      "cloneListSourceInfo": "URL du dossier contenant les fichiers .json. Modifiez-la pour utiliser un miroir ou un fork.",
       "cloneListFolder": "Dossier local :",
-      "cloneListFolderInfo": "Laissez vide pour utiliser le dossier de données de l'application.",
-      "cloneListAutoApply": "Réappliquer automatiquement après chaque chargement de DAT",
-      "cloneListAutoApplyInfo": "Charger un DAT <strong>principal</strong> vide et réécrit la table des jeux : les regroupements posés par une clone list disparaissent avec elle. Charger un DAT <strong>complémentaire</strong> ajoute des jeux qui n'en ont pas encore. Sans cette option, il faut rouvrir « Sélection auto » et cliquer « Appliquer » à chaque fois.",
-      "cloneListAutoDownload": "Télécharger la liste manquante avant de l'appliquer",
-      "cloneListAutoDownloadInfo": "Sous-option de la précédente. Au chargement d'un DAT, si aucune clone list locale ne correspond au système, elle est téléchargée puis appliquée. Une liste déjà présente n'est jamais retéléchargée : la mise à jour reste une action manuelle.",
-      "cloneListAttribution": "Le format des clone lists et le dépôt proposé par défaut proviennent du projet <strong>Retool</strong> de unexpectedpanda, sous licence <strong>BSD-3-Clause</strong>. RUMCET n'en est ni l'auteur ni le mainteneur. Voir <code>THIRD_PARTY_NOTICES.md</code>."
+      "cloneListFolderInfo": "Emplacement des clone lists téléchargées. Laissez vide pour utiliser le dossier de données de l'application.",
+      "cloneListFolderEffective": "Actuellement utilisé : {folder}",
+      "cloneListAutoUpdate": "Tenir les clone lists à jour automatiquement",
+      "cloneListAutoUpdateInfo": "À chaque chargement de DAT et à chaque ouverture d'une base, RUMCET vérifie si la clone list du système a été mise à jour, la télécharge le cas échéant, puis l'applique. Décochée, RUMCET utilise les clone lists déjà présentes dans le dossier local, sans rien télécharger. Dans les deux cas, vous pouvez mettre à jour la clone list à tout moment par un clic droit sur le fichier DAT/XML dans le volet de gauche.",
+      "cloneListAttribution": "Les clone lists proviennent du projet <strong>Retool</strong> de unexpectedpanda, sous licence <strong>BSD-3-Clause</strong>. Voir <code>THIRD_PARTY_NOTICES.md</code>."
     },
     "compatibility": {
-      "info": "Configurez les formats d'archives compatibles par système. Certains émulateurs ne supportent pas tous les formats. Les formats avec ⚠️ fonctionnent mais peuvent avoir des limitations.",
+      "info": "Configurez les formats d'archives compatibles par système. Certains émulateurs ne supportent pas tous les formats. Les formats avec ⚠️ indiquent que tous les émulateurs ne supportent pas ce format.",
       "resetAll": "↺ Tout réinitialiser",
-      "resetAllTitle": "Réinitialiser tous les systèmes aux valeurs par défaut",
-      "resetSystemTitle": "Réinitialiser {system} aux valeurs par défaut",
+      "resetSystemTitle": "Réinitialiser {system} selon la règle du profil",
       "partialSupportTitle": "Compatibilité partielle : certains émulateurs ne supportent pas ce format",
       "unsupportedTitle": "Non supporté par les émulateurs de ce système",
       "rawFormatsDat": "Formats sans compression :",
@@ -964,7 +1222,22 @@
       "sortTypeManufacturer": "Type → Constructeur",
       "sortManufacturerType": "Constructeur → Type",
       "sortAlphabetical": "Nom (A→Z)",
-      "searchPlaceholder": "Nom ou ID du système..."
+      "searchPlaceholder": "Nom ou ID du système...",
+      "ruleLabel": "Appliquer une règle à tous les systèmes :",
+      "rules": {
+        "universal": "Compatibilité 100 %",
+        "recalbox": "Recalbox",
+        "master": "Archivage / Master"
+      },
+      "rulesInfo": {
+        "universal": "Coche uniquement les formats supportés par tous les émulateurs du système (fichiers bruts si aucun).",
+        "recalbox": "Coche les formats supportés par au moins un émulateur du système.",
+        "master": "Coche 7Z et ZIP pour tous les systèmes, et CHD pour les systèmes qui le supportent."
+      },
+      "applyRule": "Appliquer",
+      "applyRuleConfirm": "Appliquer la règle « {rule} » à tous les systèmes du profil « {name} » ? Vos réglages par système seront remplacés.",
+      "lastRule": "Dernière règle appliquée à ce profil : {rule}.",
+      "noRule": "Aucune règle appliquée à ce profil (réglages personnalisés)."
     },
     "download": {
       "title": "Téléchargement de ROMs",
@@ -989,6 +1262,69 @@
       "systemExtensionsSection": "Extensions par système",
       "systemExtensionsInfo": "Pour chaque système, choisissez quelles sources d'extensions tester lors d'un téléchargement. Les sources sont combinées et dédupliquées dans l'ordre : globales → formats sans compression → autres formats émulateurs → complémentaires.",
       "resetAllTitle": "Réinitialiser tous les systèmes (toutes les cases cochées, champ libre vide)"
+    },
+    "systemsUpdate": {
+      "info": "Recalbox évolue indépendamment de Rumcet : vous pouvez actualiser la liste des systèmes et leurs formats depuis la version de Recalbox que vous utilisez. Un aperçu des différences est affiché avant application.",
+      "versionLabel": "Version de Recalbox :",
+      "versionsNotLoaded": "—",
+      "check": "🔄 Vérifier les mises à jour",
+      "reset": "Revenir aux données intégrées",
+      "resetTitle": "Revenir aux données systèmes livrées avec Rumcet",
+      "resetConfirm": "Revenir aux données systèmes livrées avec Rumcet ?\n\nLes systèmes ajoutés par une mise à jour disparaîtront. Vos réglages de formats d'archive sont conservés.",
+      "statusBundled": "Données systèmes : intégrées à Rumcet.",
+      "statusRecalbox": "Données systèmes : Recalbox {ref}, mises à jour le {date} ({count} système(s) actualisé(s)).",
+      "loadingVersions": "Chargement des versions...",
+      "versionsError": "Impossible de charger les versions (hors ligne ?)",
+      "channel": {
+        "stable": "Stable",
+        "patron": "Patron",
+        "alpha": "Alpha",
+        "development": "Développement",
+        "patronAlpha": "Patron Alpha"
+      },
+      "modalTitle": "Mise à jour des systèmes — Recalbox {ref}",
+      "loading": "Récupération des données systèmes de Recalbox {ref}...",
+      "fetchError": "Impossible de récupérer les données : {error}",
+      "upToDate": "Aucune différence : les données systèmes correspondent déjà à Recalbox {ref} ({count} systèmes).",
+      "summary": "{added} nouveau(x), {changed} modifié(s), {unchanged} inchangé(s).",
+      "customizedNote": "Les systèmes dont vous avez personnalisé les formats d'archive sont décochés : appliquer la mise à jour remplacerait vos choix par les valeurs de Recalbox.",
+      "sectionNew": "Nouveaux systèmes ({count})",
+      "newSystemsNote": "Les nouveaux systèmes ne seront pas détectés automatiquement depuis le nom d'un DAT : sélectionnez-les manuellement. Leur source DAT est inconnue : vous pourrez en chercher une et l'associer dans l'écran de téléchargement des DAT.",
+      "sectionChanged": "Systèmes modifiés ({count})",
+      "customized": "personnalisé",
+      "customizedTitle": "Vous avez modifié les formats d'archive de ce système",
+      "checkAll": "Tout cocher",
+      "uncheckAll": "Tout décocher",
+      "apply": "Appliquer ({count})",
+      "applyError": "Impossible d'appliquer la mise à jour : {error}",
+      "fields": {
+        "fullname": "Nom",
+        "manufacturer": "Constructeur",
+        "type": "Type",
+        "releaseDate": "Date de sortie",
+        "supportedFormats": "Archives supportées",
+        "warningFormats": "Support partiel",
+        "unsupportedFormats": "Archives non supportées",
+        "extraRawFormats": "Extensions émulateurs"
+      }
+    },
+    "profiles": {
+      "label": "Profil de consolidation",
+      "newTitle": "Nouveau profil (copie du profil affiché)",
+      "renameTitle": "Renommer le profil",
+      "resetTitle": "Réinitialiser le profil intégré",
+      "deleteTitle": "Supprimer le profil",
+      "activeOption": "{name} (courant)",
+      "bannerActive": "Profil « {name} » — profil courant, utilisé par la consolidation.",
+      "bannerOther": "Profil « {name} » — vous le modifiez, mais ce n’est pas le profil courant (il se choisit dans la fenêtre principale).",
+      "hintActive": "Profil courant : utilisé par la consolidation.",
+      "hintOther": "Pas le profil courant : il se choisit dans la fenêtre principale.",
+      "newDialogTitle": "Nouveau profil, copie de « {name} »",
+      "copyName": "{name} (copie)",
+      "renameDialogTitle": "Renommer le profil",
+      "deleteConfirm": "Supprimer le profil « {name} » ? La suppression sera effective à l’enregistrement.",
+      "deleteActiveConfirm": "« {name} » est le profil courant. Le supprimer ? « Mon profil » (ou le premier profil) deviendra le profil courant à l’enregistrement.",
+      "resetConfirm": "Réinitialiser le profil « {name} » aux valeurs par défaut de Rumcet ?"
     }
   },
   "datDownload": {
@@ -1054,6 +1390,59 @@
     },
     "actions": {
       "load": "📖 Charger le DAT/XML"
+    },
+    "manualSource": {
+      "badgeUnknown": "Source inconnue",
+      "badgeUser": "Manuelle",
+      "badgeTitle": "Système ajouté par une mise à jour Recalbox",
+      "infoUnknown": "Ce système a été ajouté par une mise à jour Recalbox : Rumcet ne sait pas s'il existe un DAT No-Intro ou Redump pour lui. Cherchez-le sur les sites des sources, puis associez-le ci-dessous ou chargez le fichier téléchargé depuis l'onglet Fichier local.",
+      "infoUser": "Ce système a été ajouté par une mise à jour Recalbox ; sa source DAT a été associée manuellement. Vous pouvez modifier ou retirer l'association.",
+      "searchNoIntro": "🔎 Chercher sur No-Intro ↗",
+      "searchRedump": "🔎 Chercher sur Redump ↗",
+      "noIntroId": "ID DAT-o-Matic",
+      "noIntroIdPlaceholder": "ex : 46",
+      "redumpSlug": "Slug Redump",
+      "redumpSlugPlaceholder": "ex : psx",
+      "save": "Associer",
+      "hint": "L'ID DAT-o-Matic est le nombre après <code>s=</code> dans l'adresse de la page du DAT ; le slug Redump est la partie après <code>/datfile/</code>. Laissez les deux champs vides pour retirer l'association.",
+      "invalidNoIntroId": "L'ID DAT-o-Matic doit être un nombre.",
+      "invalidRedumpSlug": "Le slug Redump ne peut contenir que des minuscules, chiffres et tirets.",
+      "saved": "Source DAT associée.",
+      "error": "Erreur : {error}"
+    },
+    "mameRecalboxNotice": "ℹ️ Le badge <strong>Recalbox</strong> signale la version de MAME utilisée par les <strong>dernières</strong> versions Stable, Patron, Patron Alpha et Alpha de Recalbox (vérifiées en ligne à l'ouverture de cet onglet ; survolez le badge pour voir la version). Une version plus ancienne de Recalbox peut utiliser une autre version de MAME.",
+    "badgeRecalbox": "Recalbox {channel}",
+    "badgeRecalboxTitle": "Utilisée par la dernière version {channel} de Recalbox ({ref})",
+    "recalboxChannel": {
+      "stable": "Stable",
+      "patron": "Patron",
+      "patronAlpha": "Patron Alpha",
+      "alpha": "Alpha"
+    }
+  },
+  "dbFolders": {
+    "targetTitle": "📁 Dossier cible",
+    "targetLabel": "ROMs validées (destination de la consolidation)",
+    "targetInfo": "Les ROMs conservées par la consolidation sont placées dans ce dossier. Il est scanné juste après la création de la base, ce qui peut prendre du temps s'il contient déjà des fichiers.",
+    "targetRequired": "Veuillez choisir un dossier cible.",
+    "systemSubfolder": "Créer un sous-dossier au nom du système",
+    "systemSubfolderInfo": "Exemple : …/psx. Le système est détecté depuis le nom du DAT (ou choisi manuellement).",
+    "effective": "Dossier effectif : {path}",
+    "advancedTitle": "Dossiers de travail (avancé)",
+    "advancedInfo": "Propres à cette base. Laissez un champ vide pour utiliser le dossier défini dans les paramètres.",
+    "unmatched": "ROMs non référencées",
+    "incomplete": "ROMs incomplètes",
+    "temp": "Dossier temporaire d'extraction",
+    "defaultPlaceholder": "Par défaut : {path}",
+    "browseTitle": "Sélectionner un dossier",
+    "clear": "Effacer"
+  },
+  "profiles": {
+    "names": {
+      "custom": "Mon profil",
+      "universal": "Compatibilité 100 %",
+      "recalbox": "Recalbox (jeu)",
+      "master": "Archivage / Master"
     }
   }
 }

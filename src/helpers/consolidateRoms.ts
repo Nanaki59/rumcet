@@ -20,9 +20,14 @@ import {
 import { systemProfileManager } from './systemProfiles/index.js';
 import type { SystemProfile } from './systemProfiles/index.js';
 import type { MatchedRomInfo } from './systemProfiles/types.js';
-import { getSystemAllowedFormats, determineTargetFormat, findChdEntryPoint, CHD_ENTRY_EXTENSIONS } from './systemProfiles/rules.js';
+import {
+  getSystemAllowedFormats, determineTargetFormat, findChdEntryPoint, CHD_ENTRY_EXTENSIONS,
+  systemAcceptsM3u, withM3uCompatibleFormats
+} from './systemProfiles/rules.js';
+import { buildM3uGroups, writeM3uFiles } from './m3uWriter.js';
 // Ré-exports de compatibilité : ces helpers vivent désormais dans systemProfiles/rules.
 export { getSystemAllowedFormats, determineTargetFormat } from './systemProfiles/rules.js';
+import { OperationSignal, OperationAbortedError, raceAbort, throwIfAborted } from './operationSignal.js';
 import path from 'path';
 import fs from 'fs/promises';
 
@@ -35,6 +40,29 @@ import fs from 'fs/promises';
  */
 const RUMCET_DEBUG = process.env.RUMCET_DEBUG === '1' || process.env.RUMCET_DEBUG === 'true';
 
+/** Étape du jeu en cours ('done' | 'skipped' | 'error' | 'aborted' = issue du jeu) */
+export type ConsolidationStep =
+  | 'analyzing' | 'direct-copy' | 'extracting' | 'compressing' | 'copying'
+  | 'done' | 'skipped' | 'error' | 'aborted';
+
+/** Stratégie appliquée au jeu en cours */
+export type ConsolidationMode = 'standard' | 'best' | 'direct' | 'raw' | 'chd-copy';
+
+/** Format cible étudié (ou archive source candidate en copie directe) */
+export interface FormatCandidate {
+  /** Identifiant unique dans la liste (format, ou chemin de l'archive source) */
+  id: string;
+  /** Format : 7z, zip, chd, raw… */
+  format: string;
+  /** Libellé complémentaire (nom de l'archive source en copie directe) */
+  label?: string;
+  status: 'pending' | 'running' | 'done' | 'failed' | 'skipped' | 'rejected' | 'chosen';
+  /** Taille en octets (archive créée, ou archive source) */
+  size?: number;
+  /** Clé i18n (index.consolidationModal.notes.*) expliquant un statut skipped/rejected/failed */
+  note?: string;
+}
+
 export interface ConsolidationProgress {
   phase: 'preparing' | 'consolidating' | 'moving-unmatched' | 'complete';
   currentGame?: string;
@@ -44,6 +72,20 @@ export interface ConsolidationProgress {
   key: string;
   /** Paramètres d'interpolation {nom} de la clé. */
   params?: Record<string, string | number>;
+  /** Détail du jeu en cours */
+  step?: ConsolidationStep;
+  mode?: ConsolidationMode;
+  formats?: FormatCandidate[];
+  /** Format retenu pour le jeu en cours */
+  chosenFormat?: string;
+  /** Message d'erreur du jeu (step = 'error') */
+  error?: string;
+  /** Compteurs cumulés */
+  consolidated?: number;
+  errored?: number;
+  skipped?: number;
+  /** Consolidation interrompue par l'utilisateur (phase 'complete') */
+  cancelled?: boolean;
 }
 
 export interface ConsolidationResult {
@@ -55,11 +97,110 @@ export interface ConsolidationResult {
     romsExtracted: number;
     archivesCreated: number;
     unmatchedFilesMoved: number;
+    /** Jeux non traités (consolidation interrompue) */
+    gamesRemaining?: number;
   };
   errors: Array<{ gameName: string; error: string }>;
+  /** Interrompue par l'utilisateur : phases de fin (nettoyage, déplacement) non exécutées */
+  cancelled?: boolean;
+  /** Option .m3u active et applicable : jeux multi-disques détectés et .m3u produits */
+  m3u?: {
+    /** Jeux multi-disques consolidés sans 7z/zip (CHD ou fichiers bruts) */
+    forcedGames: number;
+    created: number;
+    skipped: number;
+  };
 }
 
 type ProgressCallback = (progress: ConsolidationProgress) => void;
+
+/**
+ * État affichable du jeu en cours (étape, stratégie, formats étudiés, format retenu).
+ * Chaque modification est réémise via le callback.
+ */
+class GameProgressReporter {
+  private state: { step?: ConsolidationStep; mode?: ConsolidationMode; formats: FormatCandidate[]; chosenFormat?: string; error?: string } = { formats: [] };
+
+  constructor(private readonly emit: (state: GameProgressReporter['state']) => void) {}
+
+  private flush(): void {
+    this.emit({ ...this.state, formats: this.state.formats.map(f => ({ ...f })) });
+  }
+
+  step(step: ConsolidationStep, error?: string): void {
+    this.state.step = step;
+    if (error !== undefined) this.state.error = error;
+    this.flush();
+  }
+
+  mode(mode: ConsolidationMode): void {
+    this.state.mode = mode;
+    this.flush();
+  }
+
+  /** Remplace la liste des formats étudiés (et oublie le format retenu) */
+  setFormats(formats: FormatCandidate[]): void {
+    this.state.formats = formats.map(f => ({ ...f }));
+    this.state.chosenFormat = undefined;
+    this.flush();
+  }
+
+  updateFormat(id: string, patch: Partial<FormatCandidate>): void {
+    const candidate = this.state.formats.find(f => f.id === id);
+    if (candidate) Object.assign(candidate, patch);
+    this.flush();
+  }
+
+  /** Marque un candidat comme retenu */
+  chosen(id: string): void {
+    const candidate = this.state.formats.find(f => f.id === id);
+    if (candidate) {
+      candidate.status = 'chosen';
+      this.state.chosenFormat = candidate.format;
+    }
+    this.flush();
+  }
+
+  get chosenFormat(): string | undefined {
+    return this.state.chosenFormat;
+  }
+}
+
+/** Contexte d'exécution d'un jeu : affichage de la progression et interruption */
+interface GameRunContext {
+  reporter?: GameProgressReporter;
+  signal?: OperationSignal;
+}
+
+/**
+ * Copie un fichier vers le dossier cible sans jamais y laisser de copie partielle :
+ * copie vers un fichier temporaire, puis renommage (qui remplace l'éventuel fichier
+ * existant). Si un arrêt forcé survient pendant la copie, le temporaire est supprimé
+ * et le fichier existant reste intact.
+ */
+async function copyToTarget(source: string, dest: string, ctx?: GameRunContext): Promise<void> {
+  throwIfAborted(ctx?.signal);
+  const partial = `${dest}.rumcet-tmp`;
+  try {
+    await fs.copyFile(source, partial);
+    throwIfAborted(ctx?.signal);
+    await fs.rename(partial, dest);
+  } catch (error) {
+    try { await fs.unlink(partial); } catch { /* déjà absent */ }
+    throw error;
+  }
+}
+
+/** Candidats du mode « meilleure compression » (CHD ignoré sans point d'entrée) */
+function bestCompressionCandidates(allowedFormats: ArchiveFormat[], chdPossible: boolean): FormatCandidate[] {
+  const list: FormatCandidate[] = allowedFormats.map(f => (f === 'chd' && !chdPossible)
+    ? { id: f, format: f, status: 'skipped' as const, note: 'chdNoEntryPoint' }
+    : { id: f, format: f, status: 'pending' as const });
+  if (!list.some(f => f.status === 'pending')) {
+    list.push({ id: '7z', format: '7z', status: 'pending' });
+  }
+  return list;
+}
 
 /**
  * Sanitise un nom de fichier en remplaçant les caractères interdits
@@ -97,7 +238,8 @@ async function copyChdDisksToOutput(
   game: { id: number; name: string },
   diskRoms: MatchedRomInfo[],
   gameOutDir: string,
-  result: ConsolidationResult
+  result: ConsolidationResult,
+  ctx?: GameRunContext
 ): Promise<void> {
   if (diskRoms.length === 0) return;
   const chdDir = path.join(gameOutDir, sanitizeFileName(game.name));
@@ -110,7 +252,7 @@ async function copyChdDisksToOutput(
       continue;
     }
     const target = path.join(chdDir, chdOutputName(rom));
-    await fs.copyFile(source, target);
+    await copyToTarget(source, target, ctx);
     console.log(`[CHD] disk copied as-is (no extraction) → ${target}`);
     result.stats.romsExtracted++;
 
@@ -134,7 +276,8 @@ async function copyChdDisksToOutput(
  */
 export async function consolidateRoms(
   db: Database,
-  onProgress?: ProgressCallback
+  onProgress?: ProgressCallback,
+  signal?: OperationSignal
 ): Promise<ConsolidationResult> {
   const settings = settingsManager.getAll();
   // Résoudre les dossiers cibles effectifs (avec sous-dossier système si mode multi-système)
@@ -242,7 +385,8 @@ export async function consolidateRoms(
       gamesErrored: 0,
       romsExtracted: 0,
       archivesCreated: 0,
-      unmatchedFilesMoved: 0
+      unmatchedFilesMoved: 0,
+      gamesRemaining: 0
     },
     errors: []
   };
@@ -337,6 +481,22 @@ export async function consolidateRoms(
     );
   }
 
+  // Jeux multi-disques (option .m3u) : leurs disques ne doivent pas finir en 7z/zip,
+  // qu'un .m3u ne peut pas référencer. Ils reçoivent des paramètres restreints aux
+  // formats compatibles (CHD, sinon mode brut à plat).
+  const m3uGroups = (settings.generateM3u && !datIsArcade && systemAcceptsM3u(systemId))
+    ? buildM3uGroups(selectedGames)
+    : [];
+  const m3uGameIds = new Set(m3uGroups.flatMap(g => g.discs.map(d => d.gameId)));
+  const m3uSettings = m3uGameIds.size > 0 ? withM3uCompatibleFormats(settings, systemId) : settings;
+  if (m3uGroups.length > 0) {
+    console.log(`[m3u] ${m3uGroups.length} multi-disc game(s) (${m3uGameIds.size} discs) → no 7z/zip for these discs, .m3u created after consolidation`);
+    result.m3u = { forcedGames: m3uGroups.length, created: 0, skipped: 0 };
+  } else if (settings.generateM3u && !systemAcceptsM3u(systemId)) {
+    console.log(`[m3u] option enabled but system "${systemId}" does not accept .m3u → ignored`);
+  }
+  const consolidatedIds = new Set<number>();
+
   // Phase 6 — En mode merged, calculer les groupes parent → clones-à-fusionner.
   // Un clone est fusionné dans son parent si le parent est dans la sélection
   // (user ou auto). Les clones fusionnés seront skippés dans la boucle principale.
@@ -383,33 +543,87 @@ export async function consolidateRoms(
     }
   }
 
+  const counters = () => ({
+    consolidated: result.stats.gamesConsolidated,
+    errored: result.stats.gamesErrored,
+    skipped: result.stats.gamesSkipped
+  });
+
   // Phase 2 : Consolider chaque jeu
+  let gamesHandled = 0;
   for (let i = 0; i < selectedGames.length; i++) {
     const game = selectedGames[i];
+
+    // Interruption demandée : on s'arrête avant le jeu suivant
+    if (signal && (signal.cancelRequested || signal.abort.signal.aborted)) {
+      result.cancelled = true;
+      break;
+    }
 
     // Phase 6 — Skip les clones foldés : leurs ROMs propres seront extraites lors
     // de la consolidation de leur parent, sous un sous-dossier {cloneName}/.
     if (foldedCloneIds.has(game.id)) {
       console.log(`[Merged mode] Skip ${game.name} — ROMs merged into the parent`);
+      gamesHandled++;
       continue;
     }
 
-    onProgress?.({
+    const gameProgress = (state: Partial<ConsolidationProgress>) => onProgress?.({
       phase: 'consolidating',
       currentGame: game.name,
       currentGameIndex: i + 1,
       totalGames: selectedGames.length,
       key: 'logs.consolidation.progress.game',
-      params: { game: game.name }
+      params: { game: game.name },
+      ...state,
+      ...counters()
     });
+    const reporter = new GameProgressReporter(state => gameProgress(state));
+    reporter.step('analyzing');
 
+    const before = { ...result.stats };
+    const mergedClones = parentToFoldedClones.get(game.id) || [];
+    const gameSettings = m3uGameIds.has(game.id) ? m3uSettings : settings;
+    const gamePromise = consolidateGame(
+      db, game, gameSettings, archiveManager, result, systemId, targetMode, datIsArcade, profile, mergedClones,
+      { reporter, signal }
+    );
     try {
-      const mergedClones = parentToFoldedClones.get(game.id) || [];
-      await consolidateGame(db, game, settings, archiveManager, result, systemId, targetMode, datIsArcade, profile, mergedClones);
+      await (signal ? raceAbort(gamePromise, signal.abort.signal) : gamePromise);
+      gamesHandled++;
+      if (result.stats.gamesConsolidated > before.gamesConsolidated) {
+        consolidatedIds.add(game.id);
+        reporter.step('done');
+      } else {
+        reporter.step('skipped');
+      }
     } catch (error: any) {
+      if (error instanceof OperationAbortedError) {
+        // Arrêt forcé : le jeu est abandonné. On laisse la promesse abandonnée se
+        // terminer (ses processus ont été tués) pour que son `finally` nettoie le
+        // dossier temporaire avant la suite.
+        result.cancelled = true;
+        reporter.step('aborted');
+        const settled = await Promise.race([
+          gamePromise.then(() => true, () => true),
+          new Promise<boolean>(resolve => setTimeout(() => resolve(false), 10000))
+        ]);
+        if (!settled) {
+          // Le jeu ne s'est pas terminé (outil qui ne rend pas la main) : nettoyer
+          // nous-mêmes ses dossiers temporaires
+          for (const dir of [`game-${game.id}`, `game-${game.id}-copy`]) {
+            try { await fs.rm(path.join(settings.tempExtractionFolder, dir), { recursive: true, force: true }); } catch { /* ignore */ }
+          }
+        }
+        console.warn(`⏹️ Consolidation of ${game.name} aborted (forced stop)`);
+        break;
+      }
+
+      gamesHandled++;
       result.stats.gamesErrored++;
       result.errors.push({ gameName: game.name, error: error.message || String(error) });
       console.error(`❌ Consolidation error ${game.name}:`, error);
+      reporter.step('error', error.message || String(error));
 
       // Logger l'erreur en base
       await db.run(
@@ -419,9 +633,30 @@ export async function consolidateRoms(
       );
     }
   }
+  result.stats.gamesRemaining = selectedGames.length - gamesHandled;
+
+  if (result.cancelled) {
+    // Phases 3 et 4 sautées : supprimer « tous les fichiers matchés » effacerait les
+    // sources des jeux non encore consolidés.
+    console.warn(`⏹️ Consolidation interrupted: ${result.stats.gamesRemaining} game(s) not processed — cleanup phases skipped`);
+  }
+
+  // Phase 2b : .m3u des jeux multi-disques dont tous les disques retenus ont été
+  // consolidés. Avant le nettoyage : la recherche des fichiers produits passe par la base.
+  if (!result.cancelled && result.m3u) {
+    const complete = m3uGroups.filter(g => g.discs.every(d => consolidatedIds.has(d.gameId)));
+    try {
+      const written = await writeM3uFiles(db, complete, settings.validatedRomsFolder, sanitizeFileName);
+      result.m3u.created = written.created.length;
+      result.m3u.skipped = written.skipped.length + (m3uGroups.length - complete.length);
+    } catch (err) {
+      console.warn(`[m3u] .m3u creation failed: ${err}`);
+      result.m3u.skipped = m3uGroups.length;
+    }
+  }
 
   // Phase 3 : Supprimer tous les fichiers matchés restants (si scope = all-matched)
-  if (settings.cleanSourceAfterConsolidation && settings.cleanupScope === 'all-matched') {
+  if (!result.cancelled && settings.cleanSourceAfterConsolidation && settings.cleanupScope === 'all-matched') {
     onProgress?.({
       phase: 'moving-unmatched',
       currentGameIndex: selectedGames.length,
@@ -432,8 +667,8 @@ export async function consolidateRoms(
     await deleteAllMatchedFiles(db, settings.protectFilesForUnselectedGames);
   }
 
-  // Phase 4 : Déplacer les fichiers non matchés (si cleanSourceAfterConsolidation activé)
-  if (settings.cleanSourceAfterConsolidation) {
+  // Phase 4 : Déplacer les fichiers non matchés (si nettoyage et déplacement activés)
+  if (!result.cancelled && settings.cleanSourceAfterConsolidation && settings.moveUnmatchedFiles !== false) {
     onProgress?.({
       phase: 'moving-unmatched',
       currentGameIndex: selectedGames.length,
@@ -460,7 +695,9 @@ export async function consolidateRoms(
     currentGameIndex: selectedGames.length,
     totalGames: selectedGames.length,
     key: 'logs.consolidation.progress.complete',
-    params: { count: result.stats.gamesConsolidated }
+    params: { count: result.stats.gamesConsolidated },
+    cancelled: !!result.cancelled,
+    ...counters()
   });
 
   return result;
@@ -660,8 +897,10 @@ async function consolidateGame(
   targetMode: ArcadeTargetSetMode,
   datIsArcade: boolean,
   profile: SystemProfile,
-  mergedClones: Array<{ id: number; name: string }> = []
+  mergedClones: Array<{ id: number; name: string }> = [],
+  ctx: GameRunContext = {}
 ): Promise<void> {
+  const reporter = ctx.reporter;
   // Phase 4 — Filtre des dat_roms par mode cible (split exclut merge_name).
   const gameCond = profile.romsSqlCondition(targetMode, 'dr');
 
@@ -836,7 +1075,11 @@ async function consolidateGame(
   // Jeu 100 % CHD (aucune ROM fichier) → copie directe des disques, pas d'archive.
   if (fileRoms.length === 0) {
     console.log(`[2/4 Strategy] game contains only CHD disk(s) → direct copy without recompression`);
-    await consolidateChdGame(db, game, diskRoms, settings, result);
+    reporter?.mode('chd-copy');
+    reporter?.setFormats([{ id: 'chd', format: 'chd', status: 'running' }]);
+    reporter?.step('copying');
+    await consolidateChdGame(db, game, diskRoms, settings, result, ctx);
+    reporter?.chosen('chd');
     return;
   }
 
@@ -862,12 +1105,24 @@ async function consolidateGame(
       console.log(`[2/4 Strategy] "recreate perfect archives" option disabled → looking for a reusable source archive`);
       const directCopyResult = await tryDirectArchiveCopy(
         db, game, matchedRoms, settings, result, allowedFormats, sanitizedName, archiveManager,
-        targetMode, datIsArcade, profile
+        targetMode, datIsArcade, profile, ctx
       );
       if (directCopyResult) return; // Archive copiée directement, pas besoin de recréer
     }
   } else if (mergedClones.length > 0) {
     console.log(`[2/4 Strategy] merged mode: ${mergedClones.length} clone(s) to merge → the archive must be recreated (no reusable source archive)`);
+  }
+
+  // Formats étudiés pour la recréation de l'archive
+  if (targetFormat === null) {
+    reporter?.mode('raw');
+    reporter?.setFormats([{ id: 'raw', format: 'raw', status: 'pending' }]);
+  } else if (settings.useBestCompression) {
+    reporter?.mode('best');
+    reporter?.setFormats(bestCompressionCandidates(getSystemAllowedFormats(systemId, settings), chdPossible));
+  } else {
+    reporter?.mode('standard');
+    reporter?.setFormats([{ id: targetFormat, format: targetFormat, status: 'pending' }]);
   }
 
   // Créer le dossier temporaire pour ce jeu (extraction + output)
@@ -881,6 +1136,7 @@ async function consolidateGame(
     // Les disques CHD (diskRoms) sont volontairement exclus : ils seront copiés
     // tels quels après création de l'archive (copyChdDisksToOutput).
     console.log(`[3/4 Preparation] extracting source files to: ${tempDir}`);
+    reporter?.step('extracting');
 
     // Optimisation : un CHD est monolithique — chdman extrait TOUT le disque à
     // chaque appel. Grouper les ROMs sourcées d'un même CHD pour ne l'extraire
@@ -900,6 +1156,7 @@ async function consolidateGame(
     }
 
     for (const rom of nonChdRoms) {
+      throwIfAborted(ctx.signal);
       // Phase 6 — Passer game.name comme "hôte" : les ROMs de clones foldés seront
       // placées dans un sous-dossier {cloneName}/ pour respecter la convention MAME.
       await extractRomToTemp(rom, tempDir, archiveManager, game.name);
@@ -1004,13 +1261,14 @@ async function consolidateGame(
     // (et du sous-dossier système si l'option multi-système est activée).
     if (targetFormat === null) {
       console.log(`[4/4 Raw storage] no archive format allowed for "${systemId}" → copying raw files (without compression)`);
+      reporter?.step('copying');
       // Dossier de sortie du jeu (bios/ si set BIOS + option activée)
       const gameOutDir = getGameOutputDir(game, settings);
       await fs.mkdir(gameOutDir, { recursive: true });
       const rawEntries: Array<ConsolidatedRomEntry & { filePath: string }> = [];
       for (const fp of filePaths) {
         const dest = path.join(gameOutDir, path.basename(fp));
-        await fs.copyFile(fp, dest);
+        await copyToTarget(fp, dest, ctx);
 
         // Faire correspondre ce fichier extrait à un dat_rom (par nom de fichier)
         const baseName = path.basename(fp);
@@ -1031,12 +1289,14 @@ async function consolidateGame(
 
       // Enregistrer directement en base : scanned_files + rom_matches dans le dossier cible.
       // Si gameOutDir est un sous-dossier (bios/), il est enregistré sous validatedRomsFolder.
+      throwIfAborted(ctx.signal);
       if (rawEntries.length > 0) {
         await recordConsolidatedRawFiles(db, gameOutDir, settings.validatedRomsFolder, rawEntries);
       }
 
       // Copier les CHD éventuels tels quels (sans les inclure dans les fichiers bruts).
-      await copyChdDisksToOutput(db, game, diskRoms, gameOutDir, result);
+      await copyChdDisksToOutput(db, game, diskRoms, gameOutDir, result, ctx);
+      reporter?.chosen('raw');
 
       result.stats.archivesCreated++;
       result.stats.gamesConsolidated++;
@@ -1049,10 +1309,11 @@ async function consolidateGame(
       return;
     }
 
+    reporter?.step('compressing');
     if (settings.useBestCompression) {
       // Mode meilleure compression : tester plusieurs formats et garder le plus petit
       const result_best = await createBestCompressedArchive(
-        relativeFilePaths, tempOutputBasePath, settings, archiveManager, systemId, chdPossible, tempDir
+        relativeFilePaths, tempOutputBasePath, settings, archiveManager, systemId, chdPossible, tempDir, ctx
       );
       tempOutputPath = result_best.outputPath;
       finalFormat = result_best.format;
@@ -1065,6 +1326,10 @@ async function consolidateGame(
 
       if (archiveFiles.length === 0) {
         console.warn(`[4/4 Compression] no CHD entry point → 7z fallback`);
+        reporter?.setFormats([
+          { id: 'chd', format: 'chd', status: 'skipped', note: 'chdNoEntryPoint' },
+          { id: '7z', format: '7z', status: 'running' }
+        ]);
         // Fallback si CHD impossible
         tempOutputPath = await withTimeout(
           archiveManager.createArchive(relativeFilePaths, tempOutputBasePath,
@@ -1077,6 +1342,7 @@ async function consolidateGame(
         finalFormat = '7z';
       } else {
         console.log(`[4/4 Compression] creating the ${targetFormat} archive…`);
+        reporter?.updateFormat(targetFormat, { status: 'running' });
         tempOutputPath = await withTimeout(
           archiveManager.createArchive(archiveFiles, tempOutputBasePath,
             { archiveFormatPriority: [targetFormat], compressionLevel: settings.compressionLevel,
@@ -1087,18 +1353,23 @@ async function consolidateGame(
         );
         finalFormat = targetFormat;
       }
+      const archiveSize = await fs.stat(tempOutputPath).then(st => st.size).catch(() => undefined);
+      reporter?.updateFormat(finalFormat, { status: 'done', size: archiveSize });
+      reporter?.chosen(finalFormat);
     }
 
     // Copier le résultat final vers le dossier cible (bios/ si set BIOS + option activée)
+    reporter?.step('copying');
     const gameOutDir = getGameOutputDir(game, settings);
     await fs.mkdir(gameOutDir, { recursive: true });
     const finalDestPath = path.join(gameOutDir, path.basename(tempOutputPath));
-    await fs.copyFile(tempOutputPath, finalDestPath);
+    await copyToTarget(tempOutputPath, finalDestPath, ctx);
     console.log(`[✓ Done]         consolidated archive → ${finalDestPath}`);
 
     // Copier les disques CHD tels quels à côté de l'archive (jeu ROMs + CHD).
     // Jamais inclus dans l'archive : un CHD reste un fichier de disque autonome.
-    await copyChdDisksToOutput(db, game, diskRoms, gameOutDir, result);
+    await copyChdDisksToOutput(db, game, diskRoms, gameOutDir, result, ctx);
+    throwIfAborted(ctx.signal);
 
     result.stats.archivesCreated++;
     result.stats.gamesConsolidated++;
@@ -1185,8 +1456,10 @@ async function createBestCompressedArchive(
   archiveManager: ArchiveManager,
   systemId: string,
   chdPossible: boolean,
-  workingDirectory?: string
+  workingDirectory?: string,
+  ctx?: GameRunContext
 ): Promise<{ outputPath: string; format: string }> {
+  const reporter = ctx?.reporter;
   const allowedFormats = getSystemAllowedFormats(systemId, settings);
 
   // Formats candidats : uniquement les formats autorisés pour le système
@@ -1214,9 +1487,12 @@ async function createBestCompressedArchive(
 
     if (inputFiles.length === 0) {
       console.warn(`  → ${format}: no CHD entry point, skipped`);
+      reporter?.updateFormat(format, { status: 'skipped', note: 'chdNoEntryPoint' });
       continue;
     }
 
+    throwIfAborted(ctx?.signal);
+    reporter?.updateFormat(format, { status: 'running' });
     try {
       const createdPath = await withTimeout(
         archiveManager.createArchive(
@@ -1235,8 +1511,11 @@ async function createBestCompressedArchive(
       );
       const stat = await fs.stat(createdPath);
       results.push({ format, path: createdPath, size: stat.size });
+      reporter?.updateFormat(format, { status: 'done', size: stat.size });
       console.log(`[4/4 Compression]   → ${format.padEnd(4)} : ${(stat.size / 1024 / 1024).toFixed(2)} MB`);
     } catch (error: any) {
+      throwIfAborted(ctx?.signal);
+      reporter?.updateFormat(format, { status: 'failed', note: 'creationFailed' });
       console.warn(`[4/4 Compression]   → ${format.padEnd(4)} : FAILED (${error.message})`);
     }
   }
@@ -1262,6 +1541,7 @@ async function createBestCompressedArchive(
     best.path = cleanPath;
   }
 
+  reporter?.chosen(best.format);
   console.log(`[4/4 Compression] chosen format: ${best.format} (${(best.size / 1024 / 1024).toFixed(2)} MB)`);
   return { outputPath: best.path, format: best.format };
 }
@@ -1283,9 +1563,11 @@ async function tryDirectArchiveCopy(
   archiveManager: ArchiveManager,
   targetMode: ArcadeTargetSetMode,
   datIsArcade: boolean,
-  profile: SystemProfile
+  profile: SystemProfile,
+  ctx: GameRunContext = {}
 ): Promise<boolean> {
   const logPrefix = `[2/4 Stratégie]`;
+  const reporter = ctx.reporter;
 
   // Phase 4 — Restreindre aux dat_roms effectivement attendues dans l'archive cible.
   // En split, on exclut les merge_name (elles appartiennent au parent).
@@ -1355,6 +1637,17 @@ async function tryDirectArchiveCopy(
     return false;
   }
 
+  // Archives sources candidates affichées comme « formats étudiés »
+  reporter?.mode('direct');
+  reporter?.step('direct-copy');
+  reporter?.setFormats(validCandidates.map(c => ({
+    id: c.archive_path,
+    format: c.archive_type,
+    label: path.basename(c.archive_path),
+    size: c.archive_size || undefined,
+    status: 'pending' as const
+  })));
+
   if (settings.useBestCompression) {
     console.log(`${logPrefix} ${validCandidates.length} candidate source archive(s) sorted by size:`);
     for (const c of validCandidates) {
@@ -1366,8 +1659,14 @@ async function tryDirectArchiveCopy(
   for (const candidate of validCandidates) {
     const sourcePath = candidate.archive_path;
 
+    throwIfAborted(ctx.signal);
+    reporter?.updateFormat(sourcePath, { status: 'running' });
+
     // Vérifier que le fichier archive existe toujours
-    try { await fs.access(sourcePath); } catch { continue; }
+    try { await fs.access(sourcePath); } catch {
+      reporter?.updateFormat(sourcePath, { status: 'rejected', note: 'sourceMissing' });
+      continue;
+    }
 
     // CHD : format monolithique, pas de listing/vérification de noms possible.
     // Si la DB confirme que tous les CRC matchent, copier directement.
@@ -1383,11 +1682,14 @@ async function tryDirectArchiveCopy(
       await fs.mkdir(chdBaseDir, { recursive: true });
       const finalDestPath = path.join(chdBaseDir, destFileName);
 
-      await fs.copyFile(sourcePath, finalDestPath);
+      reporter?.step('copying');
+      await copyToTarget(sourcePath, finalDestPath, ctx);
+      reporter?.chosen(sourcePath);
       console.log(`${logPrefix} reusable CHD source archive → direct copy without recompression`);
       console.log(`${logPrefix}   source: ${sourcePath}`);
       console.log(`[✓ Done]         consolidated archive → ${finalDestPath}`);
 
+      throwIfAborted(ctx.signal);
       result.stats.archivesCreated++;
       result.stats.gamesConsolidated++;
       result.stats.romsExtracted += matchedRoms.length;
@@ -1427,6 +1729,7 @@ async function tryDirectArchiveCopy(
       archiveContents = entries.map(e => e.fileName);
     } catch (err: any) {
       console.log(`${logPrefix} unable to list archive "${sourcePath}": ${err.message}`);
+      reporter?.updateFormat(sourcePath, { status: 'rejected', note: 'listFailed' });
       continue;
     }
 
@@ -1459,7 +1762,10 @@ async function tryDirectArchiveCopy(
       }
     }
 
-    if (!allNamesMatch) continue;
+    if (!allNamesMatch) {
+      reporter?.updateFormat(sourcePath, { status: 'rejected', note: 'contentMismatch' });
+      continue;
+    }
 
     // Fichiers en trop dans l'archive
     const extraFiles = archiveContents.filter(f => !matchedArchiveFiles.has(f));
@@ -1471,9 +1777,10 @@ async function tryDirectArchiveCopy(
     await fs.mkdir(gameOutDir, { recursive: true });
     const finalDestPath = path.join(gameOutDir, destFileName);
 
+    reporter?.step('copying');
     if (extraFiles.length === 0) {
       // Archive parfaite : copier directement
-      await fs.copyFile(sourcePath, finalDestPath);
+      await copyToTarget(sourcePath, finalDestPath, ctx);
       console.log(`${logPrefix} perfect ${candidate.archive_type} source archive → direct copy without recompression`);
       console.log(`${logPrefix}   source: ${sourcePath}`);
       console.log(`[✓ Done]         consolidated archive → ${finalDestPath}`);
@@ -1489,13 +1796,15 @@ async function tryDirectArchiveCopy(
         console.log(`${logPrefix} reusable ${candidate.archive_type} source archive after removing ${extraFiles.length} extra file(s)`);
         console.log(`${logPrefix}   source: ${sourcePath}`);
 
-        await fs.copyFile(tempArchivePath, finalDestPath);
+        await copyToTarget(tempArchivePath, finalDestPath, ctx);
         console.log(`[✓ Done]         consolidated archive → ${finalDestPath}`);
       } finally {
         try { await fs.rm(tempDir, { recursive: true, force: true }); } catch { /* ignore */ }
       }
     }
 
+    reporter?.chosen(sourcePath);
+    throwIfAborted(ctx.signal);
     result.stats.archivesCreated++;
     result.stats.gamesConsolidated++;
     result.stats.romsExtracted += matchedRoms.length;
@@ -1543,7 +1852,8 @@ async function consolidateChdGame(
   game: { id: number; name: string; totalRoms: number },
   matchedRoms: MatchedRomInfo[],
   settings: ReturnType<typeof settingsManager.getAll>,
-  result: ConsolidationResult
+  result: ConsolidationResult,
+  ctx: GameRunContext = {}
 ): Promise<void> {
   const sanitizedName = sanitizeFileName(game.name);
 
@@ -1573,12 +1883,13 @@ async function consolidateChdGame(
     const targetPath = path.join(targetDir, chdOutputName(rom));
 
     // Copie telle quelle (aucune extraction ni recompression d'un CHD).
-    await fs.copyFile(sourcePath, targetPath);
+    await copyToTarget(sourcePath, targetPath, ctx);
 
     producedChds.push({ targetPath, rom });
     result.stats.romsExtracted++;
   }
 
+  throwIfAborted(ctx.signal);
   result.stats.gamesConsolidated++;
 
   // Enregistrer chaque CHD produit en base pour éviter le rescan.
@@ -1963,6 +2274,8 @@ async function moveUnmatchedFiles(
  * @param systemId - Identifiant du système (ex: 'psx', 'nes')
  * @param matchedDatRomIds - Optionnel : map filename → datRomId pour enregistrer
  *   directement les rom_matches en base (évite un rescan post-consolidation).
+ * @param options - Optionnel : suivi de la progression (étape, formats étudiés,
+ *   format retenu) et interruption (arrêt forcé).
  * @returns Chemin du fichier consolidé dans validatedRomsFolder
  */
 export async function consolidateSingleGame(
@@ -1970,8 +2283,12 @@ export async function consolidateSingleGame(
   gameName: string,
   extractedFiles: string[],
   systemId: string,
-  matchedDatRomIds?: Map<string, number>
+  matchedDatRomIds?: Map<string, number>,
+  options: { onProgress?: (state: Partial<ConsolidationProgress>) => void; signal?: OperationSignal } = {}
 ): Promise<string> {
+  const reporter = options.onProgress ? new GameProgressReporter(state => options.onProgress!(state)) : undefined;
+  const ctx: GameRunContext = { reporter, signal: options.signal };
+  reporter?.step('analyzing');
   const settings = settingsManager.getAll();
   // Résoudre les dossiers cibles effectifs (avec sous-dossier système si mode multi-système)
   settings.validatedRomsFolder = await getEffectiveValidatedRomsFolder(db);
@@ -2020,13 +2337,18 @@ export async function consolidateSingleGame(
       console.log(`[consolidateSingleGame] empty placeholder zip created → ${emptyZipPath}`);
     }
 
+    reporter?.mode('chd-copy');
+    reporter?.setFormats([{ id: 'chd', format: 'chd', status: 'running' }]);
+    reporter?.step('copying');
     const copiedPaths: string[] = [];
     for (const filePath of extractedFiles) {
       const destPath = path.join(chdDir, path.basename(filePath));
-      await fs.copyFile(filePath, destPath);
+      await copyToTarget(filePath, destPath, ctx);
       copiedPaths.push(destPath);
     }
     console.log(`[consolidateSingleGame] ${gameName} → ${extractedFiles.length} CHD(s) copied directly`);
+    reporter?.chosen('chd');
+    throwIfAborted(ctx.signal);
 
     // Enregistrer chaque CHD copié en base pour éviter le rescan
     try {
@@ -2054,15 +2376,20 @@ export async function consolidateSingleGame(
   // Mode brut : aucun format d'archive autorisé → copier les fichiers bruts directement
   // à la racine du dossier cible (pas de sous-dossier par jeu).
   if (targetFormat === null) {
+    reporter?.mode('raw');
+    reporter?.setFormats([{ id: 'raw', format: 'raw', status: 'running' }]);
+    reporter?.step('copying');
     await fs.mkdir(settings.validatedRomsFolder, { recursive: true });
     const rawCopies: Array<{ filePath: string; fileName: string }> = [];
     for (const fp of extractedFiles) {
       const fileName = path.basename(fp);
       const dest = path.join(settings.validatedRomsFolder, fileName);
-      await fs.copyFile(fp, dest);
+      await copyToTarget(fp, dest, ctx);
       rawCopies.push({ filePath: dest, fileName });
     }
     console.log(`[consolidateSingleGame] ${gameName} → ${extractedFiles.length} raw file(s) copied to ${settings.validatedRomsFolder}`);
+    reporter?.chosen('raw');
+    throwIfAborted(ctx.signal);
 
     // Enregistrer en base pour éviter le rescan
     try {
@@ -2092,17 +2419,27 @@ export async function consolidateSingleGame(
     const tempOutputBasePath = path.join(tempOutputDir, sanitizedName);
     let tempOutputPath: string;
 
+    reporter?.step('compressing');
     if (settings.useBestCompression) {
+      reporter?.mode('best');
+      reporter?.setFormats(bestCompressionCandidates(getSystemAllowedFormats(systemId, settings), chdPossible));
       const bestResult = await createBestCompressedArchive(
-        extractedFiles, tempOutputBasePath, settings, archiveManager, systemId, chdPossible
+        extractedFiles, tempOutputBasePath, settings, archiveManager, systemId, chdPossible, undefined, ctx
       );
       tempOutputPath = bestResult.outputPath;
     } else {
+      reporter?.mode('standard');
       const archiveFiles = (targetFormat === 'chd')
         ? getChdInputFiles(extractedFiles)
         : extractedFiles;
+      let finalFormat: string = targetFormat;
 
       if (archiveFiles.length === 0) {
+        reporter?.setFormats([
+          { id: 'chd', format: 'chd', status: 'skipped', note: 'chdNoEntryPoint' },
+          { id: '7z', format: '7z', status: 'running' }
+        ]);
+        finalFormat = '7z';
         // Fallback si CHD impossible
         tempOutputPath = await withTimeout(
           archiveManager.createArchive(extractedFiles, tempOutputBasePath,
@@ -2112,6 +2449,7 @@ export async function consolidateSingleGame(
           ARCHIVE_CREATION_TIMEOUT_MS, `Création archive 7z (fallback) pour ${gameName}`
         );
       } else {
+        reporter?.setFormats([{ id: targetFormat, format: targetFormat, status: 'running' }]);
         tempOutputPath = await withTimeout(
           archiveManager.createArchive(archiveFiles, tempOutputBasePath,
             { archiveFormatPriority: [targetFormat], compressionLevel: settings.compressionLevel,
@@ -2120,12 +2458,17 @@ export async function consolidateSingleGame(
           ARCHIVE_CREATION_TIMEOUT_MS, `Création archive ${targetFormat} pour ${gameName}`
         );
       }
+      const archiveSize = await fs.stat(tempOutputPath).then(st => st.size).catch(() => undefined);
+      reporter?.updateFormat(finalFormat, { status: 'done', size: archiveSize });
+      reporter?.chosen(finalFormat);
     }
 
     // Copier le résultat final vers validatedRomsFolder
+    reporter?.step('copying');
     const finalDestPath = path.join(settings.validatedRomsFolder, path.basename(tempOutputPath));
-    await fs.copyFile(tempOutputPath, finalDestPath);
+    await copyToTarget(tempOutputPath, finalDestPath, ctx);
     console.log(`[consolidateSingleGame] ${gameName} → ${finalDestPath}`);
+    throwIfAborted(ctx.signal);
 
     // Enregistrer l'archive directement en base pour éviter le rescan
     try {

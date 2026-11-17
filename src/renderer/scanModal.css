@@ -1,0 +1,323 @@
+/*
+ * RUMCET - ROM's Ultimate Manager, Conversion and Editor Tool
+ * Copyright (C) 2025 Nanaki59
+ *
+ * This program is free software: you can redistribute it and/or modify
+ * it under the terms of the GNU Affero General Public License as published
+ * by the Free Software Foundation, either version 3 of the License, or
+ * (at your option) any later version.
+ *
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU Affero General Public License for more details.
+ *
+ * You should have received a copy of the GNU Affero General Public License
+ * along with this program.  If not, see <https://www.gnu.org/licenses/>.
+ */
+/* Modale de scan (scanModal.ts) et modale « Dossiers de la base » */
+
+.scan-modal-overlay {
+  /* Au-dessus des autres modales : le scan bloque toute l'interface */
+  z-index: 10001;
+}
+
+.scan-modal {
+  width: 560px;
+  max-width: 90vw;
+}
+
+.scan-modal .modal-body {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  font-size: 13px;
+  color: #2c3e50;
+}
+
+.scan-modal-mode {
+  font-size: 12px;
+  color: #7f8c8d;
+  margin-bottom: 4px;
+}
+
+.scan-modal-row {
+  display: flex;
+  gap: 8px;
+  min-width: 0;
+}
+
+.scan-modal-label {
+  flex: 0 0 60px;
+  font-weight: 600;
+  color: #34495e;
+}
+
+.scan-modal-value {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-family: monospace;
+  font-size: 12px;
+  direction: ltr;
+}
+
+.scan-progress-bar {
+  width: 100%;
+  height: 16px;
+  margin-top: 6px;
+  accent-color: #3498db;
+}
+
+.scan-modal-stats,
+.scan-modal-times {
+  display: flex;
+  justify-content: space-between;
+  font-size: 12px;
+  color: #7f8c8d;
+}
+
+.scan-modal-stats .scan-count {
+  font-weight: 600;
+  color: #2c3e50;
+}
+
+.scan-modal-hint,
+.scan-modal-stop-hint {
+  margin: 6px 0 0;
+  font-size: 11px;
+  color: #95a5a6;
+}
+
+.scan-modal-stop-hint {
+  color: #d35400;
+}
+
+.scan-modal .modal-footer button {
+  padding: 8px 16px;
+  border: none;
+  border-radius: 4px;
+  cursor: pointer;
+  font-size: 13px;
+}
+
+.scan-cancel-btn {
+  background-color: #95a5a6;
+  color: white;
+}
+
+.scan-cancel-btn:hover:not(:disabled) {
+  background-color: #7f8c8d;
+}
+
+.scan-force-btn {
+  background-color: #e74c3c;
+  color: white;
+}
+
+.scan-force-btn:hover:not(:disabled) {
+  background-color: #c0392b;
+}
+
+.scan-modal .modal-footer button:disabled {
+  opacity: 0.7;
+  cursor: default;
+}
+
+/* Modale « Dossiers de la base » */
+.db-folders-modal {
+  width: 620px;
+  max-width: 90vw;
+}
+
+.db-folders-modal .modal-footer .btn-primary {
+  background-color: #3498db;
+  color: white;
+}
+
+.db-folders-modal .modal-footer .btn-primary:hover {
+  background-color: #2980b9;
+}
+
+/* Sidebar : bouton « Modifier les dossiers de la base » sur le dossier cible */
+.folder-edit-btn {
+  background: none;
+  border: none;
+  cursor: pointer;
+  padding: 2px 6px;
+  border-radius: 3px;
+  font-size: 13px;
+  line-height: 1;
+  flex-shrink: 0;
+  opacity: 0.7;
+  transition: background-color 0.2s, opacity 0.2s;
+}
+
+.folder-edit-btn:hover {
+  opacity: 1;
+  background-color: rgba(52, 152, 219, 0.15);
+}
+
+.sidebar-item.active .folder-edit-btn:hover {
+  background-color: rgba(255, 255, 255, 0.2);
+}
+
+/* Sidebar : dossier racine dont le scan est incomplet */
+.folder-scan-incomplete {
+  color: #e67e22;
+  margin-left: 4px;
+  cursor: help;
+}
+
+/* Modale de consolidation (consolidationModal.ts) */
+.consolidation-modal {
+  width: 640px;
+}
+
+.consolidation-game {
+  margin-top: 6px;
+  font-size: 15px;
+  font-weight: 600;
+  color: #2c3e50;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.consolidation-step {
+  display: flex;
+  justify-content: space-between;
+  gap: 8px;
+  font-size: 12px;
+  color: #34495e;
+}
+
+.consolidation-step .cm-mode {
+  color: #7f8c8d;
+  font-style: italic;
+}
+
+.consolidation-step-error {
+  color: #c0392b;
+}
+
+.consolidation-step-aborted {
+  color: #d35400;
+}
+
+.consolidation-formats-title {
+  margin-top: 6px;
+  font-weight: 600;
+  font-size: 12px;
+  color: #34495e;
+}
+
+.consolidation-formats {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 12px;
+  table-layout: fixed;
+}
+
+.consolidation-formats td {
+  padding: 4px 6px;
+  border-bottom: 1px solid #ecf0f1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.consolidation-format-name {
+  width: 60px;
+  font-weight: 600;
+  font-family: monospace;
+}
+
+.consolidation-format-label {
+  font-family: monospace;
+  color: #7f8c8d;
+}
+
+.consolidation-format-status {
+  width: 130px;
+}
+
+.consolidation-format-detail {
+  width: 150px;
+  text-align: right;
+  color: #7f8c8d;
+}
+
+.consolidation-format-running {
+  background-color: #eaf4fb;
+}
+
+.consolidation-format-failed .consolidation-format-status,
+.consolidation-format-rejected .consolidation-format-status {
+  color: #c0392b;
+}
+
+.consolidation-format-skipped {
+  color: #95a5a6;
+}
+
+.consolidation-format-chosen {
+  background-color: #e8f8ef;
+}
+
+.consolidation-format-chosen .consolidation-format-status {
+  color: #1e8449;
+  font-weight: 600;
+}
+
+.consolidation-chosen {
+  font-size: 13px;
+  color: #7f8c8d;
+}
+
+.consolidation-chosen-set {
+  color: #1e8449;
+  font-weight: 600;
+}
+
+/* Modale de téléchargement : progression du fichier en cours */
+.consolidation-download {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 11px;
+  color: #7f8c8d;
+}
+
+.consolidation-download-bar {
+  flex: 1;
+  height: 8px;
+  accent-color: #27ae60;
+}
+
+/* Modale de téléchargement : tableau des tentatives (extension testée en avant) */
+.download-attempt-ext {
+  width: 70px;
+  font-size: 13px;
+  color: #2c3e50;
+}
+
+.download-attempts th {
+  padding: 3px 6px;
+  font-size: 11px;
+  font-weight: 600;
+  text-align: left;
+  color: #7f8c8d;
+  border-bottom: 1px solid #dfe6e9;
+}
+
+.download-attempts th.consolidation-format-detail {
+  text-align: right;
+}
+
+.download-attempt-source {
+  width: 110px;
+  color: #34495e;
+}

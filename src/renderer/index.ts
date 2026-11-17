@@ -1,9 +1,20 @@
 // src/renderer/index.ts
 
 import { displayMatchingReport, initMatchingUI, displayInitialReport } from './matchingUI.js';
-import { initI18n, refreshTranslations, t } from './i18n.js';
+import { initI18n, refreshTranslations, t, getLanguage } from './i18n.js';
 import { setupConsoleCapture } from './consoleCapture.js';
 import { makeReorderable } from './reorderable.js';
+import { registerPriorityList } from './priorityList.js';
+import { runScanWithModal, isScanRunning } from './scanModal.js';
+import { runConsolidationWithModal, runRomDownloadWithModal, isConsolidationRunning } from './consolidationModal.js';
+import { initProfileSelector, setProfileSelectorEnabled, profileDisplayName } from './profileSelector.js';
+import { renderDbFoldersForm } from './dbFoldersForm.js';
+import type { ScanMode, ScanStats, RomDownloadResult } from '../types/global.js';
+// Référentiels du parseur de noms : ils alimentent les listes de priorité 1G1R de la
+// modale, pour que les valeurs proposées soient celles que le parseur produit.
+import { CANONICAL_REGIONS, CANONICAL_LANGUAGES, languageDisplayName } from '../shared/romNaming/index.js';
+import { escapeHtml } from './htmlEscape.js';
+import { initSystems } from './systemsInit.js';
 
 // Capturer les console.* de cette page vers le fichier de logs dès le chargement
 setupConsoleCapture();
@@ -61,6 +72,21 @@ let activeReleaseFlagFilters: Set<string> = new Set();
 // Vrai si le DAT courant est un DAT arcade (MAME/FBNeo). Déterminé au chargement des
 // jeux d'après la présence de marqueurs arcade (bios/device/mechanical/parent/driver).
 let currentDatIsArcade = false;
+// Famille du DAT courant : pilote les presets rapides proposés et leurs règles.
+type DatFamily = 'no-intro' | 'redump' | 'arcade' | 'other';
+let currentDatFamily: DatFamily = 'other';
+
+// Déduit la famille des métadonnées d'en-tête du DAT (homepage / url / auteur).
+async function detectDatFamily(): Promise<DatFamily> {
+  if (currentDatIsArcade) return 'arcade';
+  try {
+    const header = (await Promise.all(['dat_homepage', 'dat_url', 'dat_author']
+      .map(k => window.api.getDbMetadata(k)))).join(' ').toLowerCase();
+    if (header.includes('no-intro')) return 'no-intro';
+    if (header.includes('redump')) return 'redump';
+  } catch { /* métadonnées indisponibles */ }
+  return 'other';
+}
 // Clés pseudo-catégorie des entrées « type de machine » du filtre Catégorie en mode
 // arcade (Games / BIOS / Device / Mechanical). Distinctes de toute catégorie réelle.
 const CATEGORY_GAMES_KEY = '__games__';
@@ -156,7 +182,12 @@ interface RomInfo {
 interface FolderInfo {
   path: string;
   fileCount: number;
+  /** Statut du dernier scan ('in_progress' = interrompu par un arrêt de l'application) */
+  scanStatus?: 'in_progress' | 'partial' | 'complete';
 }
+
+/** Nombre maximal de lignes conservées dans le panneau de logs (le fichier de log garde tout) */
+const MAX_LOG_PANEL_LINES = 2000;
 
 interface FolderContent {
   folders: any[];
@@ -257,6 +288,10 @@ function log(key: string, options: LogOptions = {}, isFromMain: boolean = false)
 
     div.textContent = finalMessage;
     logDiv.appendChild(div);
+    // Un scan peut produire des milliers de lignes : on ne garde que les plus récentes
+    while (logDiv.childElementCount > MAX_LOG_PANEL_LINES) {
+      logDiv.firstElementChild?.remove();
+    }
     logDiv.scrollTop = logDiv.scrollHeight;
 
     // Mettre à jour le dernier message dans le header (visible quand replié)
@@ -317,11 +352,26 @@ function attachContextMenuHandlers(contextMenu: HTMLElement) {
     }
   });
 
-  // Handler pour actualiser
-  document.getElementById('ctx-refresh-folder')?.addEventListener('click', async () => {
+  // Dossier cible : modifier les dossiers de la base
+  document.getElementById('ctx-edit-folders')?.addEventListener('click', () => editDbFolders());
+
+  // Handlers de (re)scan : rapide (sert aussi de reprise) ou complet
+  document.getElementById('ctx-resume-scan')?.addEventListener('click', async () => {
     const target = (contextMenu as any).targetElement;
     if (target && target.dataset.path) {
-      await rescanFolder(target.dataset.path);
+      await rescanFolder(target.dataset.path, 'quick');
+    }
+  });
+  document.getElementById('ctx-quick-rescan')?.addEventListener('click', async () => {
+    const target = (contextMenu as any).targetElement;
+    if (target && target.dataset.path) {
+      await rescanFolder(target.dataset.path, 'quick');
+    }
+  });
+  document.getElementById('ctx-full-rescan')?.addEventListener('click', async () => {
+    const target = (contextMenu as any).targetElement;
+    if (target && target.dataset.path && confirm(t('index.confirm.fullRescan', { path: target.dataset.path }))) {
+      await rescanFolder(target.dataset.path, 'full');
     }
   });
 
@@ -329,11 +379,24 @@ function attachContextMenuHandlers(contextMenu: HTMLElement) {
   document.getElementById('ctx-set-target')?.addEventListener('click', async () => {
     const target = (contextMenu as any).targetElement;
     if (target && target.dataset.path) {
-      targetFolderPath = target.dataset.path;
-      // Persister dans la base de données
-      await window.api.setDbMetadata('target_folder', target.dataset.path);
-      log('logs.folder.targetSet', { params: { path: target.dataset.path }, context: 'folder', state: 'success' });
-      updateLeftSidebar();
+      try {
+        // Dossier déjà scanné : il devient tel quel la destination de la consolidation
+        // (sans sous-dossier système), les dossiers de travail de la base sont conservés.
+        const current = await window.api.getDbFolderSettings();
+        await window.api.setDbFolderSettings({
+          targetFolder: target.dataset.path,
+          targetSystemSubfolder: false,
+          unmatchedFolder: current.unmatchedFolder,
+          incompleteFolder: current.incompleteFolder,
+          tempFolder: current.tempFolder
+        });
+        targetFolderPath = target.dataset.path;
+        log('logs.folder.targetSet', { params: { path: target.dataset.path }, context: 'folder', state: 'success' });
+        updateLeftSidebar();
+        await updateDbInfoBanner();
+      } catch (error) {
+        log('logs.folder.targetUpdateError', { params: { error: error instanceof Error ? error.message : String(error) }, severity: 'error', context: 'folder' });
+      }
     }
   });
 }
@@ -372,9 +435,18 @@ async function showDatContextMenu(event: MouseEvent) {
     ? t('index.datMenu.showReportTitleAvailable')
     : t('index.datMenu.showReportTitleNone');
 
+  // Les clone lists ne concernent que les DAT No-Intro/Redump : un DAT arcade porte
+  // déjà ses relations parent/clone, une liste n'y apporterait rien.
+  const cloneListItems = currentDatIsArcade ? '' : `
+    <div class="context-menu-separator"></div>
+    <div class="context-menu-item" id="ctx-update-clonelist" title="${t('index.datMenu.updateCloneListTitle')}">${t('index.datMenu.updateCloneList')}</div>
+    <div class="context-menu-item" id="ctx-clear-clonelist" title="${t('index.datMenu.clearCloneListTitle')}">${t('index.datMenu.clearCloneList')}</div>
+  `;
+
   menu.innerHTML = `
     <div class="context-menu-item" id="ctx-update-dat">${t('index.datMenu.update')}</div>
     <div class="${reportClass}" id="ctx-show-dat-report" title="${reportTitle}">${t('index.datMenu.showReport')}</div>
+    ${cloneListItems}
   `;
 
   document.body.appendChild(menu);
@@ -382,6 +454,16 @@ async function showDatContextMenu(event: MouseEvent) {
   menu.querySelector('#ctx-update-dat')?.addEventListener('click', async () => {
     menu.remove();
     await handleDatUpdate();
+  });
+
+  menu.querySelector('#ctx-update-clonelist')?.addEventListener('click', async () => {
+    menu.remove();
+    await forceCloneListUpdate();
+  });
+
+  menu.querySelector('#ctx-clear-clonelist')?.addEventListener('click', async () => {
+    menu.remove();
+    await clearCloneListGroupings();
   });
 
   if (hasUpdateReport) {
@@ -443,56 +525,29 @@ function showGameContextMenu(event: MouseEvent, game: GameInfo) {
   setTimeout(() => document.addEventListener('click', closeMenu), 0);
 }
 
-async function startRomDownload(gameIds: number[]) {
-  const removeListener = window.api.onRomDownloadProgress((progress) => {
-    if (progress.phase === 'complete') {
-      log(progress.key, { params: progress.params, context: 'download', state: 'success' });
-    } else if (progress.phase === 'incomplete') {
-      log(progress.key, { params: progress.params, context: 'download', state: 'warning' });
-    } else {
-      log(progress.key, { params: progress.params, context: 'download', state: 'loading' });
-    }
-  });
+/**
+ * Téléchargement de ROMs (un ou plusieurs jeux, ou tous les manquants) avec la
+ * modale de progression ; chaque jeu complet est consolidé. Les logs (étapes,
+ * issue de chaque jeu, bilan) sont envoyés par le main.
+ */
+async function runRomDownload(start: () => Promise<RomDownloadResult>) {
   try {
-    const result = await window.api.downloadRom(gameIds);
-    const hasFailures = result.stats.failed > 0;
-    log('logs.download.done',
-      { params: { consolidated: result.stats.consolidated, failed: result.stats.failed }, context: 'download', state: hasFailures ? 'warning' : 'success' });
-
+    const result = await runRomDownloadWithModal(start);
     if (result.stats.consolidated > 0) {
       await refreshTargetAndMatching();
     }
   } catch (error: any) {
-    log('logs.download.error', { params: { error: error.message }, severity: 'error', context: 'download' });
-  } finally {
-    removeListener();
+    // L'erreur est déjà journalisée par le main
+    console.error('ROM download failed:', error);
   }
 }
 
-async function startAllMissingRomDownload() {
-  const removeListener = window.api.onRomDownloadProgress((progress) => {
-    if (progress.phase === 'complete') {
-      log(progress.key, { params: progress.params, context: 'download', state: 'success' });
-    } else if (progress.phase === 'incomplete') {
-      log(progress.key, { params: progress.params, context: 'download', state: 'warning' });
-    } else {
-      log(progress.key, { params: progress.params, context: 'download', state: 'loading' });
-    }
-  });
-  try {
-    const result = await window.api.downloadAllMissingRoms();
-    const hasFailures = result.stats.failed > 0;
-    log('logs.download.done',
-      { params: { consolidated: result.stats.consolidated, failed: result.stats.failed }, context: 'download', state: hasFailures ? 'warning' : 'success' });
+function startRomDownload(gameIds: number[]) {
+  return runRomDownload(() => window.api.downloadRom(gameIds));
+}
 
-    if (result.stats.consolidated > 0) {
-      await refreshTargetAndMatching();
-    }
-  } catch (error: any) {
-    log('logs.download.error', { params: { error: error.message }, severity: 'error', context: 'download' });
-  } finally {
-    removeListener();
-  }
+function startAllMissingRomDownload() {
+  return runRomDownload(() => window.api.downloadAllMissingRoms());
 }
 
 // Recharge et affiche le dernier rapport de mise à jour DAT depuis la base
@@ -709,29 +764,35 @@ async function refreshTargetAndMatching() {
   }
 }
 
-async function rescanFolder(folderPath: string) {
+/** Un scan interrompu (par l'utilisateur ou par un arrêt de l'application) peut être repris */
+function isScanIncomplete(folder: FolderInfo | undefined): boolean {
+  return !!folder && (folder.scanStatus === 'partial' || folder.scanStatus === 'in_progress');
+}
+
+/**
+ * Scanne des dossiers avec la modale de progression, puis rafraîchit la sidebar,
+ * les boutons du workflow et le volet central si besoin. Lève l'erreur du scan.
+ */
+async function runRomScan(folders: string[], mode: ScanMode): Promise<ScanStats> {
+  try {
+    return await runScanWithModal(folders, mode);
+  } finally {
+    // Même interrompu ou en erreur, les fichiers déjà analysés sont en base
+    loadedFolders = await window.api.getRootFolders();
+    updateLeftSidebar();
+    updateWorkflowButtons();
+    if (currentFolderPath && folders.some(f => currentFolderPath === f || currentFolderPath!.startsWith(f))) {
+      await updateCenterContent('folder', currentFolderPath);
+    }
+  }
+}
+
+async function rescanFolder(folderPath: string, mode: ScanMode) {
   try {
     log('logs.folder.rescanStart', { params: { path: folderPath }, context: 'folder', state: 'loading' });
-
-    const progressHandler = (data: any) => {
-      if (data.fileName) {
-        log('logs.romfile.scanning', { params: { file: data.fileName }, context: 'romfile', state: 'loading' });
-      }
-    };
-
-    window.api.onScanProgress(progressHandler);
-
-    const stats = await window.api.addRomsFolder(folderPath);
-    log('logs.folder.rescanDone', { params: { count: stats.length }, context: 'folder', state: 'success' });
-
-    // Rafraîchir les compteurs dans la sidebar
-    const rootFolders = await window.api.getRootFolders();
-    loadedFolders = rootFolders;
-    updateLeftSidebar();
-
-    // Rafraîchir l'affichage si c'est le dossier actuel
-    if (currentFolderPath === folderPath) {
-      await updateCenterContent('folder', folderPath);
+    const stats = await runRomScan([folderPath], mode);
+    if (!stats.cancelled) {
+      log('logs.folder.rescanDone', { params: { count: stats.length }, context: 'folder', state: 'success' });
     }
   } catch (error) {
     log('logs.folder.rescanError', { params: { error: String(error) }, severity: 'error', context: 'folder' });
@@ -759,7 +820,16 @@ function showContextMenu(event: MouseEvent, element: HTMLElement, options: { isS
   // Dossier racine : "Re-scanner" + "Définir comme cible" (si pas déjà cible) + suppressions.
   let menuHtml = '';
   if (!options.isSubfolder) {
-    menuHtml += `<div id="ctx-refresh-folder" class="context-menu-item">${t('index.contextMenu.rescan')}</div>`;
+    const folderInfo = loadedFolders.find(f => f.path === folderPath);
+    if (isScanIncomplete(folderInfo)) {
+      menuHtml += `<div id="ctx-resume-scan" class="context-menu-item">${t('index.contextMenu.resumeScan')}</div>`;
+    } else {
+      menuHtml += `<div id="ctx-quick-rescan" class="context-menu-item">${t('index.contextMenu.quickRescan')}</div>`;
+    }
+    menuHtml += `<div id="ctx-full-rescan" class="context-menu-item">${t('index.contextMenu.fullRescan')}</div>`;
+    if (isTarget) {
+      menuHtml += `<div id="ctx-edit-folders" class="context-menu-item">${t('index.contextMenu.editFolders')}</div>`;
+    }
     if (!isTarget) {
       menuHtml += `<div id="ctx-set-target" class="context-menu-item">${t('index.contextMenu.setTarget')}</div>`;
     }
@@ -1087,6 +1157,94 @@ async function updateDbInfoBanner() {
   }
 }
 
+/**
+ * Modale « Dossiers de la base » : dossier cible (+ sous-dossier système) et
+ * dossiers de travail. Si le dossier cible effectif change, l'utilisateur est
+ * prévenu puis le nouveau dossier est scanné.
+ */
+function editDbFolders(): void {
+  openDbFoldersModal().catch(error => {
+    log('common.errorWithDetail', { params: { error: error instanceof Error ? error.message : String(error) }, severity: 'error', context: 'folder' });
+  });
+}
+
+async function openDbFoldersModal(): Promise<void> {
+  if (!currentDbPath) return;
+  const info = await window.api.getDbFolderSettings();
+
+  const overlay = document.createElement('div');
+  overlay.className = 'modal-overlay';
+  overlay.innerHTML = `
+    <div class="modal-content db-folders-modal">
+      <div class="modal-header">
+        <h2>${escapeHtml(t('index.targetFolder.modalTitle'))}</h2>
+        <button class="close-modal">&times;</button>
+      </div>
+      <div class="modal-body"><div class="db-folders-form"></div></div>
+      <div class="modal-footer">
+        <button class="btn-close-modal">${escapeHtml(t('common.cancel'))}</button>
+        <button class="btn-primary db-folders-save">${escapeHtml(t('common.save'))}</button>
+      </div>
+    </div>
+  `;
+  document.body.appendChild(overlay);
+
+  const form = renderDbFoldersForm(overlay.querySelector('.db-folders-form') as HTMLDivElement, info);
+  const saveBtn = overlay.querySelector('.db-folders-save') as HTMLButtonElement;
+  const refreshSave = () => { saveBtn.disabled = !form.getValues().targetFolder; };
+  form.onChange(refreshSave);
+  refreshSave();
+
+  const close = () => overlay.remove();
+  overlay.querySelector('.close-modal')?.addEventListener('click', close);
+  overlay.querySelector('.btn-close-modal')?.addEventListener('click', close);
+
+  saveBtn.addEventListener('click', async () => {
+    const values = form.getValues();
+    if (!values.targetFolder) {
+      alert(t('dbFolders.targetRequired'));
+      return;
+    }
+
+    // Changement du dossier cible : prévenir que le nouveau dossier va être scanné
+    const newTarget = form.getEffectiveTarget();
+    const targetChanged = newTarget !== info.effectiveTarget;
+    if (targetChanged) {
+      const answer = await window.api.showMessageBox({
+        type: 'question',
+        title: t('index.targetFolder.confirmScanTitle'),
+        message: t('index.targetFolder.confirmScanMessage', { path: newTarget }),
+        detail: t('index.targetFolder.confirmScanDetail'),
+        buttons: [t('index.targetFolder.confirmScanButton'), t('common.cancel')],
+        defaultId: 0,
+        cancelId: 1
+      });
+      if (answer.response !== 0) return;
+    }
+
+    try {
+      const result = await window.api.setDbFolderSettings(values);
+      close();
+      log('logs.folder.foldersSaved', { context: 'folder', state: 'success' });
+      await updateDbInfoBanner();
+
+      if (result.target && result.target !== info.effectiveTarget) {
+        targetFolderPath = result.target;
+        log('logs.folder.targetChanged', { params: { path: result.target }, context: 'folder', state: 'loading' });
+        // L'ancien dossier cible reste dans la base comme dossier source ordinaire
+        const stats = await runRomScan([result.target], 'quick');
+        if (!stats.cancelled) {
+          log('logs.folder.targetScanned', { params: { count: stats.length }, context: 'folder', state: 'success' });
+        }
+      } else {
+        updateLeftSidebar();
+      }
+    } catch (error) {
+      log('logs.folder.targetUpdateError', { params: { error: error instanceof Error ? error.message : String(error) }, severity: 'error', context: 'folder' });
+    }
+  });
+}
+
 // Ouvre la modale de sélection système. Ne se ferme que sur "Valider" avec un système choisi.
 async function openSystemSelectionModal(): Promise<void> {
   const modal = document.getElementById('system-selection-modal') as HTMLElement;
@@ -1137,27 +1295,22 @@ async function openSystemSelectionModal(): Promise<void> {
         await window.api.setDbMetadata('system_name', fullname);
         log('logs.dat.systemSetManually', { params: { name: fullname, id: systemId }, context: 'dat', state: 'success' });
 
-        // Si l'option "Dossier multi-système" est active, recalculer le dossier cible
-        // effectif (qui inclut maintenant le sous-dossier du système) et l'ajouter à
-        // la base. Le dossier parent éventuellement ajouté à la création reste tel quel.
-        const settings = await window.api.getSettings();
-        if (settings.validatedRomsMultiSystem) {
-          try {
-            const newEffective = await window.api.getEffectiveValidatedFolder();
-            if (newEffective && newEffective !== targetFolderPath) {
-              targetFolderPath = newEffective;
-              await window.api.setDbMetadata('target_folder', newEffective);
-              log('logs.folder.targetUpdated', { params: { path: newEffective }, context: 'folder', state: 'loading' });
-              const stats = await window.api.addRomsFolder(newEffective);
+        // Si le sous-dossier système s'applique (option de la base, sinon paramètre
+        // global), le dossier cible effectif inclut maintenant le système : on le scanne.
+        // Le dossier parent éventuellement ajouté à la création reste tel quel.
+        try {
+          const newEffective = await window.api.getEffectiveValidatedFolder();
+          if (newEffective && newEffective !== targetFolderPath) {
+            targetFolderPath = newEffective;
+            await window.api.setDbMetadata('target_folder', newEffective);
+            log('logs.folder.targetUpdated', { params: { path: newEffective }, context: 'folder', state: 'loading' });
+            const stats = await runRomScan([newEffective], 'quick');
+            if (!stats.cancelled) {
               log('logs.folder.targetScanned', { params: { count: stats.length }, context: 'folder', state: 'success' });
-              const rootFolders = await window.api.getRootFolders();
-              loadedFolders = rootFolders;
-              updateLeftSidebar();
-              updateWorkflowButtons();
             }
-          } catch (folderError: any) {
-            log('logs.folder.targetUpdateError', { params: { error: String(folderError?.message || folderError) }, severity: 'warning', context: 'folder' });
           }
+        } catch (folderError: any) {
+          log('logs.folder.targetUpdateError', { params: { error: String(folderError?.message || folderError) }, severity: 'warning', context: 'folder' });
         }
       } catch (error: any) {
         log('logs.dat.systemSaveError', { params: { error: String(error?.message || error) }, severity: 'error', context: 'dat' });
@@ -1280,6 +1433,7 @@ function resetInterface() {
   activeDevStatusFilters.clear();
   activeReleaseFlagFilters.clear();
   currentDatIsArcade = false;
+  currentDatFamily = 'other';
 
   // Masquer les barres liées à la vue DAT (réaffichées au prochain chargement)
   const groupFilterBar = document.getElementById('group-filter-bar');
@@ -1439,16 +1593,27 @@ function updateLeftSidebar() {
       const name = parts.pop() || folder.path;
       const parentPath = parts.join('/');
       const badge = isTarget ? `<span class="target-folder-badge">${t('index.folders.targetBadge')}</span>` : '';
+      const incomplete = isScanIncomplete(folder)
+        ? `<span class="folder-scan-incomplete" title="${escapeHtml(t('index.sidebar.scanIncomplete'))}">⚠️</span>`
+        : '';
       div.innerHTML = `
         <div class="folder-header" style="display: flex; justify-content: space-between; align-items: center; gap: 8px;">
           <div style="flex: 1; min-width: 0;">
             <div style="font-size: 11px; color: #7f8c8d; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;" title="${folder.path}">${parentPath}/</div>
-            <div style="font-weight: 600; margin-bottom: 2px;">${name}${badge}</div>
+            <div style="font-weight: 600; margin-bottom: 2px;">${name}${badge}${incomplete}</div>
             <div style="font-size: 11px; color: #7f8c8d;">${t('index.folders.filesCount', { count: folder.fileCount })}</div>
           </div>
-          <button class="folder-remove-btn" title="${t('index.folders.removeTitle')}">×</button>
+          ${isTarget
+            ? `<button class="folder-edit-btn" title="${escapeHtml(t('index.folders.editFoldersTitle'))}">✏️</button>`
+            : `<button class="folder-remove-btn" title="${t('index.folders.removeTitle')}">×</button>`}
         </div>
       `;
+
+      // Dossier cible : modifier les dossiers de la base (cible, dossiers de travail)
+      div.querySelector('.folder-edit-btn')?.addEventListener('click', (e) => {
+        e.stopPropagation(); // Empêcher la sélection du sidebar-item
+        editDbFolders();
+      });
 
       // Gestion du clic sur le bouton de suppression
       const removeBtn = div.querySelector('.folder-remove-btn') as HTMLButtonElement;
@@ -1478,7 +1643,7 @@ function updateLeftSidebar() {
 
       // Clic gauche pour sélectionner (sauf sur le bouton)
       div.addEventListener('click', (e) => {
-        if (!(e.target as HTMLElement).closest('.folder-remove-btn')) {
+        if (!(e.target as HTMLElement).closest('.folder-remove-btn, .folder-edit-btn')) {
           selectSidebarItem(div, 'folder', folder.path);
         }
       });
@@ -1624,6 +1789,7 @@ async function updateCenterContent(type: 'dat' | 'folder', path: string) {
       // No-Intro/Redump n'en ont aucun. Pilote l'affichage des filtres/groupements/icônes.
       currentDatIsArcade = visibleGames.some((g: GameInfo) =>
         !!g.is_bios || !!g.is_device || !!g.is_mechanical || !!g.parent_name_ref || !!g.driver_status);
+      currentDatFamily = await detectDatFamily();
 
       // Phase 3bis-B : pré-calculer hasParentInDb + cloneCount (utilisés en vue merged)
       // et rafraîchir le mode cible depuis settings.
@@ -2847,8 +3013,11 @@ function applyFiltersAndGrouping() {
     );
   }
 
-  // Mettre à jour les compteurs globaux
-  updateGlobalCounters(filteredGames.length, allGames.filter(g => !g.is_disappeared).length);
+  // Compteurs globaux : même périmètre que le compteur de sélection (hors disparus,
+  // BIOS et devices) ; les entrées hors périmètre affichées sont signalées à part.
+  const isCountable = (g: GameInfo) => !g.is_disappeared && !g.is_bios && !g.is_device;
+  const displayedCountable = filteredGames.filter(isCountable).length;
+  updateGlobalCounters(displayedCountable, allGames.filter(isCountable).length, filteredGames.length - displayedCountable);
 
   // Afficher les jeux avec ou sans groupement
   if (currentGroupBy === 'none') {
@@ -2859,12 +3028,14 @@ function applyFiltersAndGrouping() {
 }
 
 // Mise à jour des compteurs globaux
-function updateGlobalCounters(displayed: number, total: number) {
+function updateGlobalCounters(displayed: number, total: number, extra: number) {
   const counterDiv = document.getElementById('global-counters');
   if (!counterDiv) return;
 
-  //counterDiv.innerHTML = `Affiché${displayed > 1 ? 's' : ''} : <strong>${displayed}</strong> 👁️ / <strong>${total}</strong>`;
-  counterDiv.innerHTML = `👁️ <strong>${displayed}</strong> / <strong>${total}</strong>`;
+  const extraPart = extra > 0
+    ? ` <span title="${escapeHtml(t('index.filters.countersExtraTitle', { count: extra }))}">(+${extra})</span>`
+    : '';
+  counterDiv.innerHTML = `👁️ <strong>${displayed}</strong> / <strong>${total}</strong>${extraPart}`;
 }
 
 // Replie ou déplie tous les groupes affichés + met à jour l'état persistant.
@@ -3903,8 +4074,8 @@ function displayFileDetails(file: any, matchInfo?: any) {
 function formatFileSize(bytes: number): string {
   if (!bytes) return '0 B';
   const k = 1024;
-  const sizes = ['B', 'KB', 'MB', 'GB'];
-  const i = Math.floor(Math.log(bytes) / Math.log(k));
+  const sizes = ['B', 'KB', 'MB', 'GB', 'TB', 'PB'];
+  const i = Math.min(Math.floor(Math.log(bytes) / Math.log(k)), sizes.length - 1);
   return parseFloat((bytes / Math.pow(k, i)).toFixed(2)) + ' ' + sizes[i];
 }
 
@@ -4038,7 +4209,14 @@ async function showChdInfo(filePath: string) {
 async function runMatching() {
   const btn = document.getElementById('match-roms') as HTMLButtonElement;
   if (!btn) return;
-  
+
+  // Un dossier dont le scan est incomplet fausse le matching (ROMs absentes à tort)
+  const incomplete = loadedFolders.filter(isScanIncomplete);
+  if (incomplete.length > 0 &&
+      !confirm(t('index.confirm.matchWithPartialScan', { folders: incomplete.map(f => `• ${f.path}`).join('\n') }))) {
+    return;
+  }
+
   try {
     // Désactiver le bouton pendant le matching
     btn.disabled = true;
@@ -4104,6 +4282,13 @@ async function runConsolidation() {
 
   const lines: string[] = [];
 
+  // --- Profil ---
+  const activeProfile = settings.profiles?.find(p => p.id === settings.activeProfileId);
+  if (activeProfile) {
+    lines.push(t('index.consolidation.profile', { name: profileDisplayName(activeProfile) }));
+    lines.push('');
+  }
+
   // --- Archives ---
   lines.push(t('index.consolidation.sectionArchives'));
   if (settings.useBestCompression) {
@@ -4124,9 +4309,11 @@ async function runConsolidation() {
   // --- Dossiers ---
   lines.push('');
   lines.push(t('index.consolidation.sectionFolders'));
-  lines.push(`  • ${t('index.consolidation.targetFolder', { folder: settings.validatedRomsFolder || t('index.consolidation.notConfigured') })}`);
-  if (settings.cleanSourceAfterConsolidation && settings.unmatchedRomsFolder) {
-    lines.push(`  • ${t('index.consolidation.unmatchedFolder', { folder: settings.unmatchedRomsFolder })}`);
+  // Dossiers effectifs de la base (dossier cible et surcharges propres à la base)
+  const dbFolders = await window.api.getDbFolderSettings();
+  lines.push(`  • ${t('index.consolidation.targetFolder', { folder: dbFolders.effectiveTarget || t('index.consolidation.notConfigured') })}`);
+  if (settings.cleanSourceAfterConsolidation && settings.moveUnmatchedFiles !== false && dbFolders.effectiveUnmatched) {
+    lines.push(`  • ${t('index.consolidation.unmatchedFolder', { folder: dbFolders.effectiveUnmatched })}`);
   }
 
   // --- Nettoyage ---
@@ -4160,28 +4347,28 @@ async function runConsolidation() {
   try {
     btn.disabled = true;
     btn.textContent = t('index.consolidation.inProgress');
+    setProfileSelectorEnabled(false);
 
     log('logs.consolidation.launching', { context: 'match', state: 'loading' });
 
-    const removeListener = window.api.onConsolidationProgress((progress) => {
-      if (progress.phase === 'complete') {
-        log(progress.key, { params: progress.params, context: 'match', state: 'success' });
-      } else {
-        log(progress.key, { params: progress.params, context: 'match', state: 'loading' });
-      }
-    });
+    // Modale de progression ; les logs (une ligne par jeu) sont envoyés par le main
+    const result = await runConsolidationWithModal();
 
-    const result = await window.api.runConsolidation();
-
-    alert(t('index.consolidation.doneAlert', {
-      games: result.stats.gamesConsolidated,
-      archives: result.stats.archivesCreated,
-      unmatched: result.stats.unmatchedFilesMoved,
-      errors: result.stats.gamesErrored
-    }));
-
-    log('logs.consolidation.finished', { context: 'match', state: 'success' });
-    removeListener();
+    if (result.cancelled) {
+      alert(t('index.consolidation.cancelledAlert', {
+        games: result.stats.gamesConsolidated,
+        remaining: result.stats.gamesRemaining ?? 0,
+        errors: result.stats.gamesErrored
+      }));
+    } else {
+      alert(t('index.consolidation.doneAlert', {
+        games: result.stats.gamesConsolidated,
+        archives: result.stats.archivesCreated,
+        unmatched: result.stats.unmatchedFilesMoved,
+        errors: result.stats.gamesErrored
+      }));
+      log('logs.consolidation.finished', { context: 'match', state: 'success' });
+    }
 
     // Rafraîchissement automatique du dossier cible + rematching
     if (result.stats.gamesConsolidated > 0) {
@@ -4193,6 +4380,7 @@ async function runConsolidation() {
   } finally {
     btn.disabled = false;
     btn.textContent = t('index.workflow.consolidate');
+    setProfileSelectorEnabled(true);
   }
 }
 
@@ -4305,6 +4493,12 @@ async function openExistingDatabase() {
 
       // Fusionner les presets personnalisés de la base dans les paramètres de l'app.
       await syncDbCustomPresetsToApp();
+
+      // Synchroniser la clone list ici AUSSI, pas seulement au chargement d'un DAT :
+      // sans cela, activer l'option puis rouvrir sa base ne déclenchait rien, et une
+      // liste mise à jour en amont n'était jamais récupérée tant qu'on ne rechargeait
+      // pas le DAT. La requête est conditionnelle, donc quasi gratuite si rien n'a bougé.
+      await maybeAutoApplyCloneList();
 
       // Mettre à jour l'état des boutons workflow en fonction de l'état réel de la base de données
       updateWorkflowButtons();
@@ -4543,13 +4737,6 @@ function escapeRegExp(string: string): string {
   return string.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 }
 
-// Échapper HTML
-function escapeHtml(text: string): string {
-  const div = document.createElement('div');
-  div.textContent = text;
-  return div.innerHTML;
-}
-
 // Restaurer le contenu original
 function restoreOriginalContent() {
   const gameList = document.getElementById('game-list');
@@ -4698,37 +4885,25 @@ async function handlePrimaryDatLoaded(payload: {
     log('logs.match.reportInitialized', { context: 'match', state: 'waiting' });
   }
 
-  // Auto-ajouter le dossier de ROMs validées s'il est configuré
-  // (avec sous-dossier système si l'option multi-système est activée)
-  const settings = await window.api.getSettings();
-  if (settings.validatedRomsFolder) {
-    const effectiveFolder = await window.api.getEffectiveValidatedFolder();
+  // Scanner le dossier cible choisi à la création de la base (écran de chargement
+  // DAT ; à défaut, paramètre global), sous-dossier système compris.
+  const effectiveFolder = await window.api.getEffectiveValidatedFolder();
+  if (effectiveFolder) {
     targetFolderPath = effectiveFolder;
     await window.api.setDbMetadata('target_folder', effectiveFolder);
+    await updateDbInfoBanner();
     try {
       log('logs.folder.targetChecking', { params: { path: effectiveFolder }, context: 'folder', state: 'loading' });
 
-      const progressHandler = (data: any) => {
-        if (data.fileName) {
-          const icon = data.isArchive ? '📦' : '💾';
-          log('logs.romfile.scanningIcon', { params: { icon, file: data.fileName }, context: 'romfile', state: 'loading' });
-        }
-      };
-      window.api.onScanProgress(progressHandler);
+      const stats = await runRomScan([effectiveFolder], 'quick');
 
-      const stats = await window.api.addRomsFolder(effectiveFolder);
-
-      if (stats.length > 0) {
+      if (stats.cancelled) {
+        // Interrompu : le dossier est marqué incomplet dans la sidebar (logs envoyés par le scan)
+      } else if (stats.length > 0) {
         log('logs.folder.targetAdded', { params: { count: stats.length }, context: 'folder', state: 'success' });
       } else {
         log('logs.folder.targetAddedEmpty', { context: 'folder', state: 'success' });
       }
-
-      // Rafraîchir la liste des dossiers
-      const rootFolders = await window.api.getRootFolders();
-      loadedFolders = rootFolders;
-      updateLeftSidebar();
-      updateWorkflowButtons();
     } catch (folderError) {
       log('logs.folder.targetAddError', { params: { error: folderError instanceof Error ? folderError.message : String(folderError) }, severity: 'warning', context: 'folder' });
     }
@@ -4778,27 +4953,11 @@ async function addRomsFolders() {
 
       log('logs.folder.scanningCount', { params: { count: folders.length }, context: 'folder', state: 'loading' });
 
-      const progressHandler = (data: any) => {
-        if (data.fileName) {
-          const icon = data.isArchive ? '📦' : '💾';
-          log('logs.romfile.scanningIcon', { params: { icon, file: data.fileName }, context: 'romfile', state: 'loading' });
-        }
-      };
-
-      window.api.onScanProgress(progressHandler);
-
-      const stats = await window.api.addRomsFolder(folders);
-
-      log('logs.folder.scanDoneTotal', { params: { count: stats.length }, context: 'folder', state: 'success' });
-
-      // Rafraîchir la liste des dossiers
-      const rootFolders = await window.api.getRootFolders();
-      loadedFolders = rootFolders;
-
-      updateLeftSidebar();
-
-      // Mettre à jour l'état des boutons workflow
-      updateWorkflowButtons();
+      // Scan rapide : un dossier déjà en base n'est pas entièrement ré-analysé
+      const stats = await runRomScan(folders, 'quick');
+      if (!stats.cancelled) {
+        log('logs.folder.scanDoneTotal', { params: { count: stats.length }, context: 'folder', state: 'success' });
+      }
     } else {
       log('logs.folder.selectCancelled', { context: 'folder', state: 'cancel' });
     }
@@ -4832,7 +4991,7 @@ consolidateRomsButton?.addEventListener('click', runConsolidation);
 // BIOS, devices et jeux disparus sont exclus du ciblage (gérés par la cascade).
 // Les règles sont persistées dans la metadata DB ('selection_rules').
 
-type AsmField = 'name' | 'description' | 'name_desc' | 'category' | 'driver_status' | 'has_chd' | 'is_clone' | 'is_mechanical' | 'match_status'
+type AsmField = 'name' | 'description' | 'name_desc' | 'category' | 'manufacturer' | 'driver_status' | 'has_chd' | 'is_clone' | 'is_mechanical' | 'match_status'
   // Schéma v2.1 — métadonnées extraites du nom. `region`, `language` et
   // `release_flag` portent sur des colonnes CSV : l'opérateur « est » signifie
   // « contient cette valeur », ce qui est le comportement attendu pour un titre
@@ -4851,7 +5010,9 @@ let asmBase: 'all' | 'none' | 'current' = 'all';
 
 // Presets personnalisés (créés par l'utilisateur). Scope = type de DAT où le preset
 // est proposé. Globaux (paramètres de l'app) + miroir per-base (metadata).
-type PresetScope = 'arcade' | 'nointro-redump' | 'global';
+// 'nointro-redump' : scope historique, conservé pour les presets déjà enregistrés.
+type PresetScope = DatFamily | 'nointro-redump' | 'global';
+const PRESET_SCOPES: PresetScope[] = ['arcade', 'no-intro', 'redump', 'nointro-redump', 'other', 'global'];
 interface CustomPreset { id: string; name: string; scope: PresetScope; rules: SelectionRule[]; }
 let asmCustomPresets: CustomPreset[] = [];
 
@@ -4863,21 +5024,30 @@ function presetSig(p: { rules: SelectionRule[] }): string {
 
 // Normalise un scope inconnu vers 'global'.
 function normPresetScope(s: any): PresetScope {
-  return (s === 'arcade' || s === 'nointro-redump' || s === 'global') ? s : 'global';
+  return PRESET_SCOPES.includes(s) ? s : 'global';
 }
 
-// Fusion de scope : deux scopes différents (ou l'un = global) → global.
+// Familles couvertes par un scope.
+function presetScopeFamilies(s: PresetScope): DatFamily[] {
+  if (s === 'global') return ['no-intro', 'redump', 'arcade', 'other'];
+  if (s === 'nointro-redump') return ['no-intro', 'redump'];
+  return [s];
+}
+
+// Fusion de scope : union des familles, ramenée au scope le plus précis qui la couvre.
 function mergeScope(a: PresetScope, b: PresetScope): PresetScope {
-  return a === b ? a : 'global';
+  const families = new Set([...presetScopeFamilies(a), ...presetScopeFamilies(b)]);
+  if (families.size === 1) return [...families][0];
+  if (families.size === 2 && families.has('no-intro') && families.has('redump')) return 'nointro-redump';
+  return 'global';
 }
 
 // Un preset custom est-il visible pour le type de DAT courant ?
 function customPresetVisible(p: CustomPreset): boolean {
-  if (p.scope === 'global') return true;
-  return p.scope === 'arcade' ? currentDatIsArcade : !currentDatIsArcade;
+  return presetScopeFamilies(p.scope).includes(currentDatFamily);
 }
 
-const ASM_TEXT_FIELDS: AsmField[] = ['name', 'description', 'name_desc', 'category'];
+const ASM_TEXT_FIELDS: AsmField[] = ['name', 'description', 'name_desc', 'category', 'manufacturer'];
 
 // Libellés résolus au rendu (les traductions ne sont pas chargées à l'import du module)
 function asmFieldLabels(): Record<AsmField, string> {
@@ -4886,6 +5056,7 @@ function asmFieldLabels(): Record<AsmField, string> {
     description: t('index.asm.fieldDescription'),
     name_desc: t('index.asm.fieldNameOrDescription'),
     category: t('index.asm.fieldCategory'),
+    manufacturer: t('index.asm.fieldManufacturer'),
     driver_status: t('index.asm.fieldDriverStatus'),
     has_chd: t('index.asm.fieldHasChd'),
     is_clone: t('index.asm.fieldIsClone'),
@@ -4973,23 +5144,35 @@ function asmDistinctScalarValues(get: (g: GameInfo) => string | null | undefined
   return Array.from(values).sort().map(v => ({ v, l: v }));
 }
 
+const RULE_NOT_PRODUCTION: SelectionRule = { action: 'deselect', field: 'dev_status', operator: 'is-not', value: 'production' };
+const RULE_BIOS: SelectionRule = { action: 'deselect', field: 'name', operator: 'contains', value: '[bios]' };
+const RULE_NOT_GAMES_CATEGORY: SelectionRule = { action: 'deselect', field: 'category', operator: 'not-contains', value: 'games' };
+
+// « Jeux uniquement » : la notion de jeu s'exprime différemment selon la famille.
+// - Redump : toutes les entrées sont catégorisées (Demos, Preproduction, Applications…).
+// - No-Intro : la plupart des entrées n'ont pas de catégorie → statut de dev + [BIOS]
+//   + catégorie quand elle existe (les entrées sans catégorie sont ignorées par la règle).
+// - Arcade : catégorie = type de machine (exclut les mécaniques) + statut de dev.
+const ASM_GAMES_ONLY: Record<DatFamily, SelectionRule[]> = {
+  'redump': [RULE_NOT_GAMES_CATEGORY],
+  'no-intro': [RULE_NOT_PRODUCTION, RULE_BIOS, RULE_NOT_GAMES_CATEGORY],
+  'arcade': [RULE_NOT_GAMES_CATEGORY, RULE_NOT_PRODUCTION],
+  'other': [RULE_NOT_PRODUCTION, RULE_BIOS]
+};
+
+// Règles d'un modèle rapide pour la famille de DAT courante.
+function asmPresetRules(key: string): SelectionRule[] | undefined {
+  return key === 'games-only' ? ASM_GAMES_ONLY[currentDatFamily] : ASM_PRESETS[key];
+}
+
 // Modèles rapides : jeux de règles pré-configurés ajoutés à la liste courante
 const ASM_PRESETS: Record<string, SelectionRule[]> = {
-  // Filtre sur « Nom ou description » : couvre No-Intro/Redump (tag dans le nom) ET
-  // MAME (mention dans la description / titre).
-  'no-proto': [
-    { action: 'deselect', field: 'name_desc', operator: 'contains', value: '(proto' },
-    { action: 'deselect', field: 'name_desc', operator: 'contains', value: '(beta' },
-    { action: 'deselect', field: 'name_desc', operator: 'contains', value: '(demo' },
-    { action: 'deselect', field: 'name_desc', operator: 'contains', value: '(sample' },
-    { action: 'deselect', field: 'name_desc', operator: 'contains', value: 'prototype' }
-  ],
+  // Statut de développement extrait du nom (No-Intro/Redump) ou de la description (MAME).
+  'no-proto': [RULE_NOT_PRODUCTION],
   // Convention No-Intro/Redump : les BIOS sont préfixés « [BIOS] » dans le nom.
   // (Les BIOS MAME portent isbios="yes" et sont déjà exclus du ciblage des règles —
   // leur sélection est pilotée par la cascade de dépendances.)
-  'no-bios': [
-    { action: 'deselect', field: 'name', operator: 'contains', value: '[bios]' }
-  ],
+  'no-bios': [RULE_BIOS],
   // Convention No-Intro/Redump : « (Aftermarket) » = production post-commerciale,
   // « (Unl) » = jeu non licencié. N'existe pas dans les DAT MAME.
   'no-aftermarket-unl': [
@@ -5012,25 +5195,43 @@ const ASM_PRESETS: Record<string, SelectionRule[]> = {
   ]
 };
 
+// Valeurs texte testées par une règle. En arcade, game.category porte le fabricant :
+// la « Catégorie » y désigne le type de machine, comme dans le filtre Catégorie
+// (clé anglaise + libellé localisé, pour qu'une règle « Games » marche dans toutes les langues).
+function asmTextCandidates(field: AsmField, game: GameInfo): string[] {
+  if (field === 'name_desc') return [`${game.name || ''} ${game.description || ''}`];
+  if (field === 'manufacturer') return [game.category || ''];
+  if (field === 'category') {
+    if (currentDatIsArcade) {
+      const type = gameMachineType(game);
+      return [type, machineTypeLabel(type)];
+    }
+    // Sans catégorie, on ne sait pas ce qu'est l'entrée : aucune règle ne tranche.
+    return game.category ? [game.category] : [];
+  }
+  return [String((game as any)[field] || '')];
+}
+
 function asmRuleMatches(rule: SelectionRule, game: GameInfo): boolean {
   if (ASM_TEXT_FIELDS.includes(rule.field)) {
-    // 'name_desc' : champ virtuel combinant le nom et la description.
-    const raw = rule.field === 'name_desc'
-      ? `${game.name || ''} ${game.description || ''}`
-      : String((game as any)[rule.field] || '');
-    const v = raw.toLowerCase();
-    const q = (rule.value || '').toLowerCase();
     // Une règle texte sans valeur ne matche rien (sauf regex vide, rejetée aussi)
     if (!rule.value) return false;
-    switch (rule.operator) {
-      case 'contains': return v.includes(q);
-      case 'not-contains': return !v.includes(q);
-      case 'starts': return v.startsWith(q);
-      case 'ends': return v.endsWith(q);
-      case 'regex':
-        try { return new RegExp(rule.value, 'i').test(raw); } catch { return false; }
-      default: return false;
-    }
+    const q = rule.value.toLowerCase();
+    const test = (raw: string): boolean => {
+      const v = raw.toLowerCase();
+      switch (rule.operator) {
+        case 'contains': case 'not-contains': return v.includes(q);
+        case 'starts': return v.startsWith(q);
+        case 'ends': return v.endsWith(q);
+        case 'regex':
+          try { return new RegExp(rule.value, 'i').test(raw); } catch { return false; }
+        default: return false;
+      }
+    };
+    const candidates = asmTextCandidates(rule.field, game);
+    if (candidates.length === 0) return false;
+    const hit = candidates.some(test);
+    return rule.operator === 'not-contains' ? !hit : hit;
   }
 
   // Champs multivalués (colonnes CSV). « est » = « contient cette valeur » : un titre
@@ -5086,38 +5287,81 @@ interface OneGameOneRomConfig {
   fallbackToOwned: boolean;
 }
 
-/** Réglages chargés depuis les paramètres de l'application. */
-let ogorConfig: OneGameOneRomConfig | null = null;
-/**
- * Surcharge de session, pilotée par la case de la modale d'auto-sélection.
- * `null` = suivre le réglage global.
- */
-let ogorSessionOverride: boolean | null = null;
+/** Modes vidéo proposables. Aligné sur le type VideoMode du parseur de noms. */
+const OGOR_VIDEO_MODES = ['NTSC', 'PAL', 'PAL 60Hz', 'PAL-M', 'SECAM'];
 
-/** Le 1G1R doit-il s'appliquer maintenant ? */
+/** Dernier recours de la cascade, si ni la base ni les réglages ne disent rien. */
+const OGOR_BUILTIN_DEFAULTS: OneGameOneRomConfig = {
+  enabled: false,
+  regionPriority: ['World', 'Europe', 'USA', 'Japan'],
+  languagePriority: ['En', 'Fr', 'Ja'],
+  languageOverRegion: false,
+  videoPriority: ['PAL', 'PAL 60Hz', 'NTSC'],
+  preferLatestRevision: true,
+  fallbackToOwned: true
+};
+
+/**
+ * Configuration 1G1R de la BASE ouverte, éditée dans la modale de sélection
+ * automatique. Ce n'est plus un miroir des paramètres de l'application : chaque base
+ * porte ses propres priorités, une collection japonaise et une collection européenne
+ * n'ayant aucune raison de partager les mêmes.
+ */
+let ogorConfig: OneGameOneRomConfig = { ...OGOR_BUILTIN_DEFAULTS };
+
+/** Le 1G1R doit-il s'appliquer ? */
 function ogorIsActive(): boolean {
-  if (ogorSessionOverride !== null) return ogorSessionOverride;
-  return ogorConfig?.enabled === true;
+  return ogorConfig.enabled === true;
 }
 
-async function refreshOneGameOneRomConfig(): Promise<void> {
+/**
+ * Normalise une configuration de provenance quelconque (base, modèle de système,
+ * réglages de l'application), en complétant les champs manquants par `fallback`.
+ *
+ * Accepte aussi la forme héritée où `oneGameOneRom` était un simple booléen : les
+ * bases écrites avant que les priorités ne deviennent per-base ne portent que l'état
+ * d'activation, le reste vient alors du repli.
+ */
+function normalizeOgorConfig(raw: unknown, fallback: OneGameOneRomConfig): OneGameOneRomConfig {
+  if (typeof raw === 'boolean') return { ...fallback, enabled: raw };
+  if (!raw || typeof raw !== 'object') return { ...fallback };
+  const r = raw as Record<string, unknown>;
+  const list = (value: unknown, fb: string[]) =>
+    Array.isArray(value) ? value.filter((v): v is string => typeof v === 'string') : [...fb];
+  return {
+    enabled: r.enabled === true,
+    regionPriority: list(r.regionPriority, fallback.regionPriority),
+    languagePriority: list(r.languagePriority, fallback.languagePriority),
+    languageOverRegion: r.languageOverRegion === true,
+    videoPriority: list(r.videoPriority, fallback.videoPriority),
+    preferLatestRevision: r.preferLatestRevision !== false,
+    fallbackToOwned: r.fallbackToOwned !== false
+  };
+}
+
+/**
+ * Résout la configuration 1G1R de la base courante par cascade :
+ * base → modèle enregistré du système → onglet Paramètres → défauts internes.
+ * Le premier niveau renseigné gagne ; les niveaux suivants ne servent qu'à compléter.
+ */
+async function resolveOgorConfig(dbRaw: unknown): Promise<void> {
+  let fallback: OneGameOneRomConfig = { ...OGOR_BUILTIN_DEFAULTS };
+
   try {
     const settings = await window.api.getSettings();
-    const raw = (settings as any)?.oneGameOneRom;
-    ogorConfig = raw
-      ? {
-          enabled: raw.enabled === true,
-          regionPriority: Array.isArray(raw.regionPriority) ? raw.regionPriority : [],
-          languagePriority: Array.isArray(raw.languagePriority) ? raw.languagePriority : [],
-          languageOverRegion: raw.languageOverRegion === true,
-          videoPriority: Array.isArray(raw.videoPriority) ? raw.videoPriority : [],
-          preferLatestRevision: raw.preferLatestRevision !== false,
-          fallbackToOwned: raw.fallbackToOwned !== false
-        }
-      : null;
+    fallback = normalizeOgorConfig((settings as any)?.oneGameOneRom, fallback);
+
+    const saved = settings?.defaultSelectionRules?.[await asmDefaultKey()];
+    if (saved && (saved as any).oneGameOneRom) {
+      fallback = normalizeOgorConfig((saved as any).oneGameOneRom, fallback);
+    }
   } catch {
-    ogorConfig = null;
+    // Réglages illisibles : on garde les défauts internes comme repli.
   }
+
+  ogorConfig = dbRaw === undefined || dbRaw === null
+    ? fallback
+    : normalizeOgorConfig(dbRaw, fallback);
 }
 
 /**
@@ -5252,16 +5496,70 @@ function ogorApplyToSelection(selection: Map<number, boolean>): number {
  * chargement de données ne doit pouvoir activer le 1G1R de biais.
  */
 function asmRenderOneGameOneRomSection(): void {
-  const checkbox = document.getElementById('asm-ogor-enabled') as HTMLInputElement | null;
+  const setChecked = (id: string, value: boolean) => {
+    const el = document.getElementById(id) as HTMLInputElement | null;
+    if (el) el.checked = value;
+  };
+  setChecked('asm-ogor-enabled', ogorConfig.enabled);
+  setChecked('asmOgorLanguageOverRegion', ogorConfig.languageOverRegion);
+  setChecked('asmOgorPreferLatestRevision', ogorConfig.preferLatestRevision);
+  setChecked('asmOgorFallbackToOwned', ogorConfig.fallbackToOwned);
+
+  // Les listes lisent `ogorConfig` à chaque appel via getItems() : la configuration
+  // est remplacée à chaque ouverture de la modale et à chaque restauration d'un
+  // modèle, un tableau capturé une fois serait obsolète.
+  registerPriorityList({
+    containerId: 'asmOgorRegionList',
+    getItems: () => ogorConfig.regionPriority,
+    cssSuffix: () => 'region',
+    removable: true,
+    addableValues: () => CANONICAL_REGIONS.map(r => ({ value: r, label: r })),
+    addSelectId: 'asmOgorRegionAdd',
+    addButtonId: 'asmOgorRegionAddBtn',
+    onChange: asmOnOgorEdited
+  });
+  registerPriorityList({
+    containerId: 'asmOgorLanguageList',
+    getItems: () => ogorConfig.languagePriority,
+    cssSuffix: () => 'language',
+    removable: true,
+    displayName: code => languageDisplayName(code, getLanguage()),
+    // Trié par nom affiché : on cherche « Allemand », pas « De ».
+    addableValues: () => CANONICAL_LANGUAGES
+      .map(l => ({ value: l, label: languageDisplayName(l, getLanguage()) }))
+      .sort((a, b) => a.label.localeCompare(b.label)),
+    addSelectId: 'asmOgorLanguageAdd',
+    addButtonId: 'asmOgorLanguageAddBtn',
+    onChange: asmOnOgorEdited
+  });
+  registerPriorityList({
+    containerId: 'asmOgorVideoList',
+    getItems: () => ogorConfig.videoPriority,
+    cssSuffix: () => 'video',
+    removable: true,
+    addableValues: () => OGOR_VIDEO_MODES.map(v => ({ value: v, label: v })),
+    addSelectId: 'asmOgorVideoAdd',
+    addButtonId: 'asmOgorVideoAddBtn',
+    onChange: asmOnOgorEdited
+  });
+
+  asmRenderOgorSummary();
+}
+
+/** Toute retouche du 1G1R : rafraîchir le résumé de l'en-tête et l'aperçu. */
+function asmOnOgorEdited(): void {
+  asmRenderOgorSummary();
+  asmSchedulePreview();
+}
+
+/**
+ * Résumé des priorités affiché dans l'en-tête du groupe. Il reste visible quand le
+ * groupe est replié : replier ne doit rien masquer d'essentiel avant d'appliquer.
+ */
+function asmRenderOgorSummary(): void {
   const summary = document.getElementById('asm-ogor-summary');
-  if (!checkbox || !summary) return;
+  if (!summary) return;
 
-  checkbox.checked = ogorIsActive();
-
-  if (!ogorConfig) {
-    summary.textContent = t('index.asm.ogorNotConfigured');
-    return;
-  }
   const cfg = ogorConfig;
   const first = cfg.languageOverRegion
     ? `${t('index.filters.language')} ${cfg.languagePriority.join(' › ') || '—'}`
@@ -5273,49 +5571,7 @@ function asmRenderOneGameOneRomSection(): void {
   if (cfg.preferLatestRevision) options.push(t('index.asm.ogorLatestRevision'));
   if (cfg.fallbackToOwned) options.push(t('index.asm.ogorFallbackToOwned'));
   summary.textContent = `${first} · ${second}` + (options.length ? ` · ${options.join(' · ')}` : '');
-}
-
-// ── Clone list : statut et actions dans la modale ───────────────────────────────
-
-/**
- * Rafraîchit la ligne d'état et l'activation des boutons.
- * Les clone lists ne concernent que les DAT No-Intro/Redump : un DAT arcade porte
- * déjà ses relations parent/clone, une liste n'y apporterait rien.
- */
-async function asmRefreshCloneListStatus(): Promise<void> {
-  const statusEl = document.getElementById('asm-clonelist-status');
-  const dlBtn = document.getElementById('asm-clonelist-download') as HTMLButtonElement | null;
-  const applyBtn = document.getElementById('asm-clonelist-apply') as HTMLButtonElement | null;
-  const clearBtn = document.getElementById('asm-clonelist-clear') as HTMLButtonElement | null;
-  if (!statusEl || !dlBtn || !applyBtn || !clearBtn) return;
-
-  let status: Awaited<ReturnType<typeof window.api.cloneList.getStatus>> | null = null;
-  try {
-    status = await window.api.cloneList.getStatus();
-  } catch {
-    statusEl.textContent = t('index.asm.cloneListUnavailable');
-    dlBtn.disabled = applyBtn.disabled = clearBtn.disabled = true;
-    return;
-  }
-
-  if (status.isArcade) {
-    statusEl.textContent = t('index.asm.cloneListArcade');
-    dlBtn.disabled = applyBtn.disabled = clearBtn.disabled = true;
-    return;
-  }
-
-  dlBtn.disabled = false;
-  clearBtn.disabled = !status.appliedList;
-  applyBtn.disabled = !status.matchedFile;
-
-  if (status.appliedList) {
-    const when = status.appliedAt ? new Date(status.appliedAt).toLocaleString() : '';
-    statusEl.textContent = t('index.asm.cloneListApplied', { list: status.appliedList, date: when });
-  } else if (status.matchedFile) {
-    statusEl.textContent = t('index.asm.cloneListReady', { file: status.matchedFile });
-  } else {
-    statusEl.textContent = t('index.asm.cloneListMissing', { dat: status.datName || '—' });
-  }
+  summary.title = t('index.asm.ogorHint');
 }
 
 /**
@@ -5326,23 +5582,11 @@ async function asmRefreshCloneListStatus(): Promise<void> {
 async function maybeAutoApplyCloneList(): Promise<void> {
   try {
     const settings = await window.api.getSettings();
-    const config = (settings as any)?.cloneLists;
-    if (config?.autoApply !== true) return;
-
-    let status = await window.api.cloneList.getStatus();
-    if (status.isArcade) return;
-
-    // Téléchargement à la demande, uniquement si rien ne correspond localement.
-    // Une liste déjà présente n'est jamais rafraîchie ici : ce serait un appel
-    // réseau à chaque chargement de DAT, pour une donnée qui bouge lentement.
-    if (!status.matchedFile && config.autoDownload === true) {
-      const downloaded = await window.api.cloneList.download();
-      if (!downloaded.success) return;
-      status = await window.api.cloneList.getStatus();
-    }
-    if (!status.matchedFile) return;
-
-    await window.api.cloneList.apply();
+    if ((settings as any)?.cloneLists?.autoUpdate !== true) return;
+    // Le handler gère lui-même l'absence de correspondance, l'arcade et le hors
+    // ligne : rien à filtrer ici, et surtout aucune erreur remontée à l'écran pour
+    // une collection qui n'utilise simplement pas de clone list.
+    await window.api.cloneList.sync();
   } catch (error: any) {
     log('logs.cloneList.error', {
       params: { error: error?.message || String(error) },
@@ -5352,52 +5596,38 @@ async function maybeAutoApplyCloneList(): Promise<void> {
   }
 }
 
-/** Câble les trois boutons. Appelé une fois au démarrage. */
-function asmSetupCloneListActions(): void {
-  const withBusy = async (id: string, action: () => Promise<void>) => {
-    const btn = document.getElementById(id) as HTMLButtonElement | null;
-    if (!btn || btn.disabled) return;
-    const previous = btn.textContent;
-    btn.disabled = true;
-    btn.textContent = t('common.pleaseWait');
-    try {
-      await action();
-    } catch (error: any) {
-      log('logs.cloneList.error', { params: { error: error?.message || String(error) }, severity: 'error', context: 'dat' });
-    } finally {
-      btn.textContent = previous;
-      await asmRefreshCloneListStatus();
+/** Mise à jour manuelle depuis le menu contextuel du DAT : ignore l'ETag connu. */
+async function forceCloneListUpdate(): Promise<void> {
+  try {
+    log('logs.cloneList.listing', { context: 'dat', state: 'loading' });
+    const result = await window.api.cloneList.sync({ force: true });
+    if (!result.success) {
+      const key = result.error === 'arcade' ? 'logs.cloneList.arcade' : 'logs.cloneList.noMatch';
+      log(key, { params: { dat: result.datName || '—' }, severity: 'warning', context: 'dat' });
+      return;
     }
-  };
-
-  document.getElementById('asm-clonelist-download')?.addEventListener('click', () => {
-    withBusy('asm-clonelist-download', async () => {
-      const result = await window.api.cloneList.download();
-      if (!result.success && result.error === 'no-match') {
-        log('logs.cloneList.noMatch', { params: { dat: result.datName || '—' }, severity: 'warning', context: 'dat' });
-      }
+    await reloadGamesPreservingView();
+  } catch (error: any) {
+    log('logs.cloneList.error', {
+      params: { error: error?.message || String(error) },
+      severity: 'error',
+      context: 'dat'
     });
-  });
+  }
+}
 
-  document.getElementById('asm-clonelist-apply')?.addEventListener('click', () => {
-    withBusy('asm-clonelist-apply', async () => {
-      const result = await window.api.cloneList.apply();
-      if (result.success && result.report) {
-        // Le regroupement vient de changer : recharger pour que group_key remonte
-        // dans allGames, sinon l'aperçu 1G1R raisonnerait sur l'ancien découpage.
-        await reloadGamesPreservingView();
-        asmSchedulePreview();
-      }
+/** Retrait manuel des regroupements, depuis le menu contextuel du DAT. */
+async function clearCloneListGroupings(): Promise<void> {
+  try {
+    await window.api.cloneList.clear();
+    await reloadGamesPreservingView();
+  } catch (error: any) {
+    log('logs.cloneList.error', {
+      params: { error: error?.message || String(error) },
+      severity: 'error',
+      context: 'dat'
     });
-  });
-
-  document.getElementById('asm-clonelist-clear')?.addEventListener('click', () => {
-    withBusy('asm-clonelist-clear', async () => {
-      await window.api.cloneList.clear();
-      await reloadGamesPreservingView();
-      asmSchedulePreview();
-    });
-  });
+  }
 }
 
 /**
@@ -5521,6 +5751,8 @@ function asmMakeRow(rule: SelectionRule, index: number): HTMLElement {
   const fieldSel = document.createElement('select');
   const fieldLabels = asmFieldLabels();
   (Object.keys(fieldLabels) as AsmField[]).forEach(f => {
+    // Fabricant : propre aux DAT arcade (conservé si une règle existante l'utilise)
+    if (f === 'manufacturer' && !currentDatIsArcade && rule.field !== f) return;
     const opt = document.createElement('option');
     opt.value = f;
     opt.textContent = fieldLabels[f];
@@ -5670,7 +5902,10 @@ function asmRenderCustomPresets(): void {
 
   const scopeLabel: Record<PresetScope, string> = {
     'arcade': t('index.autoSelect.scopeArcade'),
+    'no-intro': t('index.autoSelect.scopeNoIntro'),
+    'redump': t('index.autoSelect.scopeRedump'),
     'nointro-redump': t('index.autoSelect.scopeNoIntroRedump'),
+    'other': t('index.autoSelect.scopeOther'),
     'global': t('index.autoSelect.scopeGlobal')
   };
 
@@ -5837,47 +6072,41 @@ async function openAutoSelectModal() {
     return;
   }
 
-  // Réglages 1G1R à jour : ils ont pu changer dans la fenêtre des paramètres depuis
-  // la dernière ouverture de cette modale.
-  await refreshOneGameOneRomConfig();
-  ogorSessionOverride = null;
-
-  // Restaurer les règles persistées dans la base
+  // Restaurer les réglages persistés dans la base
+  let dbOgor: unknown;
   try {
     const saved = await window.api.getDbMetadata('selection_rules');
     if (saved) {
       const parsed = JSON.parse(saved);
       asmBase = parsed.base === 'none' || parsed.base === 'current' ? parsed.base : 'all';
       asmRules = Array.isArray(parsed.rules) ? parsed.rules : [];
-      // Forme héritée `{ base, rules }` : l'absence de la clé vaut « non activé »,
-      // une base créée avant le 1G1R ne doit pas se mettre à filtrer toute seule.
-      if (typeof parsed.oneGameOneRom === 'boolean') {
-        ogorSessionOverride = parsed.oneGameOneRom;
-      }
+      // Peut être un booléen (forme héritée) ou l'objet complet : resolveOgorConfig
+      // gère les deux. `undefined` déclenche la cascade des défauts.
+      dbOgor = parsed.oneGameOneRom;
     }
   } catch {
     // Metadata absente ou corrompue — on repart de zéro
   }
 
+  await resolveOgorConfig(dbOgor);
   asmRenderOneGameOneRomSection();
-  await asmRefreshCloneListStatus();
+  await asmPopulateModelSelect();
 
   document.querySelectorAll<HTMLInputElement>('input[name="asm-base"]').forEach(r => {
     r.checked = r.value === asmBase;
   });
 
-  // N'afficher que les presets pertinents pour le type de DAT courant (évite la
+  // N'afficher que les presets pertinents pour la famille du DAT courant (évite la
   // confusion : Clones/Good/CHD/Mechanical/Jouables n'ont de sens qu'en arcade ;
   // BIOS/Aftermarket sont des conventions No-Intro/Redump).
-  document.querySelectorAll<HTMLButtonElement>('#auto-select-modal [data-preset-scope]').forEach(btn => {
-    const scope = btn.dataset.presetScope || 'both';
-    const visible = scope === 'both' || (scope === 'arcade' ? currentDatIsArcade : !currentDatIsArcade);
-    btn.style.display = visible ? '' : 'none';
+  document.querySelectorAll<HTMLButtonElement>('#auto-select-modal [data-preset-families]').forEach(btn => {
+    const families = (btn.dataset.presetFamilies || '').split(/\s+/);
+    btn.style.display = families.includes(currentDatFamily) ? '' : 'none';
   });
 
-  // Scope par défaut du sélecteur de création = type du DAT courant.
+  // Scope par défaut du sélecteur de création = famille du DAT courant.
   const scopeSel = document.getElementById('asm-custom-scope') as HTMLSelectElement | null;
-  if (scopeSel) scopeSel.value = currentDatIsArcade ? 'arcade' : 'nointro-redump';
+  if (scopeSel) scopeSel.value = currentDatFamily;
 
   await asmLoadCustomPresets();
   asmRenderCustomPresets();
@@ -5897,40 +6126,120 @@ async function asmDefaultKey(): Promise<string> {
   return currentDatIsArcade ? 'arcade' : 'generic';
 }
 
-// Enregistre les règles courantes comme modèle par défaut pour ce type de DAT.
+// Enregistre les réglages courants (règles ET 1G1R) comme modèle du système courant.
+// Volontairement par système, comme les règles l'ont toujours été : enregistrer depuis
+// une collection japonaise ne doit pas redéfinir les priorités des autres systèmes.
 async function asmSaveAsDefault(): Promise<void> {
   try {
     const key = await asmDefaultKey();
     const settings = await window.api.getSettings();
     const map = { ...(settings?.defaultSelectionRules || {}) };
-    map[key] = { base: asmBase, rules: asmRules };
+    map[key] = { base: asmBase, rules: asmRules, oneGameOneRom: { ...ogorConfig } };
     await window.api.updateSettings({ defaultSelectionRules: map });
+    await asmPopulateModelSelect();
     log('logs.game.defaultPresetsSaved', { context: 'game', state: 'success' });
   } catch (error) {
     log('logs.game.autoSelectError', { params: { error: error instanceof Error ? error.message : String(error) }, severity: 'error', context: 'game' });
   }
 }
 
-// Recharge le modèle par défaut enregistré pour ce type de DAT dans l'éditeur.
-async function asmRestoreDefault(): Promise<void> {
+/** Charge un modèle enregistré dans l'éditeur (état de départ, règles, 1G1R). */
+function asmApplyModel(model: any, fallback: OneGameOneRomConfig): void {
+  asmBase = model?.base === 'none' || model?.base === 'current' ? model.base : 'all';
+  asmRules = Array.isArray(model?.rules) ? model.rules.map((r: SelectionRule) => ({ ...r })) : [];
+  ogorConfig = normalizeOgorConfig(model?.oneGameOneRom, fallback);
+  document.querySelectorAll<HTMLInputElement>('input[name="asm-base"]').forEach(r => {
+    r.checked = r.value === asmBase;
+  });
+  asmRenderRules();
+  asmRenderOneGameOneRomSection();
+  asmSchedulePreview();
+}
+
+/** Repli 1G1R de l'onglet Paramètres, utilisé quand un modèle n'en déclare pas. */
+async function asmAppOgorFallback(): Promise<OneGameOneRomConfig> {
   try {
-    const key = await asmDefaultKey();
+    const settings = await window.api.getSettings();
+    return normalizeOgorConfig((settings as any)?.oneGameOneRom, OGOR_BUILTIN_DEFAULTS);
+  } catch {
+    return { ...OGOR_BUILTIN_DEFAULTS };
+  }
+}
+
+/**
+ * Charge un modèle enregistré dans l'éditeur, quel que soit le système d'origine.
+ *
+ * Recharger le modèle de son propre système et reprendre celui d'un voisin sont la
+ * MÊME opération à la source près : deux boutons distincts ne se différenciaient que
+ * par cette source, ce qui était indéchiffrable. Le système courant est désormais la
+ * première entrée du sélecteur.
+ */
+async function asmLoadModel(key: string): Promise<void> {
+  try {
     const settings = await window.api.getSettings();
     const saved = settings?.defaultSelectionRules?.[key];
     if (!saved) {
       log('logs.game.defaultPresetsNone', { severity: 'warning', context: 'game' });
       return;
     }
-    asmBase = saved.base === 'none' || saved.base === 'current' ? saved.base : 'all';
-    asmRules = Array.isArray(saved.rules) ? saved.rules.map((r: SelectionRule) => ({ ...r })) : [];
-    document.querySelectorAll<HTMLInputElement>('input[name="asm-base"]').forEach(r => {
-      r.checked = r.value === asmBase;
-    });
-    asmRenderRules();
+    asmApplyModel(saved, await asmAppOgorFallback());
     log('logs.game.defaultPresetsRestored', { context: 'game', state: 'success' });
   } catch (error) {
     log('logs.game.autoSelectError', { params: { error: error instanceof Error ? error.message : String(error) }, severity: 'error', context: 'game' });
   }
+}
+
+/**
+ * Remplit le sélecteur de modèles : le système courant en TÊTE quand il en a un,
+ * marqué « (ce système) », puis les autres par ordre alphabétique.
+ */
+async function asmPopulateModelSelect(): Promise<void> {
+  const wrap = document.getElementById('asm-model-load-wrap');
+  const select = document.getElementById('asm-model-select') as HTMLSelectElement | null;
+  if (!wrap || !select) return;
+
+  let entries: Array<{ key: string; label: string }> = [];
+  try {
+    const settings = await window.api.getSettings();
+    const map = settings?.defaultSelectionRules || {};
+    const currentKey = await asmDefaultKey();
+    const { getSystemById } = await import('../config/systems.js');
+    const labelOf = (key: string) => {
+      const systemId = key.startsWith('sys:') ? key.slice(4) : null;
+      return systemId ? (getSystemById(systemId)?.fullname ?? systemId) : key;
+    };
+    const others = Object.keys(map)
+      .filter(k => k !== currentKey)
+      .map(k => ({ key: k, label: labelOf(k) }))
+      .sort((a, b) => a.label.localeCompare(b.label));
+    entries = map[currentKey]
+      ? [{ key: currentKey, label: `${labelOf(currentKey)} (${t('index.autoSelect.thisSystem')})` }, ...others]
+      : others;
+  } catch {
+    entries = [];
+  }
+
+  select.innerHTML = '';
+  for (const entry of entries) {
+    const option = document.createElement('option');
+    option.value = entry.key;
+    option.textContent = entry.label;
+    select.appendChild(option);
+  }
+  // Rien à proposer : masquer plutôt qu'offrir un sélecteur vide.
+  wrap.style.display = entries.length > 0 ? '' : 'none';
+}
+
+/**
+ * Écrit les réglages courants (état de départ, règles, 1G1R) dans la base.
+ * Ne touche JAMAIS à la sélection : partagé par « Enregistrer » et « Appliquer ».
+ */
+async function asmPersist(): Promise<void> {
+  await window.api.setDbMetadata('selection_rules', JSON.stringify({
+    base: asmBase,
+    rules: asmRules,
+    oneGameOneRom: ogorConfig
+  }));
 }
 
 async function asmApply() {
@@ -5966,14 +6275,8 @@ async function asmApply() {
       }
     }
 
-    // Persister les règles dans la base pour la prochaine ouverture.
-    // `oneGameOneRom` s'ajoute à la forme héritée `{ base, rules }` : une base écrite
-    // par une version antérieure se relit sans la clé, donc 1G1R non activé.
-    await window.api.setDbMetadata('selection_rules', JSON.stringify({
-      base: asmBase,
-      rules: asmRules,
-      oneGameOneRom: ogorIsActive()
-    }));
+    // Persister les réglages dans la base pour la prochaine ouverture.
+    await asmPersist();
 
     // Recalculer la cascade de dépendances et re-rendre
     await refreshDependencyResolution();
@@ -6013,7 +6316,7 @@ function setupAutoSelectModal() {
 
   document.querySelectorAll<HTMLButtonElement>('#auto-select-modal [data-preset]').forEach(btn => {
     btn.addEventListener('click', () => {
-      const preset = ASM_PRESETS[btn.dataset.preset || ''];
+      const preset = asmPresetRules(btn.dataset.preset || '');
       if (preset) {
         // Copie profonde : les règles du preset sont éditables indépendamment
         asmRules.push(...preset.map(r => ({ ...r })));
@@ -6022,20 +6325,58 @@ function setupAutoSelectModal() {
     });
   });
 
-  // Case 1G1R de la modale : surcharge de session, et seul point d'activation ici.
+  // Case d'activation du 1G1R, dans l'en-tête du groupe.
   document.getElementById('asm-ogor-enabled')?.addEventListener('change', (e) => {
-    ogorSessionOverride = (e.target as HTMLInputElement).checked;
+    ogorConfig.enabled = (e.target as HTMLInputElement).checked;
+    asmOnOgorEdited();
+  });
+
+  // Options d'arbitrage : elles modifient la configuration de la base, pas les
+  // réglages de l'application.
+  const wireOgorOption = (id: string, assign: (checked: boolean) => void) => {
+    document.getElementById(id)?.addEventListener('change', (e) => {
+      assign((e.target as HTMLInputElement).checked);
+      asmOnOgorEdited();
+    });
+  };
+  wireOgorOption('asmOgorLanguageOverRegion', v => { ogorConfig.languageOverRegion = v; });
+  wireOgorOption('asmOgorPreferLatestRevision', v => { ogorConfig.preferLatestRevision = v; });
+  wireOgorOption('asmOgorFallbackToOwned', v => { ogorConfig.fallbackToOwned = v; });
+
+  // Réinitialisation aux valeurs de l'onglet Paramètres. `enabled` est préservé :
+  // il vit dans l'en-tête du groupe, pas dans les réglages d'arbitrage, et le
+  // remettre à zéro couperait le 1G1R au moment où l'on cherche à le régler.
+  document.getElementById('asm-ogor-reset')?.addEventListener('click', async () => {
+    const enabled = ogorConfig.enabled;
+    ogorConfig = { ...(await asmAppOgorFallback()), enabled };
+    asmRenderOneGameOneRomSection();
     asmSchedulePreview();
   });
 
-  asmSetupCloneListActions();
-
   document.getElementById('asm-save-default')?.addEventListener('click', asmSaveAsDefault);
-  document.getElementById('asm-restore-default')?.addEventListener('click', asmRestoreDefault);
+  document.getElementById('asm-model-load')?.addEventListener('click', () => {
+    const select = document.getElementById('asm-model-select') as HTMLSelectElement | null;
+    if (select?.value) asmLoadModel(select.value);
+  });
   document.getElementById('asm-custom-save-btn')?.addEventListener('click', asmCreateCustomPreset);
 
   document.getElementById('asm-cancel')?.addEventListener('click', () => {
     (document.getElementById('auto-select-modal') as HTMLElement).style.display = 'none';
+  });
+
+  // Enregistrer sans appliquer : persiste les réglages, ne touche pas à la sélection.
+  document.getElementById('asm-save')?.addEventListener('click', async () => {
+    const btn = document.getElementById('asm-save') as HTMLButtonElement;
+    btn.disabled = true;
+    try {
+      await asmPersist();
+      log('logs.game.autoSelectSaved', { context: 'game', state: 'success' });
+      (document.getElementById('auto-select-modal') as HTMLElement).style.display = 'none';
+    } catch (error) {
+      log('logs.game.autoSelectError', { params: { error: error instanceof Error ? error.message : String(error) }, severity: 'error', context: 'game' });
+    } finally {
+      btn.disabled = false;
+    }
   });
 
   document.getElementById('asm-apply')?.addEventListener('click', asmApply);
@@ -6045,6 +6386,9 @@ setupAutoSelectModal();
 
 // Écouter les actions du menu
 window.api.onMenuAction(async (action: string) => {
+  // La modale de scan bloque l'interface, mais pas le menu de l'application :
+  // ouvrir/fermer une base ou lancer le matching en plein scan corromprait l'état.
+  if (isScanRunning() || isConsolidationRunning()) return;
   switch (action) {
     case 'new-database':
       datLoadButton?.click();
@@ -6370,6 +6714,9 @@ async function handleLanguageChanged(): Promise<void> {
 document.addEventListener('DOMContentLoaded', async () => {
   // Traductions d'abord : le DOM statique et tous les textes dynamiques en dépendent
   await initI18n({ onLanguageChanged: handleLanguageChanged });
+  // Registre des systèmes (surcharge Recalbox éventuelle), lu par la sélection de système
+  await initSystems();
+  await initProfileSelector();
   initSplitters();
   setupContextMenu();
   setupViewControls();

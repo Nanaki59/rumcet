@@ -1,5 +1,19 @@
 {
   "logs": {
+    "chdman": {
+      "latestFound": "Latest MAME release: {tag} (chdman {version})",
+      "checkError": "Unable to fetch the latest MAME release: {error}",
+      "downloadStarted": "Downloading {tag}: {url} ({size} bytes) to {path}",
+      "downloadCompleted": "Download completed ({size} bytes received)",
+      "extracting": "Extracting chdman from {archive}",
+      "extracted": "chdman extracted, version {version}",
+      "installed": "chdman installed to {path}",
+      "tempCleaned": "Temporary folder deleted (including the MAME archive): {path}",
+      "tempCleanupFailed": "Unable to delete the temporary folder {path}: {error}",
+      "updated": "chdman {version} downloaded and installed",
+      "updateError": "chdman update failed: {error}",
+      "deleted": "chdman {version} deleted"
+    },
     "welcome": {
       "ready": "RUMCET is ready! Use the File menu or the buttons to get started."
     },
@@ -52,7 +66,11 @@
       "targetAddError": "Unable to add the target folder: {error}",
       "rescanStart": "Rescanning folder: {path}...",
       "rescanDone": "Rescan complete: {count} files found.",
-      "rescanError": "Error during rescan: {error}"
+      "rescanError": "Error during rescan: {error}",
+      "scanStartFull": "Full scan started: {path}",
+      "scanCancelled": "Scan interrupted: {path} ({count}/{total} files recorded). Use \"Resume scan\" on the folder to finish it.",
+      "foldersSaved": "Database folders saved",
+      "targetChanged": "Target folder changed: {path}"
     },
     "romfile": {
       "found": "File found: {file}",
@@ -109,11 +127,14 @@
       "reportInitialized": "📊 Matching report initialized"
     },
     "consolidation": {
-      "start": "🧹 Starting ROM consolidation...",
+      "start": "🧹 Starting ROM consolidation (profile \"{profile}\")...",
       "launching": "Launching ROM consolidation...",
       "finished": "Consolidation complete!",
       "done": "✅ Consolidation complete! {games} games consolidated, {archives} archives created, {unmatched} unmatched files moved",
       "errorsCount": "⚠️ {count} error(s) during consolidation",
+      "m3uFormatOverride": "💿 {count} multi-disc game(s) detected: their discs were not compressed to 7z/zip (CHD or raw files) so they can be referenced by a .m3u",
+      "m3uCreated": "💿 {count} .m3u file(s) created",
+      "m3uSkipped": "⚠️ {count} multi-disc game(s) without .m3u (disc not consolidated or not directly playable)",
       "error": "❌ Consolidation error: {error}",
       "runError": "Error during consolidation: {error}",
       "progress": {
@@ -122,7 +143,12 @@
         "deletingMatched": "Deleting remaining matched files (duplicates)...",
         "movingUnmatched": "Moving unmatched files...",
         "complete": "Consolidation complete: {count} games consolidated"
-      }
+      },
+      "gameDone": "✅ {game} → {format}",
+      "gameSkipped": "⏭️ {game}: nothing to consolidate",
+      "gameError": "❌ {game}: {error}",
+      "gameAborted": "⏹️ {game}: abandoned (forced stop) — nothing was written to the target folder",
+      "cancelled": "⏹️ Consolidation interrupted: {games} game(s) consolidated, {remaining} not processed. Cleanup phases were skipped."
     },
     "download": {
       "done": "Download complete: {consolidated} consolidated, {failed} failed",
@@ -137,7 +163,8 @@
         "allFoundLocally": "{game}: all files found locally",
         "consolidating": "{game}: consolidating...",
         "incomplete": "{game}: {found}/{total} files found, stored in the incomplete ROMs folder"
-      }
+      },
+      "cancelled": "⏹️ Download interrupted: {consolidated} consolidated, {failed} failed, {remaining} not processed"
     },
     "dat": {
       "noUpdateReport": "No update report available.",
@@ -156,17 +183,27 @@
       "refreshAfterLoadError": "Error while refreshing after DAT load: {error}"
     },
     "cloneList": {
-      "listing": "Listing available clone lists...",
+      "listing": "Looking up the clone list for this system...",
       "noMatch": "No clone list matches \"{dat}\".",
       "downloaded": "Clone list downloaded: {file} ({variants} variants)",
+      "upToDate": "Clone list already up to date: {file}",
+      "usingLocal": "Using the local copy of the clone list: {file}",
       "applied": "Clone list applied: {list} — {games} games grouped over {variants} variants",
+      "categories": "{count} game categor(ies) overridden by the clone list",
       "unmatched": "{count} search term(s) matched nothing in this DAT (normal if the DAT and the list are from different dates)",
+      "unreachable": "Clone list source unreachable: {error}",
+      "httpError": "Clone list download refused for {file}: {error}",
+      "invalidRemote": "The downloaded file is not a valid clone list ({file}): {error}",
+      "unreadable": "Local clone list unreadable ({file}): {error}",
+      "applyFailed": "Failed to apply the clone list ({file}): {error}",
       "cleared": "Clone list groupings removed.",
+      "arcade": "Clone lists do not apply to arcade DATs: parent/clone relations already come from the DAT.",
       "error": "Clone list error: {error}"
     },
     "game": {
       "loadDatFirst": "Load a DAT first to use automatic selection.",
       "autoSelectApplied": "Automatic selection applied: {selected} selected, {deselected} deselected.",
+      "autoSelectSaved": "Automatic selection settings saved (selection unchanged).",
       "autoSelectError": "Error during automatic selection: {error}",
       "defaultPresetsSaved": "Rules saved as default for this kind of DAT.",
       "defaultPresetsRestored": "Default rules restored.",
@@ -175,6 +212,27 @@
       "customPresetDeleted": "Custom preset deleted.",
       "customPresetNameRequired": "Please enter a name for the preset.",
       "customPresetNeedsRules": "Add at least one rule before saving a preset."
+    },
+    "scan": {
+      "fileArchive": "📦 {file} ({type}) — {count} file(s)",
+      "fileLoose": "💾 {file}",
+      "fileAborted": "Scan of \"{file}\" abandoned (forced stop): it will be scanned again on the next scan",
+      "fileError": "Unable to scan \"{file}\": {error}",
+      "summary": "{path}: {scanned} file(s) scanned, {unchanged} unchanged, {removed} removed",
+      "stopRequested": "Interruption requested: the scan stops after the current file",
+      "forceStopRequested": "Forced stop requested"
+    },
+    "systemsUpdate": {
+      "tagsError": "Unable to retrieve the Recalbox versions: {error}",
+      "fetching": "Retrieving Recalbox {ref} system data...",
+      "previewReady": "Recalbox {ref}: {added} new system(s), {changed} modified system(s)",
+      "fetchError": "Unable to retrieve Recalbox {ref} system data: {error}",
+      "applied": "Systems updated from Recalbox {ref} ({count} system(s))",
+      "applyError": "Systems update failed: {error}",
+      "reset": "Systems data restored to the data bundled with Rumcet"
+    },
+    "profiles": {
+      "activated": "⚙️ Current consolidation profile: {profile}"
     }
   },
   "common": {
@@ -254,7 +312,11 @@
     "selectFolderValidated": "Select the folder for validated ROMs",
     "selectFolderTemp": "Select the temporary extraction folder",
     "selectFolderIncomplete": "Select the folder for incomplete ROMs",
-    "selectFolderCloneLists": "Select the clone lists folder"
+    "selectFolderCloneLists": "Select the clone lists folder",
+    "selectChdman": "Select the chdman executable",
+    "select7zip": "Select the 7-Zip executable (7z)",
+    "selectRar": "Select the RAR command-line executable (Rar.exe / rar)",
+    "selectUnrar": "Select the UnRAR executable"
   },
   "matching": {
     "overview": "Overview",
@@ -332,7 +394,8 @@
       "collapseTitle": "Collapse/Expand",
       "foldersSection": "📂 ROMs folders",
       "foldersAddTitle": "Add one or more ROMs folders",
-      "matchingSection": "📊 Matching report"
+      "matchingSection": "📊 Matching report",
+      "scanIncomplete": "Incomplete scan — right-click › \"Resume scan\""
     },
     "search": {
       "placeholder": "🔍 Search games, ROMs and archives...",
@@ -361,6 +424,7 @@
       "bios": "BIOS",
       "device": "Device",
       "mechanical": "Mechanical",
+      "countersExtraTitle": "{count} displayed non-selectable entry(ies) (BIOS, devices, disappeared games), not counted",
       "games": "Games",
       "type": "Type",
       "manufacturer": "Manufacturer",
@@ -446,13 +510,21 @@
       "rescan": "🔄 Rescan folder",
       "removeFromDb": "❌ Remove folder from database",
       "deletePhysical": "🗑️ Delete folder",
-      "setTarget": "📁 Set as target folder"
+      "setTarget": "📁 Set as target folder",
+      "resumeScan": "⏯️ Resume scan",
+      "quickRescan": "🔄 Quick rescan",
+      "fullRescan": "♻️ Full rescan",
+      "editFolders": "✏️ Edit the database folders"
     },
     "datMenu": {
       "update": "🔄 Update the DAT",
       "showReport": "📋 Show last update report",
       "showReportTitleAvailable": "Show the report of the last update",
-      "showReportTitleNone": "No DAT update performed"
+      "showReportTitleNone": "No DAT update performed",
+      "updateCloneList": "🔗 Update the clone list",
+      "updateCloneListTitle": "Force a re-download of the clone list for this system, then apply it",
+      "clearCloneList": "✖ Remove clone list groupings",
+      "clearCloneListTitle": "Go back to grouping by normalised title only"
     },
     "gameMenu": {
       "downloadRom": "Download the ROM",
@@ -476,7 +548,9 @@
       "deleteFolderMessage": "Are you sure you want to delete the folder \"{folder}\"?",
       "deleteFolderDetail": "This action will move the folder and all its contents to the recycle bin. You can restore it from the recycle bin if needed.",
       "deleteFolderError": "Unable to delete the folder",
-      "moveToTrash": "Move to recycle bin"
+      "moveToTrash": "Move to recycle bin",
+      "matchWithPartialScan": "The scan of the following folder(s) is incomplete:\n\n{folders}\n\nThe matching will only use the files already scanned. Continue anyway?",
+      "fullRescan": "Analyze again every file of \"{path}\"?\n\nAll files are hashed again, which can take a long time. A quick rescan only analyzes new or modified files."
     },
     "datUpdate": {
       "title": "DAT update",
@@ -534,7 +608,8 @@
     "folders": {
       "targetBadge": "TARGET",
       "filesCount": "{count} file(s)",
-      "removeTitle": "Remove the folder from the database"
+      "removeTitle": "Remove the folder from the database",
+      "editFoldersTitle": "Edit the database folders (target, working folders)"
     },
     "folderView": {
       "empty": "Empty folder",
@@ -650,7 +725,9 @@
       "confirmButton": "Consolidate",
       "inProgress": "⏳ Consolidating...",
       "doneAlert": "🧹 Consolidation complete!\n\nConsolidated games: {games}\nArchives created: {archives}\nUnmatched files moved: {unmatched}\nErrors: {errors}",
-      "errorAlert": "❌ Error during consolidation. Check the logs."
+      "errorAlert": "❌ Error during consolidation. Check the logs.",
+      "cancelledAlert": "⏹️ Consolidation interrupted\n\nConsolidated games: {games}\nGames not processed: {remaining}\nErrors: {errors}\n\nThe source cleanup and the move of unreferenced files were skipped.",
+      "profile": "⚙️ PROFILE: {name}"
     },
     "missingModal": {
       "none": "No missing ROM!",
@@ -684,11 +761,11 @@
       "baseCurrent": "Current selection",
       "presetsLabel": "Quick presets:",
       "presetNoProto": "🚫 Proto/Beta/Demo",
-      "presetNoProtoTitle": "Adds rules excluding entries whose name or description contains (Proto, (Beta, (Demo, (Sample, Prototype",
+      "presetNoProtoTitle": "Adds a rule excluding games whose development status is not “Production” (proto, beta, demo, sample…)",
       "presetNoBios": "🚫 BIOS",
-      "presetNoBiosTitle": "Adds a rule excluding [BIOS] entries (No-Intro/Redump convention — MAME BIOSes are already handled by the dependency cascade)",
+      "presetNoBiosTitle": "Adds a rule excluding [BIOS] entries (No-Intro convention)",
       "presetNoAftermarket": "🚫 Aftermarket/Unl",
-      "presetNoAftermarketTitle": "Adds rules excluding entries whose name or description contains (Aftermarket) and (Unl) (No-Intro/Redump convention)",
+      "presetNoAftermarketTitle": "Adds rules excluding entries whose name or description contains (Aftermarket) and (Unl)",
       "presetNoClones": "🚫 Clones",
       "presetNoClonesTitle": "Adds a rule excluding clones (games with a parent)",
       "presetGoodOnly": "🟢 Good drivers only",
@@ -699,20 +776,33 @@
       "presetCompleteOnlyTitle": "Adds a rule excluding games not complete in the matching",
       "presetNoMechanical": "🚫 Mechanical",
       "presetNoMechanicalTitle": "Adds a rule excluding electromechanical machines (pinball, slot machines… — not playable with a gamepad, e.g. for a Recalbox set)",
+      "presetGamesOnly": "🎮 Games only",
+      "presetGamesOnlyTitle": "Keeps games only, with rules adapted to the DAT type — Redump: “Games” category; No-Intro: production, excluding [BIOS] and categories other than “Games”; Arcade: production, excluding mechanical machines",
       "presetPlayable": "✅ Playable (good+imperfect)",
       "presetPlayableTitle": "Keeps only playable games: excludes the \"preliminary\" and \"not specified\" emulation statuses (keeps good + imperfect)",
-      "saveDefault": "💾 Save as default",
-      "saveDefaultTitle": "Save the current rules as the default template for this kind of DAT",
-      "restoreDefault": "↩️ Restore default",
-      "restoreDefaultTitle": "Reload the default template saved for this kind of DAT",
+      "groupRules": "1. Selection rules",
+      "groupOgor": "2. 1G1R — a single version per game",
+      "save": "💾 Save and close",
+      "saveTitle": "Save these settings to the database, without changing the selection",
+      "modelLabel": "System model:",
+      "modelHint": "A model remembers these settings for one system and seeds its future databases. You can load this system's model, or reuse another system's.",
+      "loadModel": "↩️ Load",
+      "loadModelTitle": "Load a saved model into this editor (replaces the rules and the 1G1R settings below)",
+      "thisSystem": "this system",
+      "saveDefault": "💾 Save",
+      "saveDefaultTitle": "Remember these settings as this system's model",
+      "customCreateTitle": "Add all rules below to “My presets”",
+      "customNameLabel": "Preset name",
+      "customScopeLabel": "DAT type",
+      "customScopeTitle": "Which kind of DAT this preset is offered for",
       "addRule": "＋ Add a rule",
       "clearRules": "🗑 Clear all",
       "clearRulesTitle": "Remove all current rules",
       "customPresetsLabel": "My presets:",
       "customEmpty": "No custom preset yet.",
       "customNamePlaceholder": "Preset name…",
-      "customSave": "💾 Save as preset",
-      "customSaveTitle": "Save the current rules as a custom preset",
+      "customSave": "💾 Add",
+      "customSaveTitle": "Add the current rules to “My presets” under this name",
       "customApplyTitle": "Add this preset's rules to the current rules",
       "customDeleteTitle": "Delete this preset",
       "customDragTitle": "Drag to reorder",
@@ -720,6 +810,9 @@
       "customMoveDownTitle": "Move down",
       "scopeArcade": "Arcade",
       "scopeNoIntroRedump": "No-Intro + Redump",
+      "scopeNoIntro": "No-Intro",
+      "scopeRedump": "Redump",
+      "scopeOther": "Other DATs",
       "scopeGlobal": "Global (all)"
     },
     "asm": {
@@ -727,6 +820,7 @@
       "fieldDescription": "Description",
       "fieldNameOrDescription": "Name or description",
       "fieldCategory": "Category",
+      "fieldManufacturer": "Manufacturer",
       "fieldDriverStatus": "Driver status",
       "fieldHasChd": "Has a CHD",
       "fieldIsClone": "Is a clone",
@@ -739,19 +833,16 @@
       "fieldReleaseFlag": "Release marker",
       "dragTitle": "Drag to reorder this rule",
       "ogorEnable": "🎯 Keep only one version per game (1G1R)",
-      "ogorHint": "The rules above apply first: whatever they exclude does not take part in the arbitration. Priorities are set in <strong>Settings → Consolidation → 1G1R</strong>.",
+      "ogorHint": "The rules above apply first: whatever they exclude does not take part in the arbitration. Priorities are set in Settings → Consolidation → 1G1R.",
       "ogorNotConfigured": "Priorities not configured — open Settings → Consolidation → 1G1R.",
       "ogorLatestRevision": "latest revision",
       "ogorFallbackToOwned": "fall back to owned versions",
       "ogorDropped": "{count} duplicate(s) removed by 1G1R",
-      "cloneListDownload": "⬇ Download clone list",
-      "cloneListApply": "🔗 Apply",
-      "cloneListClear": "✖ Remove",
-      "cloneListReady": "Clone list available: {file} — not applied yet.",
-      "cloneListApplied": "Clone list applied: {list} ({date}).",
-      "cloneListMissing": "No local clone list for “{dat}”. Download it to group titles released under different names per region.",
-      "cloneListArcade": "Clone lists do not apply to arcade DATs: parent/clone relations already come from the DAT itself.",
-      "cloneListUnavailable": "Clone list status unavailable.",
+      "ogorReset": "↺ Reset",
+      "ogorResetTitle": "Go back to the priorities defined in Settings → Consolidation → 1G1R. Does not change the enable checkbox.",
+      "ogorRegions": "Regions",
+      "ogorLanguages": "Languages",
+      "ogorVideo": "Video modes",
       "opContains": "contains",
       "opNotContains": "does not contain",
       "opStarts": "starts with",
@@ -777,6 +868,140 @@
     "systemSelect": {
       "title": "🎮 System selection",
       "description": "The system could not be detected automatically from the DAT name. Select it manually to continue."
+    },
+    "scanModal": {
+      "title": "📂 Scanning ROM folders",
+      "modeQuick": "Quick scan: only new or modified files are analyzed",
+      "modeFull": "Full scan: every file is analyzed again",
+      "folderCount": "Folder {index} of {count}",
+      "counting": "Listing files… {count} found",
+      "folder": "Folder",
+      "file": "File",
+      "progress": "{current} / {total} files",
+      "unchanged": "{count} unchanged",
+      "elapsed": "Elapsed time: {time}",
+      "fileElapsed": "Current file: {time}",
+      "hint": "If you interrupt the scan, the files already analyzed are kept and the scan can be resumed later.",
+      "stopHint": "The scan will stop automatically once the current file has been analyzed. If it seems blocked or takes too long, you can try a forced stop: the current file will then be analyzed again on the next scan.",
+      "cancel": "Interrupt",
+      "cancelling": "Stopping after the current file…",
+      "forceStop": "Force stop"
+    },
+    "targetFolder": {
+      "modalTitle": "📁 Database folders",
+      "confirmScanTitle": "New target folder",
+      "confirmScanMessage": "The target folder will become:\n{path}",
+      "confirmScanDetail": "This folder will now be scanned. Depending on its content, this may take a while.",
+      "confirmScanButton": "Change and scan"
+    },
+    "consolidationModal": {
+      "title": "🧹 ROM consolidation",
+      "phases": {
+        "preparing": "Preparing…",
+        "consolidating": "Consolidating games",
+        "moving-unmatched": "Cleanup…",
+        "complete": "Finishing…"
+      },
+      "gameCount": "Game {current} / {total}",
+      "counters": "{consolidated} consolidated · {errored} error(s) · {skipped} skipped",
+      "steps": {
+        "analyzing": "Analyzing the game…",
+        "direct-copy": "Looking for a reusable source archive…",
+        "extracting": "Extracting the source files…",
+        "compressing": "Creating the archive…",
+        "copying": "Copying to the target folder…",
+        "done": "✅ Consolidated",
+        "skipped": "⏭️ Skipped (nothing to consolidate)",
+        "error": "❌ Error",
+        "aborted": "⏹️ Abandoned"
+      },
+      "modes": {
+        "standard": "Standard mode",
+        "best": "Best compression: every compatible format is tested",
+        "direct": "Direct copy of a source archive",
+        "raw": "Raw files (no archive)",
+        "chd-copy": "CHD disks copied as-is"
+      },
+      "formats": "Target formats studied",
+      "formatRaw": "Raw",
+      "status": {
+        "pending": "Pending",
+        "running": "In progress",
+        "done": "Created",
+        "failed": "Failed",
+        "skipped": "Skipped",
+        "rejected": "Rejected",
+        "chosen": "Chosen"
+      },
+      "notes": {
+        "chdNoEntryPoint": "No .cue/.gdi/.iso",
+        "creationFailed": "Creation failed",
+        "sourceMissing": "File not found",
+        "listFailed": "Unreadable archive",
+        "contentMismatch": "Content or names differ"
+      },
+      "chosen": "Chosen format: {format}",
+      "chosenPending": "Chosen format: —",
+      "elapsed": "Elapsed time: {time}",
+      "gameElapsed": "Current game: {time}",
+      "hint": "If you interrupt, the games already consolidated are kept; the source cleanup and the move of unreferenced files are then skipped.",
+      "stopHint": "The consolidation will stop automatically once the current game is finished. If it seems blocked or takes too long, you can try a forced stop: the current game is then abandoned and nothing is written to the target folder.",
+      "cancel": "Interrupt",
+      "cancelling": "Stopping after the current game…",
+      "forceStop": "Force stop"
+    },
+    "downloadModal": {
+      "title": "⬇️ ROM download and consolidation",
+      "phases": {
+        "preparing": "Preparing…",
+        "downloadingGames": "Downloading games",
+        "consolidating": "Consolidating the downloaded game",
+        "complete": "Finishing…"
+      },
+      "steps": {
+        "local-search": "Looking for files locally…",
+        "downloading": "Downloading from {source} ({ext})…",
+        "extracting": "Extracting the downloaded archive…",
+        "hashing": "Verifying {file}…",
+        "matching": "All files found locally",
+        "incomplete": "Incomplete: {found}/{total} files — stored in the incomplete ROMs folder"
+      },
+      "counters": "{consolidated} consolidated · {failed} failed",
+      "hint": "Each complete game is consolidated right after its download. If you interrupt, the games already consolidated are kept.",
+      "stopHint": "The download will stop automatically once the current game is finished. If it seems blocked or takes too long, you can try a forced stop: the current game is then abandoned and nothing is written to the target folder.",
+      "attempts": "Download attempts",
+      "localSource": "Previous download",
+      "verifiedCount": "{matched}/{total} verified",
+      "attemptStatus": {
+        "pending": "Pending",
+        "running": "Downloading",
+        "extracting": "Extracting",
+        "verifying": "Verifying",
+        "verified": "Verified",
+        "partial": "Partial",
+        "mismatch": "Not matching",
+        "notFound": "Not found",
+        "failed": "Failed",
+        "skipped": "Not tried"
+      },
+      "attemptNotes": {
+        "notNeeded": "Not needed"
+      },
+      "kindArchive": "Archive containing the game",
+      "kindFile": "Individual ROM file",
+      "kindLocal": "Files kept from a previous incomplete download (incomplete ROMs folder)",
+      "columns": {
+        "ext": "Extension",
+        "source": "Source",
+        "target": "File tried",
+        "status": "Status",
+        "detail": "Detail"
+      }
+    },
+    "profiles": {
+      "label": "⚙️ Profile:",
+      "title": "Consolidation profile in use (edit it in the settings)",
+      "busyAlert": "The profile cannot be changed while a consolidation is running."
     }
   },
   "settings": {
@@ -798,10 +1023,13 @@
       "groupConsolidation": "Consolidation",
       "archives": "Compression",
       "compatibility": "Per-system compatibility",
+      "multiDisc": "Multi-disc",
       "cleanup": "Cleanup",
       "arcade": "Arcade (MAME)",
       "oneGameOneRom": "1G1R",
-      "download": "Download"
+      "download": "Download",
+      "groupProfile": "Profile settings",
+      "cloneLists": "Clone lists"
     },
     "general": {
       "interfaceSection": "Interface",
@@ -847,23 +1075,44 @@
       "unmatchedFolderDisabledMsg": "⚠ This folder will only be used if <strong>\"Enable source folder cleanup\"</strong> and <strong>\"Move unmatched files to the dedicated folder\"</strong> are enabled (<a href=\"#\" id=\"unmatchedGoToCleanup\" style=\"color:#3498db; text-decoration:underline;\">go to cleanup settings</a>)."
     },
     "tools": {
-      "sevenZipPath": "Path to 7z.exe:",
+      "sevenZipPath": "Path to 7-Zip (7z):",
       "sevenZipInfo": "Used to read and create .7z and .rar archives",
       "sevenZipRecommended": "7-Zip (Recommended)",
       "autoDetect": "Auto-detect",
       "autoDetectPlaceholder": "Automatic detection",
       "optionalPlaceholder": "Optional",
-      "embeddedByDefault": "Embedded version by default",
       "detectedAlert": "{tool} detected: {path}",
       "notFoundAlert": "{tool} not found. Please select the {file} file manually",
       "detectErrorAlert": "Error during automatic detection of {tool}",
-      "useEmbeddedChdman": "Use the embedded version of chdman",
-      "useEmbeddedChdmanInfo": "Version shipped with the application (recommended)",
-      "chdmanPath": "Path to custom chdman:",
-      "chdmanInfo": "Used to create/extract CD/DVD images in CHD format (if the embedded version is disabled)",
-      "winrarPath": "Path to Rar.exe:",
+      "chdmanPath": "Path to chdman:",
+      "chdmanInfo": "Used to create/extract CHD images: CD/DVD/GD-ROM/UMD games, some computers (Amiga…) and MAME arcade game disks.",
+      "chdmanVersionLabel": "Version to use:",
+      "chdmanVersionLatest": "Latest",
+      "chdmanVersionDefault": "Default ({version})",
+      "chdmanVersionManual": "Manual selection",
+      "chdmanCurrent": "Version in use: {version} ({source})",
+      "chdmanNotFound": "chdman not found",
+      "chdmanCheckUpdate": "🔄 Check for updates",
+      "chdmanChecking": "Looking for the latest MAME release…",
+      "chdmanUpToDate": "chdman is up to date (version {version}).",
+      "chdmanUpdateConfirm": "chdman {version} is available.\n\nThe official MAME release (about {size} MB) will be downloaded to extract chdman from it. Continue?",
+      "chdmanDownloadProgress": "Downloading MAME {version}: {percent}%",
+      "chdmanExtracting": "Extracting chdman…",
+      "chdmanUpdateDone": "chdman {version} is installed. It is used when \"Latest\" is selected.",
+      "chdmanUpdateError": "Error while updating chdman: {error}",
+      "chdmanDelete": "Delete",
+      "chdmanDeleteConfirm": "Delete chdman {version} from disk?",
+      "chdmanDeleteInUse": "This version is currently in use. Select another version and save before deleting it.",
+      "chdmanUpdateUnsupported": "Automatic updates are only available on Windows. To use a newer version, install chdman with your package manager (mame-tools, rom-tools…), choose \"Manual selection\" then set its path.",
+      "chdmanSource": {
+        "custom": "manual selection",
+        "downloaded": "downloaded",
+        "embedded": "default",
+        "path": "system PATH"
+      },
+      "winrarPath": "Path to Rar (Rar.exe / rar):",
       "winrarInfo": "Alternative for creating .rar archives (optional)",
-      "unrarPath": "Path to UnRAR.exe:",
+      "unrarPath": "Path to UnRAR:",
       "unrarInfo": "Alternative for extracting .rar archives (optional, if 7-Zip is not available)",
       "rarPrioritySection": "Priority order for RAR archives",
       "rarPriorityDrag": "Drag and drop to reorder the tools:",
@@ -873,6 +1122,7 @@
       "prioritySection": "Priority order of target archive formats",
       "priorityDrag": "Drag and drop to reorder:",
       "priorityInfo": "Archive formats will be chosen in this order depending on compatibility with the DAT file's system.",
+      "m3uPriorityNotice": "<strong>💿 .m3u creation is enabled for this profile:</strong> multi-disc games ignore 7Z and ZIP. Their discs are produced as CHD (if allowed for the system), otherwise as raw files. See the <a href=\"#\" data-goto-tab=\"multidisc\">\"Multi-disc\" tab</a>.",
       "optionsSection": "Compression options",
       "compressionLevel": "Compression level:",
       "levelFastest": "Fast (minimal compression)",
@@ -902,7 +1152,16 @@
       "residualSection": "Moving residual files",
       "moveUnmatched": "Move unmatched files to the dedicated folder",
       "moveUnmatchedInfo": "Files that do not match any DAT game will be moved to the folder below",
-      "syncedWithFolders": "Synchronized with the identical field in the \"Folders\" tab."
+      "unmatchedFolderGlobal": "The destination folder is a global setting, shared by all profiles: <a href=\"#\" data-goto-tab=\"folders\">\"Folders\" tab</a>.",
+      "unmatchedFolderCurrent": "Current folder:",
+      "unmatchedFolderNotSet": "no folder set",
+      "unmatchedMultiSystemOn": "Multi-system target folders enabled: files will go into one subfolder per system (e.g. {example})"
+    },
+    "multiDisc": {
+      "section": ".m3u playlists",
+      "generateM3u": "Create a .m3u file for multi-disc / multi-media games",
+      "generateM3uInfo": "Games split into several DAT entries — \"(Disc 1)\", \"(Disk 1 of 2)\", \"(Tape 1)\", \"(Side A)\"… — get a <code>&lt;game&gt;.m3u</code> file placed next to their discs, which lets the emulator swap discs. Only systems that accept .m3u files are affected; arcade DATs are ignored. Only selected and consolidated discs are listed.",
+      "warning": "<strong>⚠️ Impact on compression:</strong> a .m3u cannot reference a 7Z or ZIP archive. When this option is enabled, the discs of multi-disc games are <strong>never compressed to 7Z or ZIP</strong>, whatever the format priority order: they are produced as CHD if that format is allowed for the system (and the disc has a .cue / .gdi / .iso entry point), otherwise copied as raw files. Single-disc games keep the usual compression."
     },
     "arcade": {
       "setModeSection": "Target set mode",
@@ -924,7 +1183,8 @@
     "oneGameOneRom": {
       "title": "1G1R — 1 game, 1 ROM",
       "enable": "Enable 1G1R selection",
-      "enableInfo": "When disabled, <strong>nothing changes</strong>: RUMCET behaves exactly as it does without this feature. When enabled, automatic selection keeps a single version per game, arbitrating variants according to the priorities below. The selection stays fully editable by hand afterwards.",
+      "tabIntro": "These values are the <strong>starting point</strong> for a system that has no saved model yet. The settings actually applied to a database are edited in <strong>Auto select</strong>, from the main window, and belong to that database alone.",
+      "enableInfo": "Decides whether 1G1R starts out ticked for a new database. Automatic selection then keeps a single version per game, arbitrating variants according to the priorities below. Nothing is applied until you click “Apply” in the automatic selection screen.",
       "prioritySection": "Arbitration priorities",
       "priorityInfo": "The first entry of each list wins. A value missing from a list is not excluded: it simply comes last. To firmly exclude a region or a language, use an automatic selection rule.",
       "regionPriority": "Regions, from most to least preferred:",
@@ -936,26 +1196,24 @@
       "preferLatestRevision": "Prefer the latest revision",
       "preferLatestRevisionInfo": "At equal regional quality, <code>(Rev 2)</code> beats <code>(Rev 1)</code>, which beats the original untagged edition.",
       "fallbackToOwned": "Fall back to a version I own",
-      "fallbackToOwnedInfo": "When the preferred version is missing from your collection but another one is present, keep the one you have instead of leaving a hole. <strong>This is what a tool working from the DAT file alone cannot do</strong>: it has no idea what you actually own. Uncheck for a strict 1G1R computed on the DAT alone.",
+      "fallbackToOwnedInfo": "When the preferred version is missing from your collection but another one is present, keep the one you own instead of leaving a hole. Uncheck to apply the priorities to the letter: the game will then be reported as missing until the preferred version turns up.",
       "addEntry": "Add",
       "removeEntry": "Remove this entry",
       "cloneListSection": "Clone lists",
-      "cloneListInfo": "The same game is sometimes released under unrelated names depending on the region (<em>Pokémon Version Or</em> / <em>Pokémon Goldene Edition</em> / <em>Pocket Monsters Kin</em>). No title analysis can guess that: these relations are editorial data, curated by hand by the community. RUMCET <strong>consumes</strong> them without maintaining them.",
+      "cloneListInfo": "The same game is sometimes released under unrelated names depending on the region — <em>Pokémon Version Or</em>, <em>Pokémon Goldene Edition</em> and <em>Pocket Monsters Kin</em> are all Pokémon Gold. Clone lists record these relations, which no title analysis can guess, so that 1G1R keeps a single one of them.",
       "cloneListSource": "List source:",
-      "cloneListSourceInfo": "URL of the folder containing the .json files. Editable on purpose: this is what keeps RUMCET independent from the fate of any single repository.",
+      "cloneListSourceInfo": "URL of the folder containing the .json files. Change it to use a mirror or a fork.",
       "cloneListFolder": "Local folder:",
-      "cloneListFolderInfo": "Leave empty to use the application data folder.",
-      "cloneListAutoApply": "Re-apply automatically after each DAT load",
-      "cloneListAutoApplyInfo": "Loading a <strong>primary</strong> DAT wipes and rewrites the games table: the groupings set by a clone list disappear with it. Loading a <strong>complementary</strong> DAT adds games that do not have any yet. Without this option, you have to reopen “Auto select” and click “Apply” every time.",
-      "cloneListAutoDownload": "Download the missing list before applying it",
-      "cloneListAutoDownloadInfo": "Sub-option of the previous one. On DAT load, if no local clone list matches the system, it is downloaded then applied. A list already present is never re-downloaded: refreshing stays a manual action.",
-      "cloneListAttribution": "The clone list format and the default repository come from the <strong>Retool</strong> project by unexpectedpanda, under the <strong>BSD-3-Clause</strong> licence. RUMCET is neither its author nor its maintainer. See <code>THIRD_PARTY_NOTICES.md</code>."
+      "cloneListFolderInfo": "Where downloaded clone lists are stored. Leave empty to use the application data folder.",
+      "cloneListFolderEffective": "Currently used: {folder}",
+      "cloneListAutoUpdate": "Keep clone lists up to date automatically",
+      "cloneListAutoUpdateInfo": "On each DAT load and each time a database is opened, RUMCET checks whether the clone list for that system has been updated, downloads it if so, then applies it. When unchecked, RUMCET uses the clone lists already present in the local folder and downloads nothing. Either way, you can update the clone list at any time by right-clicking the DAT/XML file in the left panel.",
+      "cloneListAttribution": "Clone lists come from the <strong>Retool</strong> project by unexpectedpanda, under the <strong>BSD-3-Clause</strong> licence. See <code>THIRD_PARTY_NOTICES.md</code>."
     },
     "compatibility": {
-      "info": "Configure the compatible archive formats per system. Some emulators do not support all formats. Formats with ⚠️ work but may have limitations.",
+      "info": "Configure the compatible archive formats per system. Some emulators do not support all formats. Formats with ⚠️ means not all emulators support this format.",
       "resetAll": "↺ Reset all",
-      "resetAllTitle": "Reset all systems to default values",
-      "resetSystemTitle": "Reset {system} to default values",
+      "resetSystemTitle": "Reset {system} according to the profile rule",
       "partialSupportTitle": "Partial compatibility: some emulators do not support this format",
       "unsupportedTitle": "Not supported by this system's emulators",
       "rawFormatsDat": "Uncompressed formats:",
@@ -964,7 +1222,22 @@
       "sortTypeManufacturer": "Type → Manufacturer",
       "sortManufacturerType": "Manufacturer → Type",
       "sortAlphabetical": "Name (A→Z)",
-      "searchPlaceholder": "System name or ID..."
+      "searchPlaceholder": "System name or ID...",
+      "ruleLabel": "Apply a rule to all systems:",
+      "rules": {
+        "universal": "100% compatibility",
+        "recalbox": "Recalbox",
+        "master": "Archive / Master"
+      },
+      "rulesInfo": {
+        "universal": "Checks only the formats supported by all of the system's emulators (raw files if none).",
+        "recalbox": "Checks the formats supported by at least one of the system's emulators.",
+        "master": "Checks 7Z and ZIP for every system, and CHD for systems that support it."
+      },
+      "applyRule": "Apply",
+      "applyRuleConfirm": "Apply the \"{rule}\" rule to every system of the profile \"{name}\"? Your per-system settings will be replaced.",
+      "lastRule": "Last rule applied to this profile: {rule}.",
+      "noRule": "No rule applied to this profile (custom settings)."
     },
     "download": {
       "title": "ROM download",
@@ -989,6 +1262,69 @@
       "systemExtensionsSection": "Extensions per system",
       "systemExtensionsInfo": "For each system, choose which extension sources to try when downloading. Sources are combined and deduplicated in order: global → uncompressed formats → other emulator formats → complementary.",
       "resetAllTitle": "Reset all systems (all boxes checked, free field empty)"
+    },
+    "systemsUpdate": {
+      "info": "Recalbox evolves independently of Rumcet: you can refresh the list of systems and their formats from the Recalbox version you use. A preview of the differences is shown before anything is applied.",
+      "versionLabel": "Recalbox version:",
+      "versionsNotLoaded": "—",
+      "check": "🔄 Check for updates",
+      "reset": "Restore bundled data",
+      "resetTitle": "Go back to the systems data shipped with Rumcet",
+      "resetConfirm": "Restore the systems data shipped with Rumcet?\n\nSystems added by an update will disappear. Your archive format settings are kept.",
+      "statusBundled": "Systems data: bundled with Rumcet.",
+      "statusRecalbox": "Systems data: Recalbox {ref}, updated on {date} ({count} system(s) refreshed).",
+      "loadingVersions": "Loading versions...",
+      "versionsError": "Unable to load the versions (offline?)",
+      "channel": {
+        "stable": "Stable",
+        "patron": "Patron",
+        "alpha": "Alpha",
+        "development": "Development",
+        "patronAlpha": "Patron Alpha"
+      },
+      "modalTitle": "Systems update — Recalbox {ref}",
+      "loading": "Retrieving Recalbox {ref} system data...",
+      "fetchError": "Unable to retrieve the data: {error}",
+      "upToDate": "No differences: the systems data already matches Recalbox {ref} ({count} systems).",
+      "summary": "{added} new, {changed} modified, {unchanged} unchanged.",
+      "customizedNote": "Systems whose archive formats you customized are unchecked: applying the update would replace your choices with the Recalbox values.",
+      "sectionNew": "New systems ({count})",
+      "newSystemsNote": "New systems will not be detected automatically from a DAT name: select them manually. Their DAT source is unknown: you can look for one and associate it in the DAT download screen.",
+      "sectionChanged": "Modified systems ({count})",
+      "customized": "customized",
+      "customizedTitle": "You changed the archive formats of this system",
+      "checkAll": "Check all",
+      "uncheckAll": "Uncheck all",
+      "apply": "Apply ({count})",
+      "applyError": "Unable to apply the update: {error}",
+      "fields": {
+        "fullname": "Name",
+        "manufacturer": "Manufacturer",
+        "type": "Type",
+        "releaseDate": "Release date",
+        "supportedFormats": "Supported archives",
+        "warningFormats": "Partially supported",
+        "unsupportedFormats": "Unsupported archives",
+        "extraRawFormats": "Emulator extensions"
+      }
+    },
+    "profiles": {
+      "label": "Consolidation profile",
+      "newTitle": "New profile (copy of the displayed profile)",
+      "renameTitle": "Rename the profile",
+      "resetTitle": "Reset the built-in profile",
+      "deleteTitle": "Delete the profile",
+      "activeOption": "{name} (current)",
+      "bannerActive": "Profile \"{name}\" — current profile, used by consolidation.",
+      "bannerOther": "Profile \"{name}\" — you are editing it, but it is not the current profile (choose it in the main window).",
+      "hintActive": "Current profile: used by consolidation.",
+      "hintOther": "Not the current profile: choose it in the main window.",
+      "newDialogTitle": "New profile, copy of \"{name}\"",
+      "copyName": "{name} (copy)",
+      "renameDialogTitle": "Rename the profile",
+      "deleteConfirm": "Delete the profile \"{name}\"? It will be deleted when you save.",
+      "deleteActiveConfirm": "\"{name}\" is the current profile. Delete it? \"My profile\" (or the first profile) will become the current profile when you save.",
+      "resetConfirm": "Reset the profile \"{name}\" to Rumcet's default values?"
     }
   },
   "datDownload": {
@@ -1054,6 +1390,59 @@
     },
     "actions": {
       "load": "📖 Load the DAT/XML"
+    },
+    "manualSource": {
+      "badgeUnknown": "Unknown source",
+      "badgeUser": "Manual",
+      "badgeTitle": "System added by a Recalbox update",
+      "infoUnknown": "This system was added by a Recalbox update: Rumcet does not know whether a No-Intro or Redump DAT exists for it. Look for it on the source sites, then associate it below or load the downloaded file from the Local file tab.",
+      "infoUser": "This system was added by a Recalbox update; its DAT source was associated manually. You can modify or remove the association.",
+      "searchNoIntro": "🔎 Search on No-Intro ↗",
+      "searchRedump": "🔎 Search on Redump ↗",
+      "noIntroId": "DAT-o-Matic ID",
+      "noIntroIdPlaceholder": "e.g. 46",
+      "redumpSlug": "Redump slug",
+      "redumpSlugPlaceholder": "e.g. psx",
+      "save": "Associate",
+      "hint": "The DAT-o-Matic ID is the number after <code>s=</code> in the address of the DAT page; the Redump slug is the part after <code>/datfile/</code>. Leave both fields empty to remove the association.",
+      "invalidNoIntroId": "The DAT-o-Matic ID must be a number.",
+      "invalidRedumpSlug": "The Redump slug may only contain lowercase letters, digits and hyphens.",
+      "saved": "DAT source associated.",
+      "error": "Error: {error}"
+    },
+    "mameRecalboxNotice": "ℹ️ The <strong>Recalbox</strong> badge marks the MAME version used by the <strong>latest</strong> Stable, Patron, Patron Alpha and Alpha releases of Recalbox (checked online when this tab opens; hover the badge to see the release). An older Recalbox release may use another MAME version.",
+    "badgeRecalbox": "Recalbox {channel}",
+    "badgeRecalboxTitle": "Used by the latest Recalbox {channel} release ({ref})",
+    "recalboxChannel": {
+      "stable": "Stable",
+      "patron": "Patron",
+      "patronAlpha": "Patron Alpha",
+      "alpha": "Alpha"
+    }
+  },
+  "dbFolders": {
+    "targetTitle": "📁 Target folder",
+    "targetLabel": "Validated ROMs (consolidation destination)",
+    "targetInfo": "The ROMs kept by the consolidation are placed in this folder. It is scanned right after the database is created, which may take a while if it already contains files.",
+    "targetRequired": "Please select a target folder.",
+    "systemSubfolder": "Create a subfolder named after the system",
+    "systemSubfolderInfo": "Example: …/psx. The system is detected from the DAT name (or chosen manually).",
+    "effective": "Effective folder: {path}",
+    "advancedTitle": "Working folders (advanced)",
+    "advancedInfo": "Specific to this database. Leave a field empty to use the folder defined in the settings.",
+    "unmatched": "Unreferenced ROMs",
+    "incomplete": "Incomplete ROMs",
+    "temp": "Temporary extraction folder",
+    "defaultPlaceholder": "Default: {path}",
+    "browseTitle": "Select a folder",
+    "clear": "Clear"
+  },
+  "profiles": {
+    "names": {
+      "custom": "My profile",
+      "universal": "100% compatibility",
+      "recalbox": "Recalbox (play)",
+      "master": "Archive / Master"
     }
   }
 }

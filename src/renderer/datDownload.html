@@ -4,6 +4,7 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title data-i18n="datDownload.windowTitle">Charger un fichier DAT/XML - RUMCET</title>
+  <link rel="stylesheet" href="dbFolders.css">
   <style>
     * {
       box-sizing: border-box;
@@ -317,6 +318,8 @@
     .badge.latest { background: rgba(241, 196, 15, 0.2); color: #d4a200; }
     .badge.recalbox { background: rgba(52, 152, 219, 0.15); color: #2980b9; }
     .badge.recommended::after { content: ' \2605'; }
+    .badge.unknown { background: rgba(149, 165, 166, 0.2); color: #7f8c8d; }
+    .badge.user { background: rgba(155, 89, 182, 0.15); color: #8e44ad; }
 
     .list-counter {
       font-size: 11px;
@@ -390,6 +393,24 @@
       border: 1px solid #bcdcf5;
       color: #21618c;
     }
+
+    /* ========== SOURCE DAT MANUELLE (système sans source connue) ========== */
+    .manual-source {
+      display: none;
+      padding: 8px 12px;
+      background: #f8f9fa;
+      border: 1px solid #dee2e6;
+      border-radius: 6px;
+      font-size: 12px;
+      color: #2c3e50;
+    }
+    .manual-source.visible { display: block; }
+    .manual-source p { margin: 0 0 8px; line-height: 1.5; }
+    .manual-source-row { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin-bottom: 8px; }
+    .manual-source-row label { display: flex; align-items: center; gap: 6px; }
+    .manual-source-row input { width: 110px; padding: 4px 6px; border: 1px solid #bdc3c7; border-radius: 4px; font-size: 12px; }
+    .manual-source .hint { color: #7f8c8d; margin: 0; }
+    .manual-source .error { color: #c0392b; margin: 6px 0 0; }
 
     /* ========== DOSSIER DE DESTINATION + BOUTONS ONLINE ========== */
     .dest-folder {
@@ -667,6 +688,21 @@
               <div class="source-radio-group" id="source-radio-group"></div>
             </div>
 
+            <div class="manual-source" id="manual-source">
+              <p id="manual-source-info"></p>
+              <div class="manual-source-row">
+                <button class="btn btn-sm btn-secondary" id="btn-search-nointro" data-i18n="datDownload.manualSource.searchNoIntro">🔎 Chercher sur No-Intro ↗</button>
+                <button class="btn btn-sm btn-secondary" id="btn-search-redump" data-i18n="datDownload.manualSource.searchRedump">🔎 Chercher sur Redump ↗</button>
+              </div>
+              <div class="manual-source-row">
+                <label><span data-i18n="datDownload.manualSource.noIntroId">ID DAT-o-Matic</span> <input type="text" id="manual-nointro-id" inputmode="numeric" data-i18n-placeholder="datDownload.manualSource.noIntroIdPlaceholder" placeholder="ex : 46"></label>
+                <label><span data-i18n="datDownload.manualSource.redumpSlug">Slug Redump</span> <input type="text" id="manual-redump-slug" data-i18n-placeholder="datDownload.manualSource.redumpSlugPlaceholder" placeholder="ex : psx"></label>
+                <button class="btn btn-sm btn-primary" id="btn-save-manual-source" data-i18n="datDownload.manualSource.save">Associer</button>
+              </div>
+              <p class="hint" data-i18n-html="datDownload.manualSource.hint">L'ID DAT-o-Matic est le nombre après <code>s=</code> dans l'adresse de la page du DAT ; le slug Redump est la partie après <code>/datfile/</code>. Laissez les deux champs vides pour retirer l'association.</p>
+              <p class="error" id="manual-source-error"></p>
+            </div>
+
             <div class="notice warning" id="nointro-notice" data-i18n-html="datDownload.step1.noIntroNotice">
               ⚠️ <strong>No-Intro</strong> — le téléchargement automatique est désactivé (bannissement IP
               côté DAT-o-MATIC). Utilisez <strong>« Ouvrir la page »</strong> pour télécharger le DAT
@@ -690,6 +726,13 @@
                   Pleasuredome
                 </label>
               </div>
+            </div>
+
+            <div class="notice info visible" id="mame-recalbox-notice" data-i18n-html="datDownload.mameRecalboxNotice">
+              ℹ️ Le badge <strong>Recalbox</strong> signale la version de MAME utilisée par les
+              <strong>dernières</strong> versions Stable, Patron, Patron Alpha et Alpha de Recalbox (vérifiées en ligne
+              à l'ouverture de cet onglet ; survolez le badge pour voir la version). Une version plus
+              ancienne de Recalbox peut utiliser une autre version de MAME.
             </div>
 
             <div class="notice info" id="pleasuredome-notice" data-i18n-html="datDownload.step1.pleasuredomeNotice">
@@ -745,9 +788,24 @@
           (modifiable dans les paramètres). Vous pouvez aussi choisir un autre emplacement ci-dessous.
         </p>
         <div class="db-custom-row">
-          <input type="text" id="db-path" readonly data-i18n-placeholder="datDownload.step2.dbPathPlaceholder" placeholder="Sélectionnez d'abord un fichier DAT…">
+          <input type="text" id="db-path" spellcheck="false" data-i18n-placeholder="datDownload.step2.dbPathPlaceholder" placeholder="Sélectionnez d'abord un fichier DAT…">
           <button id="btn-browse-db" data-i18n-title="datDownload.step2.browseDbTitle" title="Choisir l'emplacement et le nom de la base de données">📁</button>
         </div>
+      </div>
+    </div>
+
+    <!-- ============ ÉTAPE 3 : DOSSIER CIBLE ============ -->
+    <div class="step" id="step-target">
+      <div class="step-header">
+        <span class="step-number">3</span>
+        <span class="step-title" data-i18n="dbFolders.targetTitle">📁 Dossier cible</span>
+      </div>
+      <div class="step-body">
+        <p class="db-auto-note" data-i18n="dbFolders.targetInfo">
+          Les ROMs conservées par la consolidation sont placées dans ce dossier.
+        </p>
+        <!-- Rempli par dbFoldersForm.ts -->
+        <div id="db-folders-form"></div>
       </div>
     </div>
   </div>

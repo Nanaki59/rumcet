@@ -2,11 +2,11 @@
 // VERSION FUSIONNÉE : Intègre tout le code de chdmanHandler.ts
 
 import { spawn } from 'child_process';
+import { trackProcess } from './processRegistry.js';
 import { EventEmitter } from 'events';
 import path from 'path';
 import fs from 'fs/promises';
 import os from 'os';
-import { app } from 'electron';
 import {
   IArchiveHandler,
   ArchiveContent,
@@ -17,6 +17,7 @@ import { calculateFileHashes } from '../hashCalculator.js';
 import { settingsManager } from '../settingsManager.js';
 import { systemProfileManager } from '../systemProfiles/index.js';
 import type { ChdIdentityMode } from '../systemProfiles/types.js';
+import { getCurrentChdmanPath, getEmbeddedChdmanPath } from '../toolPaths.js';
 
 // ============================================
 // INTERFACES ET TYPES
@@ -114,7 +115,8 @@ export class ChdHandler extends EventEmitter implements IArchiveHandler {
   
   constructor(chdmanPath?: string) {
     super();
-    this.chdmanPath = chdmanPath || path.join(app.getPath('userData'), 'tools', 'chdman.exe');
+    // Chemin provisoire : le chemin définitif est résolu au démarrage (ArchiveManager.refreshChdmanPath)
+    this.chdmanPath = chdmanPath || getCurrentChdmanPath() || getEmbeddedChdmanPath();
   }
   
   // ============================================
@@ -126,21 +128,19 @@ export class ChdHandler extends EventEmitter implements IArchiveHandler {
   }
   
   /**
-   * Liste le "contenu" d'un CHD. Retourne DEUX natures d'entrées, car les deux
-   * sont utiles selon le type de romset :
+   * Liste le "contenu" d'un CHD, selon le mode d'identification du système actif :
    *
-   *  1. Une entrée « disque » portant le SHA1 de l'en-tête du CHD (celui que
-   *     rapporte `chdman info`, la somme canonique du disque). C'est ce SHA1 que
-   *     référencent les balises <disk sha1="..."> des DAT MAME. Sans elle, les CHD
-   *     MAME n'étaient jamais matchés. Lecture de l'en-tête uniquement (rapide).
+   *  - 'header' (arcade/MAME) : une seule entrée « disque » (nom du CHD sans
+   *    extension) portant le SHA1 de l'en-tête — celui que rapporte `chdman info`
+   *    et que référencent les balises <disk sha1="..."> des DAT MAME. Lecture de
+   *    l'en-tête uniquement (rapide), sans extraction.
    *
-   *  2. Les fichiers réellement contenus (bin/cue/gdi/iso), extraits puis hachés.
-   *     Indispensable pour les romsets type Redump (PS1, Saturn, Dreamcast…) dont
-   *     le DAT décrit ces pistes par leur hash, pas le CHD en tant que tel.
-   *
-   * L'entrée « disque » est ajoutée en premier et de façon robuste : si
-   * l'extraction du contenu échoue (CHD exotique, HD volumineux…), on conserve au
-   * moins l'identité MAME pour le matching.
+   *  - 'contents' (Redump : PS1, Saturn, Dreamcast…) : les fichiers réellement
+   *    contenus (bin/cue/gdi/iso), extraits puis hachés, car le DAT décrit ces
+   *    pistes. L'entrée « disque » n'est PAS ajoutée : elle ne correspond à aucune
+   *    ROM du DAT et faisait apparaître chaque CHD comme partiellement matché.
+   *    Elle ne sert que de secours si l'extraction échoue ou ne produit rien
+   *    (CHD exotique, HD volumineux…), pour conserver une identité minimale.
    */
   async list(filePath: string): Promise<ArchiveContent[]> {
     const isAvailable = await this.isAvailable();
@@ -149,40 +149,39 @@ export class ChdHandler extends EventEmitter implements IArchiveHandler {
     }
 
     const chdInfo = await this.info(filePath);
-    const contents: ArchiveContent[] = [];
 
-    // 1) Entrée « disque » : SHA1 de l'en-tête (identité MAME <disk>). MD5 aussi
-    //    pour les vieux CHD v3/v4 qui en portent un.
-    const diskName = path.basename(filePath, path.extname(filePath));
-    if (!chdInfo.sha1) {
-      console.warn(`⚠️ CHD without a readable header SHA1 (MAME matching impossible): ${filePath}`);
-    }
-    contents.push({
-      fileName: diskName,
-      size: chdInfo.logicalSize || 0,
-      hashes: {
-        crc32: '',
-        md5: chdInfo.md5 || '',
-        sha1: chdInfo.sha1 || ''
+    // Entrée « disque » : SHA1 de l'en-tête (identité MAME <disk>). MD5 aussi
+    // pour les vieux CHD v3/v4 qui en portent un.
+    const diskEntry = (): ArchiveContent => {
+      if (!chdInfo.sha1) {
+        console.warn(`⚠️ CHD without a readable header SHA1 (MAME matching impossible): ${filePath}`);
       }
-    });
+      return {
+        fileName: path.basename(filePath, path.extname(filePath)),
+        size: chdInfo.logicalSize || 0,
+        hashes: {
+          crc32: '',
+          md5: chdInfo.md5 || '',
+          sha1: chdInfo.sha1 || ''
+        }
+      };
+    };
 
-    // 2) Contenu extrait (bin/cue/gdi/iso) pour les romsets Redump. Non bloquant.
-    //    Inutile pour les systèmes arcade (MAME) : un <disk> n'est identifié que par
-    //    le SHA1 d'en-tête, et l'extraction des CHD MAME (souvent des HD) est à la
-    //    fois coûteuse et peu fiable. On ne l'exécute donc que hors arcade.
+    // Arcade (MAME) : un <disk> n'est identifié que par le SHA1 d'en-tête, et
+    // l'extraction des CHD MAME (souvent des HD) est coûteuse et peu fiable.
     if (this.chdIdentity() === 'header') {
       console.log(`📀 CHD (header identity): header SHA1 only, no content extraction — ${path.basename(filePath)}`);
-    } else {
-      try {
-        const extracted = await this.listExtractedContents(filePath, chdInfo);
-        contents.push(...extracted);
-      } catch (error) {
-        console.warn(`⚠️ CHD content extraction failed (header SHA1 kept for matching): ${filePath}: ${error}`);
-      }
+      return [diskEntry()];
     }
 
-    return contents;
+    try {
+      const extracted = await this.listExtractedContents(filePath, chdInfo);
+      if (extracted.length > 0) return extracted;
+      console.warn(`⚠️ CHD content extraction produced no file (header SHA1 kept as fallback): ${filePath}`);
+    } catch (error) {
+      console.warn(`⚠️ CHD content extraction failed (header SHA1 kept as fallback): ${filePath}: ${error}`);
+    }
+    return [diskEntry()];
   }
 
   /**
@@ -364,13 +363,37 @@ export class ChdHandler extends EventEmitter implements IArchiveHandler {
     this.chdmanPath = newPath;
   }
   
+  getPath(): string {
+    return this.chdmanPath;
+  }
+  
+  /**
+   * Vérifie que chdman existe ET s'exécute réellement (mauvaise architecture,
+   * bit exécutable manquant, quarantaine macOS… font échouer le spawn).
+   */
   async isAvailable(): Promise<boolean> {
     try {
       await fs.access(this.chdmanPath);
-      return true;
     } catch {
       return false;
     }
+    return new Promise((resolve) => {
+      let settled = false;
+      const done = (ok: boolean) => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timer);
+        resolve(ok);
+      };
+      // Sans argument, chdman affiche son aide et se termine (code de sortie non nul)
+      const child = spawn(this.chdmanPath, [], { stdio: 'ignore' });
+      const timer = setTimeout(() => {
+        child.kill();
+        done(true);
+      }, 5000);
+      child.on('error', () => done(false));
+      child.on('close', () => done(true));
+    });
   }
   
   /**
@@ -402,7 +425,7 @@ export class ChdHandler extends EventEmitter implements IArchiveHandler {
         args.push('-np', options.numProcessors.toString());
       }
       
-      const process = spawn(this.chdmanPath, args);
+      const process = trackProcess(spawn(this.chdmanPath, args));
       
       let output = '';
       let errorOutput = '';
@@ -462,7 +485,7 @@ export class ChdHandler extends EventEmitter implements IArchiveHandler {
         args.push('-np', options.numProcessors.toString());
       }
       
-      const process = spawn(this.chdmanPath, args);
+      const process = trackProcess(spawn(this.chdmanPath, args));
       
       let output = '';
       let errorOutput = '';
@@ -523,7 +546,7 @@ export class ChdHandler extends EventEmitter implements IArchiveHandler {
         args.push('-np', options.numProcessors.toString());
       }
       
-      const process = spawn(this.chdmanPath, args);
+      const process = trackProcess(spawn(this.chdmanPath, args));
       
       let output = '';
       let errorOutput = '';
@@ -584,7 +607,7 @@ export class ChdHandler extends EventEmitter implements IArchiveHandler {
         args.push('-np', options.numProcessors.toString());
       }
       
-      const process = spawn(this.chdmanPath, args);
+      const process = trackProcess(spawn(this.chdmanPath, args));
       
       let output = '';
       let errorOutput = '';
@@ -644,7 +667,7 @@ export class ChdHandler extends EventEmitter implements IArchiveHandler {
         args.push('-np', options.numProcessors.toString());
       }
       
-      const process = spawn(this.chdmanPath, args);
+      const process = trackProcess(spawn(this.chdmanPath, args));
       
       let output = '';
       let errorOutput = '';
@@ -729,7 +752,7 @@ export class ChdHandler extends EventEmitter implements IArchiveHandler {
       // Force overwrite
       args.push('-f');
       
-      const process = spawn(this.chdmanPath, args);
+      const process = trackProcess(spawn(this.chdmanPath, args));
       
       let outputStr = '';
       let errorOutput = '';
@@ -777,7 +800,7 @@ export class ChdHandler extends EventEmitter implements IArchiveHandler {
       // Force overwrite
       args.push('-f');
       
-      const process = spawn(this.chdmanPath, args);
+      const process = trackProcess(spawn(this.chdmanPath, args));
       
       let outputStr = '';
       let errorOutput = '';
@@ -825,7 +848,7 @@ export class ChdHandler extends EventEmitter implements IArchiveHandler {
       // Force overwrite
       args.push('-f');
       
-      const process = spawn(this.chdmanPath, args);
+      const process = trackProcess(spawn(this.chdmanPath, args));
       
       let outputStr = '';
       let errorOutput = '';
@@ -873,7 +896,7 @@ export class ChdHandler extends EventEmitter implements IArchiveHandler {
       // Force overwrite
       args.push('-f');
       
-      const process = spawn(this.chdmanPath, args);
+      const process = trackProcess(spawn(this.chdmanPath, args));
       
       let outputStr = '';
       let errorOutput = '';
@@ -921,7 +944,7 @@ export class ChdHandler extends EventEmitter implements IArchiveHandler {
       // Force overwrite
       args.push('-f');
       
-      const process = spawn(this.chdmanPath, args);
+      const process = trackProcess(spawn(this.chdmanPath, args));
       
       let outputStr = '';
       let errorOutput = '';
@@ -959,7 +982,7 @@ export class ChdHandler extends EventEmitter implements IArchiveHandler {
     return new Promise((resolve, reject) => {
       const args = ['info', '-i', inputPath, '-v'];
       
-      const process = spawn(this.chdmanPath, args);
+      const process = trackProcess(spawn(this.chdmanPath, args));
       
       let output = '';
       let errorOutput = '';
@@ -998,7 +1021,7 @@ export class ChdHandler extends EventEmitter implements IArchiveHandler {
     return new Promise((resolve, reject) => {
       const args = ['verify', '-i', chdPath];
       
-      const process = spawn(this.chdmanPath, args);
+      const process = trackProcess(spawn(this.chdmanPath, args));
       
       let output = '';
       let errorOutput = '';

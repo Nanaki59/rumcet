@@ -1,11 +1,12 @@
 // src/helpers/archives/SevenZipHandler.ts
 
 import Seven from 'node-7z';
-import sevenBin from '7zip-bin';
+import { getBundled7zaPath } from '../toolPaths.js';
 import path from 'path';
 import fs from 'fs/promises';
 import { exec } from 'child_process';
 import { promisify } from 'util';
+import { trackProcess } from './processRegistry.js';
 import { 
   IArchiveHandler, 
   ArchiveContent, 
@@ -16,7 +17,8 @@ import {
 } from './types.js';
 
 const execAsync = promisify(exec);
-const pathTo7zip = sevenBin.path7za;
+// 7za de 7zip-bin, hors de app.asar dans la version packagée
+const pathTo7zip = getBundled7zaPath();
 
 /**
  * Mapping des niveaux de compression vers les valeurs 7z
@@ -49,10 +51,10 @@ export class SevenZipHandler implements IArchiveHandler {
   }
   
   /**
-   * Configure le chemin vers 7zip
+   * Configure le chemin vers 7zip (chemin vide : retour au 7za embarqué)
    */
   setPath(newPath: string): void {
-    this.sevenZipPath = newPath;
+    this.sevenZipPath = newPath || pathTo7zip;
   }
   
   canRead(filePath: string): boolean {
@@ -73,6 +75,8 @@ export class SevenZipHandler implements IArchiveHandler {
         recursive: false,
         techInfo: true  // Important : pour obtenir le CRC et les infos techniques
       });
+      // node-7z lance 7z de façon synchrone : le processus est déjà disponible
+      trackProcess((myStream as any)._childProcess);
       
       myStream.on('data', (data: any) => {
         // Ignorer les dossiers
@@ -164,6 +168,7 @@ export class SevenZipHandler implements IArchiveHandler {
       }
       
       const myStream = Seven.extract(options.archivePath, options.outputDir, extractOptions);
+      trackProcess((myStream as any)._childProcess);
       
       myStream.on('end', () => {
         resolve();
@@ -225,6 +230,8 @@ export class SevenZipHandler implements IArchiveHandler {
       } finally {
         if (options.workingDirectory) process.chdir(originalCwd);
       }
+      // Suivi du processus 7z (lancé de façon synchrone) pour l'arrêt forcé
+      trackProcess(myStream?._childProcess);
       
       myStream.on('end', () => {
         console.log(`[7z] ✓ archive created: ${options.outputPath}`);
@@ -273,6 +280,7 @@ export class SevenZipHandler implements IArchiveHandler {
       };
 
       const myStream = Seven.add(options.archivePath, options.files, addOptions);
+      trackProcess((myStream as any)._childProcess);
       
       myStream.on('end', () => {
         console.log(`✅ Files added to: ${options.archivePath}`);

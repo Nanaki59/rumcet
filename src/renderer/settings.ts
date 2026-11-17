@@ -1,7 +1,10 @@
 // src/renderer/settings.ts
 
-import { SYSTEMS, type SystemDefinition } from '../config/systems.js';
-import { initI18n, refreshTranslations, t } from './i18n.js';
+import { SYSTEMS, getSystemsOverlay, getSystemById, type SystemDefinition } from '../config/systems.js';
+import { applyCompatRule, compatEntryForRule, isCompatRule } from '../shared/compatRules.js';
+import type { ChdmanStatus, ConsolidationProfile, ProfileSettings } from '../types/global.js';
+import { compareMameVersions } from '../shared/mameVersion.js';
+import { initI18n, refreshTranslations, t, getLanguage } from './i18n.js';
 import { setupConsoleCapture } from './consoleCapture.js';
 
 // Capturer les console.* de cette page vers le fichier de logs dès le chargement
@@ -15,8 +18,11 @@ import {
 } from './extensionPicker.js';
 // Référentiels du parseur de noms : ils alimentent les listes de priorité 1G1R,
 // de sorte que les valeurs proposées soient exactement celles que le parseur produit.
-import { CANONICAL_REGIONS, CANONICAL_LANGUAGES } from '../shared/romNaming/index.js';
-import { makeReorderable } from './reorderable.js';
+import { CANONICAL_REGIONS, CANONICAL_LANGUAGES, languageDisplayName } from '../shared/romNaming/index.js';
+import { registerPriorityList } from './priorityList.js';
+import { escapeHtml } from './htmlEscape.js';
+import { initSystems } from './systemsInit.js';
+import { openSystemsUpdateModal } from './systemsUpdateModal.js';
 
 // Utiliser les types depuis global.d.ts
 type ArchiveFormat = '7z' | 'zip' | 'chd';
@@ -49,10 +55,12 @@ interface AppSettings {
   cleanSourceAfterConsolidation: boolean;
   cleanupScope: CleanupScope;
   protectFilesForUnselectedGames: boolean;
+  moveUnmatchedFiles: boolean;
   autoSelectNewGames: boolean;
   arcadeTargetSetMode?: ArcadeTargetSetMode;
   arcadeSeparateBios?: boolean;
   arcadeChdEmptyZip?: boolean;
+  generateM3u?: boolean;
   theme: 'light' | 'dark';
   language: 'fr' | 'en';
   autoScanOnStartup: boolean;
@@ -66,7 +74,7 @@ interface AppSettings {
   winrarPath?: string;
   unrarPath?: string;
   chdmanPath?: string;
-  useEmbeddedChdman?: boolean;
+  chdmanVersion?: string;
   rarToolPriority?: RarTool[];
   systemCompatibility?: SystemCompatibility[];
   /** Sélection 1G1R — miroir de OneGameOneRomSettings (settingsManager.ts). */
@@ -84,8 +92,8 @@ interface AppSettings {
     sourceUrl: string;
     folder?: string;
     lastDownload?: string;
-    autoApply: boolean;
-    autoDownload: boolean;
+    autoUpdate: boolean;
+    etags?: Record<string, string>;
   };
   noIntroDefaults?: {
     includeBios: boolean;
@@ -110,21 +118,17 @@ interface AppSettings {
   incompleteRomsFolder?: string;
 }
 
-// Systèmes par défaut, dérivés du registre central src/config/systems.ts
-// Régénération via `npm run sync-systems`.
-const defaultSystemCompatibility: SystemCompatibility[] = SYSTEMS.map(s => ({
-  systemId: s.systemId,
-  systemName: s.fullname,
-  category: s.manufacturer ?? 'Autres',
-  subcategory: s.type ?? undefined,
-  supportedFormats: s.supportedFormats,
-  warningFormats: s.warningFormats,
-  unsupportedFormats: s.unsupportedFormats
-}));
-
 let currentFormatPriority: ArchiveFormat[] = ['chd', '7z', 'zip'];
 let currentRarToolPriority: RarTool[] = ['7zip', 'winrar', 'unrar'];
+/** Paramètres globaux (les clés de profil y reflètent le profil courant ; on ne les lit pas ici). */
 let currentSettings: AppSettings;
+
+// Profils : copies de travail, enregistrées toutes ensemble par « Enregistrer ».
+// La liste déroulante choisit le profil ÉDITÉ ; le profil courant (utilisé par la
+// consolidation) se choisit dans la fenêtre principale.
+let profileDrafts: ConsolidationProfile[] = [];
+let activeProfileId = '';
+let editedProfileId = '';
 
 // Listes de priorité 1G1R. Tableaux mutés en place par le widget de priorité,
 // relus tels quels au moment de la sauvegarde.
@@ -144,10 +148,13 @@ window.addEventListener('DOMContentLoaded', async () => {
   // Pas de reload au changement de langue : c'est cette fenêtre qui le déclenche via
   // la sauvegarde — un reload tuerait le flux « ✅ Enregistré ! » + fermeture différée.
   await initI18n({ onLanguageChanged: refreshTranslations });
+  // Registre des systèmes (surcharge Recalbox éventuelle) avant tout rendu qui le lit
+  await initSystems({ onUpdated: refreshSystemsViews });
   console.log('Loading settings...');
   await loadSettings();
   setupTabs();
-  setupOneGameOneRom();
+  setupSystemsUpdate();
+  setupChdmanVersion();
 
   // Bouton "Ajouter une source"
   document.getElementById('addDownloadSource')?.addEventListener('click', addDownloadSource);
@@ -166,16 +173,32 @@ window.addEventListener('DOMContentLoaded', async () => {
     renderDownloadSystemExtensions();
   });
 
-  // Réagir au changement de la checkbox "Déplacer les fichiers non matchés" pour griser/dégriser
+  // Réagir au changement de la checkbox "Déplacer les fichiers non matchés" pour l'avertissement
   document.getElementById('moveUnmatchedFiles')?.addEventListener('change', updateUnmatchedFolderEnabled);
+  // Rappel du dossier non matchés (onglet Nettoyage) : suit les champs de l'onglet Dossiers
+  document.getElementById('unmatchedRomsFolder')?.addEventListener('input', updateUnmatchedFolderReminder);
+  document.getElementById('validatedRomsMultiSystem')?.addEventListener('change', updateUnmatchedFolderReminder);
+  document.getElementById('generateM3u')?.addEventListener('change', updateM3uNotices);
 
-  // Lien "aller aux paramètres de nettoyage" dans le message d'avertissement
+  // Liens vers un autre onglet ("aller aux paramètres de nettoyage", "onglet Dossiers")
   document.getElementById('unmatchedGoToCleanup')?.addEventListener('click', (e) => {
     e.preventDefault();
-    const cleanupTabBtn = document.querySelector('.tab-button[data-tab="cleanup"]') as HTMLElement | null;
-    cleanupTabBtn?.click();
+    goToTab('cleanup');
   });
+  // Délégation : ces liens vivent dans des textes data-i18n-html, recréés à chaque traduction
+  document.addEventListener('click', (e) => {
+    const link = (e.target as HTMLElement).closest<HTMLElement>('[data-goto-tab]');
+    if (!link) return;
+    e.preventDefault();
+    goToTab(link.dataset.gotoTab!);
+  });
+
+  setupProfiles();
 });
+
+function goToTab(tabId: string): void {
+  (document.querySelector(`.tab-button[data-tab="${tabId}"]`) as HTMLElement | null)?.click();
+}
 
 // État persistant (entre re-renders) des groupes pliés dans la compatibilité.
 // Clé : nom du groupe primaire (type ou constructeur selon le mode de tri).
@@ -215,109 +238,385 @@ async function loadSettings(): Promise<void> {
   try {
     console.log('Retrieving settings from the API...');
     currentSettings = await window.api.getSettings() as AppSettings;
+    const state = await window.api.profiles.list();
+    profileDrafts = state.profiles;
+    activeProfileId = state.activeProfileId;
+    editedProfileId = activeProfileId;
     console.log('Settings received:', currentSettings);
-    
-    // Onglet Général
-    (document.getElementById('theme') as HTMLSelectElement).value = currentSettings.theme || 'light';
-    (document.getElementById('language') as HTMLSelectElement).value = currentSettings.language || 'fr';
-    (document.getElementById('autoScanOnStartup') as HTMLInputElement).checked = currentSettings.autoScanOnStartup || false;
-    (document.getElementById('autoSelectNewGames') as HTMLInputElement).checked = currentSettings.autoSelectNewGames !== undefined ? currentSettings.autoSelectNewGames : true;
 
-    // Paramètres No-Intro par défaut
-    if (currentSettings.noIntroDefaults) {
-      (document.getElementById('noIntroBios') as HTMLInputElement).checked = currentSettings.noIntroDefaults.includeBios;
-      (document.getElementById('noIntroProto') as HTMLInputElement).checked = currentSettings.noIntroDefaults.includeProto;
-      (document.getElementById('noIntroBeta') as HTMLInputElement).checked = currentSettings.noIntroDefaults.includeBeta;
-      (document.getElementById('noIntroDemo') as HTMLInputElement).checked = currentSettings.noIntroDefaults.includeDemo;
-      (document.getElementById('noIntroSample') as HTMLInputElement).checked = currentSettings.noIntroDefaults.includeSample;
-    }
-
-    // Onglet Dossiers
-    (document.getElementById('defaultDatFolder') as HTMLInputElement).value = currentSettings.defaultDatFolder || '';
-    (document.getElementById('defaultDatabaseFolder') as HTMLInputElement).value = currentSettings.defaultDatabaseFolder || '';
-    (document.getElementById('defaultRomsFolder') as HTMLInputElement).value = currentSettings.defaultRomsFolder || '';
-    (document.getElementById('unmatchedRomsFolder') as HTMLInputElement).value = currentSettings.unmatchedRomsFolder || '';
-    const unmatchedCleanupInput = document.getElementById('unmatchedRomsFolderCleanup') as HTMLInputElement | null;
-    if (unmatchedCleanupInput) unmatchedCleanupInput.value = currentSettings.unmatchedRomsFolder || '';
-    (document.getElementById('validatedRomsFolder') as HTMLInputElement).value = currentSettings.validatedRomsFolder || '';
-    (document.getElementById('validatedRomsMultiSystem') as HTMLInputElement).checked = !!currentSettings.validatedRomsMultiSystem;
-    (document.getElementById('tempExtractionFolder') as HTMLInputElement).value = currentSettings.tempExtractionFolder || '';
-    (document.getElementById('cleanSourceAfterConsolidation') as HTMLInputElement).checked = currentSettings.cleanSourceAfterConsolidation !== undefined ? currentSettings.cleanSourceAfterConsolidation : true;
-    (document.getElementById('cleanupScope') as HTMLSelectElement).value = currentSettings.cleanupScope || 'used-only';
-    (document.getElementById('protectFilesForUnselectedGames') as HTMLInputElement).checked = currentSettings.protectFilesForUnselectedGames !== undefined ? currentSettings.protectFilesForUnselectedGames : true;
-    toggleCleanupOptions();
-
-    // Onglet Arcade — mode du set cible
-    const arcadeMode: ArcadeTargetSetMode = currentSettings.arcadeTargetSetMode || 'split';
-    const arcadeRadio = document.querySelector(
-      `input[name="arcadeTargetSetMode"][value="${arcadeMode}"]`
-    ) as HTMLInputElement | null;
-    if (arcadeRadio) arcadeRadio.checked = true;
-
-    // Onglet Arcade — organisation des dossiers (BIOS / CHD)
-    (document.getElementById('arcadeSeparateBios') as HTMLInputElement).checked = !!currentSettings.arcadeSeparateBios;
-    (document.getElementById('arcadeChdEmptyZip') as HTMLInputElement).checked = !!currentSettings.arcadeChdEmptyZip;
-
-    // Onglet Archives
-    (document.getElementById('compressionLevel') as HTMLSelectElement).value = currentSettings.compressionLevel || 'normal';
-    (document.getElementById('recreateArchivesIfNeeded') as HTMLInputElement).checked = currentSettings.recreateArchivesIfNeeded || false;
-    (document.getElementById('useBestCompression') as HTMLInputElement).checked = currentSettings.useBestCompression || false;
-    (document.getElementById('solidArchive') as HTMLInputElement).checked = currentSettings.solidArchive !== undefined ? currentSettings.solidArchive : true;
-    (document.getElementById('multithreading') as HTMLInputElement).checked = currentSettings.multithreading !== undefined ? currentSettings.multithreading : true;
-    
-    toggleBestCompressionWarning((document.getElementById('useBestCompression') as HTMLInputElement).checked);
-    
-    if (currentSettings.archiveFormatPriority && Array.isArray(currentSettings.archiveFormatPriority)) {
-      currentFormatPriority = currentSettings.archiveFormatPriority;
-    }
-    renderFormatPriorityList();
-    
-    // Onglet Outils externes
-    (document.getElementById('sevenZipPath') as HTMLInputElement).value = currentSettings.sevenZipPath || '';
-    (document.getElementById('winrarPath') as HTMLInputElement).value = currentSettings.winrarPath || '';
-    (document.getElementById('unrarPath') as HTMLInputElement).value = currentSettings.unrarPath || '';
-    (document.getElementById('chdmanPath') as HTMLInputElement).value = currentSettings.chdmanPath || '';
-    (document.getElementById('useEmbeddedChdman') as HTMLInputElement).checked = currentSettings.useEmbeddedChdman !== undefined ? currentSettings.useEmbeddedChdman : true;
-
-    if (currentSettings.rarToolPriority && Array.isArray(currentSettings.rarToolPriority)) {
-      currentRarToolPriority = currentSettings.rarToolPriority;
-    }
-    renderRarToolPriorityList();
-
-    // Onglet 1G1R — désactivé tant que l'utilisateur ne l'a pas coché.
-    // Les valeurs par défaut ne servent que si la clé est absente des paramètres.
-    const ogor = currentSettings.oneGameOneRom;
-    (document.getElementById('ogorEnabled') as HTMLInputElement).checked = ogor?.enabled === true;
-    (document.getElementById('ogorLanguageOverRegion') as HTMLInputElement).checked = ogor?.languageOverRegion === true;
-    (document.getElementById('ogorPreferLatestRevision') as HTMLInputElement).checked = ogor?.preferLatestRevision !== false;
-    (document.getElementById('ogorFallbackToOwned') as HTMLInputElement).checked = ogor?.fallbackToOwned !== false;
-    ogorRegionPriority = [...(ogor?.regionPriority ?? ['World', 'Europe', 'USA', 'Japan'])];
-    ogorLanguagePriority = [...(ogor?.languagePriority ?? ['En', 'Fr', 'Ja'])];
-    ogorVideoPriority = [...(ogor?.videoPriority ?? ['PAL', 'PAL 60Hz', 'NTSC'])];
-    renderOneGameOneRom();
-
-    const cloneLists = currentSettings.cloneLists;
-    (document.getElementById('cloneListSourceUrl') as HTMLInputElement).value = cloneLists?.sourceUrl || '';
-    (document.getElementById('cloneListFolder') as HTMLInputElement).value = cloneLists?.folder || '';
-    (document.getElementById('cloneListAutoApply') as HTMLInputElement).checked = cloneLists?.autoApply === true;
-    (document.getElementById('cloneListAutoDownload') as HTMLInputElement).checked = cloneLists?.autoDownload === true;
-    await showEffectiveCloneListFolder();
-
-    // Onglet Compatibilité
-    renderSystemCompatibility();
-
-    // Onglet Téléchargement
-    renderDownloadSources();
-    (document.getElementById('downloadExtensions') as HTMLInputElement).value =
-      (currentSettings.downloadExtensions || ['7z', 'zip', 'chd', 'rar', 'iso', 'cso', 'pbp']).join(', ');
-    renderDownloadSystemExtensions();
-    (document.getElementById('incompleteRomsFolder') as HTMLInputElement).value =
-      currentSettings.incompleteRomsFolder || '';
+    await fillGlobal();
+    renderProfileSelect();
+    fillProfile();
 
     console.log('Settings loaded into the interface');
   } catch (error) {
     console.error('Error while loading settings:', error);
   }
+}
+
+/** Remplit les onglets globaux (identiques pour tous les profils). */
+async function fillGlobal(): Promise<void> {
+  // Onglet Général
+  (document.getElementById('theme') as HTMLSelectElement).value = currentSettings.theme || 'light';
+  (document.getElementById('language') as HTMLSelectElement).value = currentSettings.language || 'fr';
+  (document.getElementById('autoScanOnStartup') as HTMLInputElement).checked = currentSettings.autoScanOnStartup || false;
+  (document.getElementById('autoSelectNewGames') as HTMLInputElement).checked = currentSettings.autoSelectNewGames !== undefined ? currentSettings.autoSelectNewGames : true;
+
+  // Paramètres No-Intro par défaut
+  if (currentSettings.noIntroDefaults) {
+    (document.getElementById('noIntroBios') as HTMLInputElement).checked = currentSettings.noIntroDefaults.includeBios;
+    (document.getElementById('noIntroProto') as HTMLInputElement).checked = currentSettings.noIntroDefaults.includeProto;
+    (document.getElementById('noIntroBeta') as HTMLInputElement).checked = currentSettings.noIntroDefaults.includeBeta;
+    (document.getElementById('noIntroDemo') as HTMLInputElement).checked = currentSettings.noIntroDefaults.includeDemo;
+    (document.getElementById('noIntroSample') as HTMLInputElement).checked = currentSettings.noIntroDefaults.includeSample;
+  }
+
+  // Onglet Dossiers
+  (document.getElementById('defaultDatFolder') as HTMLInputElement).value = currentSettings.defaultDatFolder || '';
+  (document.getElementById('defaultDatabaseFolder') as HTMLInputElement).value = currentSettings.defaultDatabaseFolder || '';
+  (document.getElementById('defaultRomsFolder') as HTMLInputElement).value = currentSettings.defaultRomsFolder || '';
+  (document.getElementById('unmatchedRomsFolder') as HTMLInputElement).value = currentSettings.unmatchedRomsFolder || '';
+  (document.getElementById('validatedRomsFolder') as HTMLInputElement).value = currentSettings.validatedRomsFolder || '';
+  (document.getElementById('validatedRomsMultiSystem') as HTMLInputElement).checked = !!currentSettings.validatedRomsMultiSystem;
+  updateUnmatchedFolderReminder();
+  (document.getElementById('tempExtractionFolder') as HTMLInputElement).value = currentSettings.tempExtractionFolder || '';
+
+  // Onglet Outils externes
+  (document.getElementById('sevenZipPath') as HTMLInputElement).value = currentSettings.sevenZipPath || '';
+  (document.getElementById('winrarPath') as HTMLInputElement).value = currentSettings.winrarPath || '';
+  (document.getElementById('unrarPath') as HTMLInputElement).value = currentSettings.unrarPath || '';
+  (document.getElementById('chdmanPath') as HTMLInputElement).value = currentSettings.chdmanPath || '';
+
+  if (currentSettings.rarToolPriority && Array.isArray(currentSettings.rarToolPriority)) {
+    currentRarToolPriority = currentSettings.rarToolPriority;
+  }
+  renderRarToolPriorityList();
+
+  // Onglet Clone lists
+  const cloneLists = currentSettings.cloneLists;
+  (document.getElementById('cloneListSourceUrl') as HTMLInputElement).value = cloneLists?.sourceUrl || '';
+  (document.getElementById('cloneListFolder') as HTMLInputElement).value = cloneLists?.folder || '';
+  (document.getElementById('cloneListAutoUpdate') as HTMLInputElement).checked = cloneLists?.autoUpdate !== false;
+  await showEffectiveCloneListFolder();
+
+  // Onglet Téléchargement
+  renderDownloadSources();
+  (document.getElementById('downloadExtensions') as HTMLInputElement).value =
+    (currentSettings.downloadExtensions || ['7z', 'zip', 'chd', 'rar', 'iso', 'cso', 'pbp']).join(', ');
+  renderDownloadSystemExtensions();
+  (document.getElementById('incompleteRomsFolder') as HTMLInputElement).value =
+    currentSettings.incompleteRomsFolder || '';
+}
+
+/** Remplit les onglets du profil édité (Compression, Compatibilité, Nettoyage, Arcade, 1G1R). */
+function fillProfile(): void {
+  const profile = getEditedProfile();
+  const settings = profile.settings;
+
+  // Onglet Nettoyage
+  (document.getElementById('cleanSourceAfterConsolidation') as HTMLInputElement).checked = settings.cleanSourceAfterConsolidation !== undefined ? settings.cleanSourceAfterConsolidation : true;
+  (document.getElementById('cleanupScope') as HTMLSelectElement).value = settings.cleanupScope || 'used-only';
+  (document.getElementById('protectFilesForUnselectedGames') as HTMLInputElement).checked = settings.protectFilesForUnselectedGames !== undefined ? settings.protectFilesForUnselectedGames : true;
+  (document.getElementById('moveUnmatchedFiles') as HTMLInputElement).checked = settings.moveUnmatchedFiles !== false;
+  toggleCleanupOptions();
+
+  // Onglet Arcade — mode du set cible
+  const arcadeMode: ArcadeTargetSetMode = settings.arcadeTargetSetMode || 'split';
+  const arcadeRadio = document.querySelector(
+    `input[name="arcadeTargetSetMode"][value="${arcadeMode}"]`
+  ) as HTMLInputElement | null;
+  if (arcadeRadio) arcadeRadio.checked = true;
+
+  // Onglet Arcade — organisation des dossiers (BIOS / CHD)
+  (document.getElementById('arcadeSeparateBios') as HTMLInputElement).checked = !!settings.arcadeSeparateBios;
+  (document.getElementById('arcadeChdEmptyZip') as HTMLInputElement).checked = !!settings.arcadeChdEmptyZip;
+
+  // Onglet Multi-disques
+  (document.getElementById('generateM3u') as HTMLInputElement).checked = !!settings.generateM3u;
+  updateM3uNotices();
+
+  // Onglet Archives
+  (document.getElementById('compressionLevel') as HTMLSelectElement).value = settings.compressionLevel || 'normal';
+  (document.getElementById('recreateArchivesIfNeeded') as HTMLInputElement).checked = settings.recreateArchivesIfNeeded || false;
+  (document.getElementById('useBestCompression') as HTMLInputElement).checked = settings.useBestCompression || false;
+  (document.getElementById('solidArchive') as HTMLInputElement).checked = settings.solidArchive !== undefined ? settings.solidArchive : true;
+  (document.getElementById('multithreading') as HTMLInputElement).checked = settings.multithreading !== undefined ? settings.multithreading : true;
+
+  toggleBestCompressionWarning((document.getElementById('useBestCompression') as HTMLInputElement).checked);
+
+  // Copie : le widget de priorité mute le tableau en place
+  currentFormatPriority = Array.isArray(settings.archiveFormatPriority)
+    ? [...settings.archiveFormatPriority]
+    : ['chd', '7z', 'zip'];
+  renderFormatPriorityList();
+
+  // Onglet 1G1R — désactivé tant que l'utilisateur ne l'a pas coché.
+  // Les valeurs par défaut ne servent que si la clé est absente des paramètres.
+  const ogor = settings.oneGameOneRom;
+  (document.getElementById('ogorEnabled') as HTMLInputElement).checked = ogor?.enabled === true;
+  (document.getElementById('ogorLanguageOverRegion') as HTMLInputElement).checked = ogor?.languageOverRegion === true;
+  (document.getElementById('ogorPreferLatestRevision') as HTMLInputElement).checked = ogor?.preferLatestRevision !== false;
+  (document.getElementById('ogorFallbackToOwned') as HTMLInputElement).checked = ogor?.fallbackToOwned !== false;
+  ogorRegionPriority = [...(ogor?.regionPriority ?? ['World', 'Europe', 'USA', 'Japan'])];
+  ogorLanguagePriority = [...(ogor?.languagePriority ?? ['En', 'Fr', 'Ja'])];
+  ogorVideoPriority = [...(ogor?.videoPriority ?? ['PAL', 'PAL 60Hz', 'NTSC'])];
+  renderOneGameOneRom();
+
+  // Onglet Compatibilité
+  const ruleSelect = document.getElementById('compatRuleSelect') as HTMLSelectElement | null;
+  if (ruleSelect && profile.compatRule) ruleSelect.value = profile.compatRule;
+  renderCompatRuleInfo();
+  renderSystemCompatibility();
+
+  renderProfileContext();
+}
+
+/**
+ * Relit les onglets du profil dans sa copie de travail. La compatibilité par
+ * système est déjà tenue à jour en mémoire par les cases à cocher.
+ */
+function readProfileIntoDraft(): void {
+  const profile = getEditedProfile();
+  profile.settings = {
+    ...profile.settings,
+
+    // Nettoyage
+    cleanSourceAfterConsolidation: (document.getElementById('cleanSourceAfterConsolidation') as HTMLInputElement).checked,
+    cleanupScope: (document.getElementById('cleanupScope') as HTMLSelectElement).value as CleanupScope,
+    protectFilesForUnselectedGames: (document.getElementById('protectFilesForUnselectedGames') as HTMLInputElement).checked,
+    moveUnmatchedFiles: (document.getElementById('moveUnmatchedFiles') as HTMLInputElement).checked,
+
+    // Arcade — mode du set cible (MAME uniquement, ignoré pour les autres systèmes)
+    arcadeTargetSetMode: ((document.querySelector('input[name="arcadeTargetSetMode"]:checked') as HTMLInputElement | null)?.value as ArcadeTargetSetMode) || 'split',
+    arcadeSeparateBios: (document.getElementById('arcadeSeparateBios') as HTMLInputElement).checked,
+    arcadeChdEmptyZip: (document.getElementById('arcadeChdEmptyZip') as HTMLInputElement).checked,
+
+    // Multi-disques
+    generateM3u: (document.getElementById('generateM3u') as HTMLInputElement).checked,
+
+    // Compression
+    compressionLevel: (document.getElementById('compressionLevel') as HTMLSelectElement).value as ProfileSettings['compressionLevel'],
+    recreateArchivesIfNeeded: (document.getElementById('recreateArchivesIfNeeded') as HTMLInputElement).checked,
+    archiveFormatPriority: [...currentFormatPriority],
+    useBestCompression: (document.getElementById('useBestCompression') as HTMLInputElement).checked,
+    solidArchive: (document.getElementById('solidArchive') as HTMLInputElement).checked,
+    multithreading: (document.getElementById('multithreading') as HTMLInputElement).checked,
+
+    // Sélection 1G1R
+    oneGameOneRom: {
+      enabled: (document.getElementById('ogorEnabled') as HTMLInputElement).checked,
+      regionPriority: [...ogorRegionPriority],
+      languagePriority: [...ogorLanguagePriority],
+      languageOverRegion: (document.getElementById('ogorLanguageOverRegion') as HTMLInputElement).checked,
+      videoPriority: [...ogorVideoPriority],
+      preferLatestRevision: (document.getElementById('ogorPreferLatestRevision') as HTMLInputElement).checked,
+      fallbackToOwned: (document.getElementById('ogorFallbackToOwned') as HTMLInputElement).checked
+    }
+  };
+}
+
+// ============================================
+// PROFILS DE CONSOLIDATION
+// ============================================
+
+function getEditedProfile(): ConsolidationProfile {
+  return profileDrafts.find(p => p.id === editedProfileId) ?? profileDrafts[0];
+}
+
+/** Nom affichable : nom saisi, sinon nom traduit d'après l'id (profils intégrés, « Mon profil »). */
+function profileDisplayName(profile: ConsolidationProfile): string {
+  return profile.name || t(`profiles.names.${profile.id}`);
+}
+
+function setupProfiles(): void {
+  document.getElementById('profileSelect')?.addEventListener('change', (e) => {
+    switchEditedProfile((e.target as HTMLSelectElement).value);
+  });
+  document.getElementById('btnProfileNew')?.addEventListener('click', () => { void createProfile(); });
+  document.getElementById('btnProfileRename')?.addEventListener('click', () => { void renameProfile(); });
+  document.getElementById('btnProfileReset')?.addEventListener('click', () => { void resetBuiltinProfile(); });
+  document.getElementById('btnProfileDelete')?.addEventListener('click', deleteProfile);
+  document.getElementById('btnApplyCompatRule')?.addEventListener('click', applySelectedCompatRule);
+  document.getElementById('compatRuleSelect')?.addEventListener('change', renderCompatRuleInfo);
+
+  // Le profil courant peut changer depuis la fenêtre principale pendant l'édition
+  window.api.profiles.onChanged(async () => {
+    const state = await window.api.profiles.list();
+    activeProfileId = state.activeProfileId;
+    renderProfileSelect();
+    renderProfileContext();
+  });
+}
+
+function renderProfileSelect(): void {
+  const select = document.getElementById('profileSelect') as HTMLSelectElement | null;
+  if (!select) return;
+  select.innerHTML = '';
+  for (const profile of profileDrafts) {
+    const option = document.createElement('option');
+    option.value = profile.id;
+    option.textContent = profile.id === activeProfileId
+      ? t('settings.profiles.activeOption', { name: profileDisplayName(profile) })
+      : profileDisplayName(profile);
+    select.appendChild(option);
+  }
+  select.value = editedProfileId;
+}
+
+/** Bandeaux des onglets du profil, aide sous la liste et état des boutons. */
+function renderProfileContext(): void {
+  const profile = getEditedProfile();
+  const name = profileDisplayName(profile);
+  const isActive = profile.id === activeProfileId;
+
+  document.querySelectorAll<HTMLElement>('[data-profile-banner]').forEach(banner => {
+    banner.textContent = isActive
+      ? t('settings.profiles.bannerActive', { name })
+      : t('settings.profiles.bannerOther', { name });
+  });
+
+  const hint = document.getElementById('profileHint');
+  if (hint) hint.textContent = isActive ? t('settings.profiles.hintActive') : t('settings.profiles.hintOther');
+
+  (document.getElementById('btnProfileRename') as HTMLButtonElement).disabled = profile.builtin;
+  (document.getElementById('btnProfileDelete') as HTMLButtonElement).disabled = profile.builtin;
+  (document.getElementById('btnProfileReset') as HTMLButtonElement).disabled = !profile.builtin;
+}
+
+function switchEditedProfile(id: string): void {
+  if (id === editedProfileId) return;
+  readProfileIntoDraft();
+  editedProfileId = id;
+  renderProfileSelect();
+  fillProfile();
+}
+
+async function createProfile(): Promise<void> {
+  readProfileIntoDraft();
+  const source = getEditedProfile();
+  const name = await askProfileName(
+    t('settings.profiles.newDialogTitle', { name: profileDisplayName(source) }),
+    t('settings.profiles.copyName', { name: profileDisplayName(source) })
+  );
+  if (!name) return;
+  const profile: ConsolidationProfile = {
+    id: crypto.randomUUID(),
+    name,
+    builtin: false,
+    compatRule: source.compatRule,
+    settings: structuredClone(source.settings)
+  };
+  profileDrafts.push(profile);
+  editedProfileId = profile.id;
+  renderProfileSelect();
+  fillProfile();
+}
+
+async function renameProfile(): Promise<void> {
+  const profile = getEditedProfile();
+  if (profile.builtin) return;
+  const name = await askProfileName(t('settings.profiles.renameDialogTitle'), profileDisplayName(profile));
+  if (!name) return;
+  profile.name = name;
+  renderProfileSelect();
+  renderProfileContext();
+}
+
+function deleteProfile(): void {
+  const profile = getEditedProfile();
+  if (profile.builtin) return;
+  const isActive = profile.id === activeProfileId;
+  const message = isActive
+    ? t('settings.profiles.deleteActiveConfirm', { name: profileDisplayName(profile) })
+    : t('settings.profiles.deleteConfirm', { name: profileDisplayName(profile) });
+  if (!confirm(message)) return;
+  profileDrafts = profileDrafts.filter(p => p.id !== profile.id);
+  editedProfileId = profileDrafts.some(p => p.id === activeProfileId) ? activeProfileId : profileDrafts[0].id;
+  renderProfileSelect();
+  fillProfile();
+}
+
+async function resetBuiltinProfile(): Promise<void> {
+  const profile = getEditedProfile();
+  if (!profile.builtin) return;
+  if (!confirm(t('settings.profiles.resetConfirm', { name: profileDisplayName(profile) }))) return;
+  const defaults = await window.api.profiles.getBuiltinDefaults(profile.id);
+  if (!defaults) return;
+  profile.settings = defaults.settings;
+  profile.compatRule = defaults.compatRule;
+  fillProfile();
+}
+
+/**
+ * Petite fenêtre de saisie du nom d'un profil (window.prompt n'existe pas dans
+ * Electron). Retourne le nom saisi, ou null si annulé.
+ */
+function askProfileName(title: string, initial: string): Promise<string | null> {
+  return new Promise(resolve => {
+    const overlay = document.createElement('div');
+    overlay.style.cssText = 'position:fixed; inset:0; background:rgba(0,0,0,0.5); z-index:9999; display:flex; align-items:center; justify-content:center;';
+    const dialog = document.createElement('div');
+    dialog.style.cssText = 'background:#fff; border-radius:8px; padding:20px; width:90%; max-width:420px; box-shadow:0 8px 32px rgba(0,0,0,0.25);';
+    dialog.innerHTML = `
+      <h3 style="margin:0 0 12px; color:#2c3e50;">${escapeHtml(title)}</h3>
+      <input type="text" id="profile-name-input" maxlength="60" style="width:100%; padding:8px 10px; border:1px solid #bdc3c7; border-radius:4px; font-size:14px; margin-bottom:14px;">
+      <div style="display:flex; justify-content:flex-end; gap:8px;">
+        <button class="btn-secondary" id="profile-name-cancel">${escapeHtml(t('common.cancel'))}</button>
+        <button class="btn-primary" id="profile-name-ok">${escapeHtml(t('common.validate'))}</button>
+      </div>
+    `;
+    overlay.appendChild(dialog);
+    document.body.appendChild(overlay);
+
+    const input = dialog.querySelector('#profile-name-input') as HTMLInputElement;
+    const okBtn = dialog.querySelector('#profile-name-ok') as HTMLButtonElement;
+    input.value = initial;
+    input.select();
+    input.focus();
+
+    const close = (value: string | null) => {
+      overlay.remove();
+      resolve(value);
+    };
+    const submit = () => {
+      const value = input.value.trim();
+      if (value) close(value);
+    };
+    input.addEventListener('input', () => { okBtn.disabled = !input.value.trim(); });
+    input.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter') submit();
+      if (e.key === 'Escape') close(null);
+    });
+    okBtn.addEventListener('click', submit);
+    (dialog.querySelector('#profile-name-cancel') as HTMLButtonElement).addEventListener('click', () => close(null));
+  });
+}
+
+/** Applique la règle choisie à tous les systèmes du profil édité. */
+function applySelectedCompatRule(): void {
+  const select = document.getElementById('compatRuleSelect') as HTMLSelectElement | null;
+  const rule = select?.value;
+  if (!isCompatRule(rule)) return;
+  const profile = getEditedProfile();
+  const ruleName = t(`settings.compatibility.rules.${rule}`);
+  if (!confirm(t('settings.compatibility.applyRuleConfirm', { rule: ruleName, name: profileDisplayName(profile) }))) return;
+  profile.settings.systemCompatibility = applyCompatRule(rule);
+  profile.compatRule = rule;
+  renderCompatRuleInfo();
+  renderSystemCompatibility();
+}
+
+/** Description de la règle sélectionnée + dernière règle appliquée au profil. */
+function renderCompatRuleInfo(): void {
+  const info = document.getElementById('compatRuleInfo');
+  const select = document.getElementById('compatRuleSelect') as HTMLSelectElement | null;
+  if (!info || !select) return;
+  const profile = getEditedProfile();
+  const parts = [t(`settings.compatibility.rulesInfo.${select.value}`)];
+  parts.push(profile.compatRule
+    ? t('settings.compatibility.lastRule', { rule: t(`settings.compatibility.rules.${profile.compatRule}`) })
+    : t('settings.compatibility.noRule'));
+  info.textContent = parts.join(' ');
 }
 
 // ============================================
@@ -339,7 +638,6 @@ async function browseFolder(fieldId: string): Promise<void> {
       folderType = 'roms';
       break;
     case 'unmatchedRomsFolder':
-    case 'unmatchedRomsFolderCleanup':
       folderType = 'unmatched';
       break;
     case 'incompleteRomsFolder':
@@ -361,14 +659,7 @@ async function browseFolder(fieldId: string): Promise<void> {
     if (folderPath) {
       (document.getElementById(fieldId) as HTMLInputElement).value = folderPath;
       (currentSettings as any)[fieldId] = folderPath;
-      // Synchronisation : les deux champs "ROMs non référencées" reflètent la même valeur
-      if (fieldId === 'unmatchedRomsFolder' || fieldId === 'unmatchedRomsFolderCleanup') {
-        const main = document.getElementById('unmatchedRomsFolder') as HTMLInputElement | null;
-        const cleanup = document.getElementById('unmatchedRomsFolderCleanup') as HTMLInputElement | null;
-        if (main) main.value = folderPath;
-        if (cleanup) cleanup.value = folderPath;
-        (currentSettings as any).unmatchedRomsFolder = folderPath;
-      }
+      if (fieldId === 'unmatchedRomsFolder') updateUnmatchedFolderReminder();
     }
   } catch (error) {
     console.error('Error while selecting the folder:', error);
@@ -379,17 +670,29 @@ async function browseFolder(fieldId: string): Promise<void> {
 // PARCOURIR FICHIERS (OUTILS)
 // ============================================
 
+const IS_WINDOWS = navigator.userAgent.includes('Windows');
+
+/** Nom d'exécutable affiché selon l'OS : hors Windows, les exécutables n'ont pas d'extension */
+function platformFileName(fileName: string): string {
+  return IS_WINDOWS ? fileName : fileName.replace(/\.exe$/i, '').toLowerCase();
+}
+
 async function browseFile(fieldId: string, fileName: string): Promise<void> {
   console.log('Selecting a file for:', fieldId);
   
+  const isWindows = IS_WINDOWS;
+  fileName = platformFileName(fileName);
+
   try {
     // openFileDialog peut retourner string | string[] | undefined
     const result = await window.api.openFileDialog({
       title: t('settings.dialogs.selectFile', { fileName }),
-      filters: [
-        { name: t('common.filterExecutables'), extensions: ['exe'] },
-        { name: t('common.filterAllFiles'), extensions: ['*'] }
-      ],
+      filters: isWindows
+        ? [
+            { name: t('common.filterExecutables'), extensions: ['exe'] },
+            { name: t('common.filterAllFiles'), extensions: ['*'] }
+          ]
+        : [],
       multiSelections: false
     });
     
@@ -418,7 +721,7 @@ async function autoDetect7Zip(): Promise<void> {
       (currentSettings as any).sevenZipPath = result.sevenZip;
       alert(t('settings.tools.detectedAlert', { tool: '7-Zip', path: result.sevenZip }));
     } else {
-      alert(t('settings.tools.notFoundAlert', { tool: '7-Zip', file: '7z.exe' }));
+      alert(t('settings.tools.notFoundAlert', { tool: '7-Zip', file: platformFileName('7z.exe') }));
     }
   } catch (error) {
     console.error('Error while auto-detecting 7-Zip:', error);
@@ -436,7 +739,7 @@ async function autoDetectWinRAR(): Promise<void> {
       (currentSettings as any).winrarPath = result.winrar;
       alert(t('settings.tools.detectedAlert', { tool: 'WinRAR', path: result.winrar }));
     } else {
-      alert(t('settings.tools.notFoundAlert', { tool: 'WinRAR', file: 'Rar.exe' }));
+      alert(t('settings.tools.notFoundAlert', { tool: 'WinRAR', file: platformFileName('Rar.exe') }));
     }
   } catch (error) {
     console.error('Error while auto-detecting WinRAR:', error);
@@ -454,7 +757,7 @@ async function autoDetectUnRAR(): Promise<void> {
       (currentSettings as any).unrarPath = result.unrar;
       alert(t('settings.tools.detectedAlert', { tool: 'UnRAR', path: result.unrar }));
     } else {
-      alert(t('settings.tools.notFoundAlert', { tool: 'UnRAR', file: 'UnRAR.exe' }));
+      alert(t('settings.tools.notFoundAlert', { tool: 'UnRAR', file: platformFileName('UnRAR.exe') }));
     }
   } catch (error) {
     console.error('Error while auto-detecting UnRAR:', error);
@@ -462,149 +765,161 @@ async function autoDetectUnRAR(): Promise<void> {
   }
 }
 
+// ============================================
+// CHDMAN : VERSION UTILISÉE ET MISE À JOUR
+// ============================================
+
+let chdmanStatus: ChdmanStatus | null = null;
+
+async function loadChdmanStatus(): Promise<void> {
+  try {
+    chdmanStatus = await window.api.chdman.getInfo();
+  } catch (error) {
+    console.error('Error while loading chdman status:', error);
+    chdmanStatus = null;
+  }
+  renderChdmanStatus();
+}
+
+function chdmanVersionLabel(entry: ChdmanStatus['versions'][number]): string {
+  const version = entry.version || '?';
+  return entry.source === 'embedded'
+    ? t('settings.tools.chdmanVersionDefault', { version })
+    : version;
+}
+
+function renderChdmanStatus(): void {
+  const statusEl = document.getElementById('chdmanStatus');
+  const select = document.getElementById('chdmanVersion') as HTMLSelectElement | null;
+  if (!statusEl || !select) return;
+
+  const status = chdmanStatus;
+  if (!status) {
+    statusEl.textContent = t('settings.tools.chdmanNotFound');
+    return;
+  }
+
+  statusEl.textContent = status.current.path
+    ? t('settings.tools.chdmanCurrent', {
+        version: status.current.version || '?',
+        source: t(`settings.tools.chdmanSource.${status.current.source}`)
+      })
+    : t('settings.tools.chdmanNotFound');
+  statusEl.title = status.current.path || '';
+
+  (document.getElementById('btnCheckChdmanUpdate') as HTMLElement).style.display = status.updateSupported ? '' : 'none';
+  (document.getElementById('chdmanUpdateUnsupported') as HTMLElement).style.display = status.updateSupported ? 'none' : '';
+
+  // Conserver un choix non encore enregistré, sinon reprendre le réglage
+  const previous = select.options.length > 0 ? select.value : status.selected;
+  select.innerHTML = '';
+  select.add(new Option(t('settings.tools.chdmanVersionLatest'), 'latest'));
+  for (const entry of status.versions) {
+    select.add(new Option(chdmanVersionLabel(entry), entry.id));
+  }
+  select.add(new Option(t('settings.tools.chdmanVersionManual'), 'manual'));
+  select.value = Array.from(select.options).some(o => o.value === previous) ? previous : 'latest';
+
+  updateChdmanControls();
+}
+
+function updateChdmanControls(): void {
+  const select = document.getElementById('chdmanVersion') as HTMLSelectElement | null;
+  const deleteBtn = document.getElementById('btnDeleteChdmanVersion') as HTMLButtonElement | null;
+  if (select && deleteBtn) {
+    deleteBtn.disabled = !chdmanStatus?.versions.some(v => v.id === select.value && v.source === 'downloaded');
+  }
+  // Le chemin n'est utilisé (et affiché) qu'en sélection manuelle, mais reste mémorisé sinon
+  const pathRow = document.getElementById('chdmanPathRow');
+  if (select && pathRow) pathRow.style.display = select.value === 'manual' ? '' : 'none';
+}
+
+function showChdmanProgress(text: string | null): void {
+  const el = document.getElementById('chdmanUpdateProgress') as HTMLElement;
+  el.textContent = text || '';
+  el.style.display = text ? '' : 'none';
+}
+
+async function checkChdmanUpdate(): Promise<void> {
+  const button = document.getElementById('btnCheckChdmanUpdate') as HTMLButtonElement;
+  button.disabled = true;
+  showChdmanProgress(t('settings.tools.chdmanChecking'));
+  try {
+    const check = await window.api.chdman.checkUpdate();
+    if (!check.success || !check.latest) {
+      showChdmanProgress(null);
+      alert(t('settings.tools.chdmanUpdateError', { error: check.error || '' }));
+      return;
+    }
+    const latest = check.latest;
+    const newest = chdmanStatus?.versions[0]?.version ?? null;
+    if (compareMameVersions(latest.version, newest) <= 0) {
+      showChdmanProgress(null);
+      alert(t('settings.tools.chdmanUpToDate', { version: newest || latest.version }));
+      return;
+    }
+    const size = (latest.size / (1024 * 1024)).toFixed(0);
+    if (!confirm(t('settings.tools.chdmanUpdateConfirm', { version: latest.version, size }))) {
+      showChdmanProgress(null);
+      return;
+    }
+
+    window.api.chdman.onUpdateProgress(progress => showChdmanProgress(t(progress.key, progress.params)));
+    const result = await window.api.chdman.update();
+    showChdmanProgress(null);
+    if (!result.success) {
+      alert(t('settings.tools.chdmanUpdateError', { error: result.error || '' }));
+      return;
+    }
+    if (result.status) {
+      chdmanStatus = result.status;
+      renderChdmanStatus();
+    }
+    alert(t('settings.tools.chdmanUpdateDone', { version: result.version || latest.version }));
+  } catch (error) {
+    showChdmanProgress(null);
+    alert(t('settings.tools.chdmanUpdateError', { error: String(error) }));
+  } finally {
+    button.disabled = false;
+  }
+}
+
+async function deleteChdmanVersion(): Promise<void> {
+  const select = document.getElementById('chdmanVersion') as HTMLSelectElement;
+  const entry = chdmanStatus?.versions.find(v => v.id === select.value && v.source === 'downloaded');
+  if (!entry) return;
+  if (!confirm(t('settings.tools.chdmanDeleteConfirm', { version: entry.version || entry.id }))) return;
+
+  const result = await window.api.chdman.deleteVersion(entry.id);
+  if (result.inUse) {
+    alert(t('settings.tools.chdmanDeleteInUse'));
+    return;
+  }
+  if (!result.success) {
+    alert(t('settings.tools.chdmanUpdateError', { error: result.error || '' }));
+    return;
+  }
+  if (result.status) {
+    chdmanStatus = result.status;
+    renderChdmanStatus();
+  }
+}
+
+function setupChdmanVersion(): void {
+  document.getElementById('chdmanVersion')?.addEventListener('change', updateChdmanControls);
+  document.getElementById('btnCheckChdmanUpdate')?.addEventListener('click', checkChdmanUpdate);
+  document.getElementById('btnDeleteChdmanVersion')?.addEventListener('click', deleteChdmanVersion);
+  void loadChdmanStatus();
+}
+
 
 // ============================================
 // LISTES DE PRIORITÉ ORDONNABLES (DRAG & DROP)
 // ============================================
 //
-// Widget générique partagé par toutes les listes ordonnées des paramètres :
-// formats d'archive, outils RAR, et les trois listes de la sélection 1G1R
-// (régions, langues, modes vidéo). Auparavant dupliqué à l'identique par liste.
-//
-// Le drag & drop est doublé de boutons ↑/↓ : le glisser-déposer seul serait
-// inaccessible au clavier.
-
-interface PriorityListSpec {
-  /** id du conteneur DOM qui reçoit les items. */
-  containerId: string;
-  /** Lecture de l'état courant (le tableau est muté puis re-rendu). */
-  getItems: () => string[];
-  /** Libellé affiché pour une valeur. Par défaut, la valeur brute. */
-  displayName?: (value: string) => string;
-  /** Suffixe de classe CSS pour la pastille colorée (`format-<suffixe>`). */
-  cssSuffix?: (value: string) => string;
-  /** Si true, chaque item porte un bouton de retrait. */
-  removable?: boolean;
-  /**
-   * Valeurs proposables à l'ajout. Celles déjà présentes sont filtrées.
-   * Fournir cette fonction fait apparaître le sélecteur d'ajout sous la liste.
-   */
-  addableValues?: () => Array<{ value: string; label: string }>;
-  /** id du `<select>` d'ajout et du bouton associé (requis si addableValues). */
-  addSelectId?: string;
-  addButtonId?: string;
-}
-
-const priorityLists = new Map<string, PriorityListSpec>();
-
-/** Enregistre une liste et effectue son premier rendu. */
-function registerPriorityList(spec: PriorityListSpec): void {
-  priorityLists.set(spec.containerId, spec);
-  renderPriorityList(spec.containerId);
-}
-
-function renderPriorityList(containerId: string): void {
-  const spec = priorityLists.get(containerId);
-  const container = document.getElementById(containerId);
-  if (!spec || !container) return;
-
-  const items = spec.getItems();
-  container.innerHTML = '';
-  const elements = items.map((value, index) =>
-    container.appendChild(createPriorityItem(spec, value, index, items.length)));
-
-  makeReorderable({
-    items: elements,
-    onReorder: (from, to) => movePriorityItem(containerId, from, to)
-  });
-
-  renderPriorityAddControl(spec, items);
-}
-
-function createPriorityItem(
-  spec: PriorityListSpec, value: string, index: number, total: number
-): HTMLElement {
-  // `draggable` et l'identification de la liste sont posés par makeReorderable() :
-  // l'index vit dans la fermeture du helper, plus besoin de le refléter en dataset.
-  const item = document.createElement('div');
-  item.className = 'format-priority-item';
-
-  const order = document.createElement('span');
-  order.className = 'format-order';
-  order.textContent = `${index + 1}.`;
-
-  const name = document.createElement('span');
-  name.className = `format-name format-${spec.cssSuffix ? spec.cssSuffix(value) : value}`;
-  name.textContent = spec.displayName ? spec.displayName(value) : value;
-
-  const actions = document.createElement('div');
-  actions.className = 'format-actions';
-
-  if (index > 0) {
-    const upBtn = document.createElement('button');
-    upBtn.className = 'btn-icon';
-    upBtn.textContent = '↑';
-    upBtn.onclick = () => movePriorityItem(spec.containerId, index, index - 1);
-    actions.appendChild(upBtn);
-  }
-  if (index < total - 1) {
-    const downBtn = document.createElement('button');
-    downBtn.className = 'btn-icon';
-    downBtn.textContent = '↓';
-    downBtn.onclick = () => movePriorityItem(spec.containerId, index, index + 1);
-    actions.appendChild(downBtn);
-  }
-  if (spec.removable) {
-    const delBtn = document.createElement('button');
-    delBtn.className = 'btn-icon';
-    delBtn.textContent = '✕';
-    delBtn.title = t('settings.oneGameOneRom.removeEntry');
-    delBtn.onclick = () => {
-      spec.getItems().splice(index, 1);
-      renderPriorityList(spec.containerId);
-    };
-    actions.appendChild(delBtn);
-  }
-
-  item.appendChild(order);
-  item.appendChild(name);
-  item.appendChild(actions);
-
-  // Le glisser-déposer est câblé par makeReorderable() dans renderPriorityList(),
-  // une fois tous les éléments créés.
-  return item;
-}
-
-/** Repeuple le `<select>` d'ajout avec les valeurs non encore présentes. */
-function renderPriorityAddControl(spec: PriorityListSpec, items: string[]): void {
-  if (!spec.addableValues || !spec.addSelectId) return;
-  const select = document.getElementById(spec.addSelectId) as HTMLSelectElement | null;
-  if (!select) return;
-
-  const remaining = spec.addableValues().filter(v => !items.includes(v.value));
-  select.innerHTML = '';
-  for (const { value, label } of remaining) {
-    const opt = document.createElement('option');
-    opt.value = value;
-    opt.textContent = label;
-    select.appendChild(opt);
-  }
-  select.disabled = remaining.length === 0;
-
-  const button = spec.addButtonId
-    ? document.getElementById(spec.addButtonId) as HTMLButtonElement | null
-    : null;
-  if (button) button.disabled = remaining.length === 0;
-}
-
-function movePriorityItem(containerId: string, fromIndex: number, toIndex: number): void {
-  const spec = priorityLists.get(containerId);
-  if (!spec) return;
-  const items = spec.getItems();
-  const [moved] = items.splice(fromIndex, 1);
-  items.splice(toIndex, 0, moved);
-  renderPriorityList(containerId);
-}
+// Le widget lui-même vit dans ./priorityList.ts : il est partagé avec la fenêtre
+// principale, où la modale de sélection automatique porte les priorités 1G1R.
+// Ici, on ne fait que déclarer les listes propres aux paramètres.
 
 function getFormatDisplayName(format: ArchiveFormat): string {
   const names: Record<ArchiveFormat, string> = {
@@ -660,7 +975,11 @@ function renderOneGameOneRom(): void {
     getItems: () => ogorLanguagePriority,
     cssSuffix: () => 'language',
     removable: true,
-    addableValues: () => CANONICAL_LANGUAGES.map(l => ({ value: l, label: l })),
+    displayName: code => languageDisplayName(code, getLanguage()),
+    // Trié par nom affiché : on cherche « Allemand », pas « De ».
+    addableValues: () => CANONICAL_LANGUAGES
+      .map(l => ({ value: l, label: languageDisplayName(l, getLanguage()) }))
+      .sort((a, b) => a.label.localeCompare(b.label)),
     addSelectId: 'ogorLanguageAdd',
     addButtonId: 'ogorLanguageAddBtn'
   });
@@ -675,34 +994,21 @@ function renderOneGameOneRom(): void {
   });
 }
 
-/** Câble les boutons d'ajout et l'interrupteur maître. Appelé une fois au démarrage. */
-function setupOneGameOneRom(): void {
-  const wire = (buttonId: string, selectId: string, list: string[], containerId: string) => {
-    document.getElementById(buttonId)?.addEventListener('click', () => {
-      const select = document.getElementById(selectId) as HTMLSelectElement | null;
-      if (!select?.value) return;
-      if (!list.includes(select.value)) list.push(select.value);
-      renderPriorityList(containerId);
-    });
-  };
-  wire('ogorRegionAddBtn', 'ogorRegionAdd', ogorRegionPriority, 'ogorRegionList');
-  wire('ogorLanguageAddBtn', 'ogorLanguageAdd', ogorLanguagePriority, 'ogorLanguageList');
-  wire('ogorVideoAddBtn', 'ogorVideoAdd', ogorVideoPriority, 'ogorVideoList');
-}
-
 /**
- * Renseigne le dossier effectif des clone lists en indication de saisie.
- * Le champ vide signifie « dossier applicatif », mais sans afficher lequel
- * l'utilisateur ne peut pas savoir où ses fichiers atterrissent.
+ * Affiche le dossier effectif des clone lists sous le champ.
+ *
+ * Volontairement PAS en indication de saisie : un placeholder s'affiche en gris
+ * clair et fait passer un champ éditable pour un champ verrouillé.
  */
 async function showEffectiveCloneListFolder(): Promise<void> {
-  const input = document.getElementById('cloneListFolder') as HTMLInputElement | null;
-  if (!input) return;
+  const hint = document.getElementById('cloneListFolderEffective');
+  if (!hint) return;
   try {
     const { folder } = await window.api.cloneList.listLocal();
-    if (folder) input.placeholder = folder;
+    hint.textContent = folder ? t('settings.oneGameOneRom.cloneListFolderEffective', { folder }) : '';
   } catch {
-    // Handler indisponible : on laisse le champ sans indication plutôt qu'un texte faux.
+    // Handler indisponible : pas d'indication plutôt qu'une indication fausse.
+    hint.textContent = '';
   }
 }
 
@@ -714,9 +1020,9 @@ function renderSystemCompatibility(): void {
   const container = document.getElementById('systemCompatibilityList');
   if (!container) return;
 
-  // Map des overrides utilisateur par systemId
+  // Formats cochés du profil édité, par systemId
   const userOverrides = new Map<string, SystemCompatibility>();
-  for (const ov of currentSettings.systemCompatibility ?? []) {
+  for (const ov of getEditedProfile()?.settings.systemCompatibility ?? []) {
     userOverrides.set(ov.systemId.toLowerCase(), ov);
   }
 
@@ -766,6 +1072,7 @@ function renderSystemCompatibility(): void {
         checkbox.dataset.system = sys.systemId;
         checkbox.dataset.format = format;
         checkbox.checked = supported.includes(format);
+        checkbox.addEventListener('change', () => setProfileFormat(sys, format, checkbox.checked));
 
         const formatText = document.createElement('span');
         formatText.textContent = format.toUpperCase();
@@ -838,11 +1145,37 @@ function renderSystemCompatibility(): void {
 }
 
 /**
- * Réinitialise un seul système aux valeurs par défaut
+ * Coche ou décoche un format pour un système dans le profil édité. La copie de
+ * travail est tenue à jour en direct : la liste affichée peut être filtrée par
+ * la recherche, on ne relit donc jamais le DOM pour enregistrer.
+ */
+function setProfileFormat(sys: SystemDefinition, format: ArchiveFormat, checked: boolean): void {
+  const profile = getEditedProfile();
+  const compat = profile.settings.systemCompatibility ?? (profile.settings.systemCompatibility = []);
+  let entry = compat.find(c => c.systemId.toLowerCase() === sys.systemId.toLowerCase());
+  if (!entry) {
+    entry = compatEntryForRule(sys, profile.compatRule ?? 'universal');
+    compat.push(entry);
+  }
+  const formats = new Set(entry.supportedFormats.filter(f => f !== format));
+  if (checked) formats.add(format);
+  // Ordre stable, indépendant de l'ordre des clics
+  entry.supportedFormats = (['7z', 'zip', 'chd'] as ArchiveFormat[]).filter(f => formats.has(f));
+}
+
+/**
+ * Réinitialise un seul système selon la dernière règle appliquée au profil
+ * (Compatibilité 100 % à défaut).
  */
 function resetSystemCompatibility(systemId: string): void {
-  const defaultConfig = defaultSystemCompatibility.find(s => s.systemId === systemId);
-  if (!defaultConfig) return;
+  const sys = getSystemById(systemId);
+  if (!sys) return;
+  const profile = getEditedProfile();
+  const entry = compatEntryForRule(sys, profile.compatRule ?? 'universal');
+  const compat = profile.settings.systemCompatibility ?? (profile.settings.systemCompatibility = []);
+  const index = compat.findIndex(c => c.systemId.toLowerCase() === systemId.toLowerCase());
+  if (index >= 0) compat[index] = entry;
+  else compat.push(entry);
 
   // Scopé à #systemCompatibilityList : l'onglet Téléchargement (Extensions par
   // système) réutilise la même classe .system-compatibility-item pour un widget
@@ -854,22 +1187,132 @@ function resetSystemCompatibility(systemId: string): void {
   const checkboxes = systemDiv.querySelectorAll<HTMLInputElement>('input[type="checkbox"]');
   checkboxes.forEach(checkbox => {
     const format = checkbox.dataset.format as ArchiveFormat;
-    checkbox.checked = defaultConfig.supportedFormats.includes(format);
+    checkbox.checked = entry.supportedFormats.includes(format);
   });
 }
 
-/**
- * Réinitialise tous les systèmes aux valeurs par défaut
- */
-function resetAllSystemCompatibility(): void {
-  // Mettre à jour les settings en mémoire
-  currentSettings.systemCompatibility = JSON.parse(JSON.stringify(defaultSystemCompatibility));
-  // Re-rendre
-  renderSystemCompatibility();
+// ============================================
+// MISE À JOUR DES SYSTÈMES (RECALBOX)
+// ============================================
+
+/** Nombre de tags proposés par canal (les plus récents). */
+const RECALBOX_TAGS_PER_CHANNEL = 15;
+let recalboxTagsLoaded = false;
+
+function setupSystemsUpdate(): void {
+  renderSystemsDataStatus();
+  // Liste des versions chargée à la première ouverture de l'onglet (requête GitLab)
+  document.querySelector('.tab-button[data-tab="compatibility"]')?.addEventListener('click', () => { void loadRecalboxTags(); });
+  document.getElementById('btnCheckSystemsUpdate')?.addEventListener('click', () => { void checkSystemsUpdate(); });
+  document.getElementById('btnResetSystemsData')?.addEventListener('click', () => { void resetSystemsData(); });
 }
 
-// Exposer pour l'appel inline dans le HTML
-(window as any).resetAllSystemCompatibility = resetAllSystemCompatibility;
+function renderSystemsDataStatus(): void {
+  const status = document.getElementById('systemsDataStatus');
+  const resetBtn = document.getElementById('btnResetSystemsData') as HTMLButtonElement | null;
+  if (!status) return;
+  const overlay = getSystemsOverlay();
+  const fromRecalbox = !!overlay?.recalboxRef && overlay.systems.length > 0;
+  status.textContent = fromRecalbox
+    ? t('settings.systemsUpdate.statusRecalbox', {
+        ref: overlay!.recalboxRef!,
+        date: overlay!.fetchedAt ? new Date(overlay!.fetchedAt).toLocaleDateString(getLanguage()) : '',
+        count: overlay!.systems.length
+      })
+    : t('settings.systemsUpdate.statusBundled');
+  if (resetBtn) resetBtn.disabled = !fromRecalbox;
+}
+
+async function loadRecalboxTags(): Promise<void> {
+  if (recalboxTagsLoaded) return;
+  recalboxTagsLoaded = true;
+  const select = document.getElementById('recalboxRefSelect') as HTMLSelectElement | null;
+  const checkBtn = document.getElementById('btnCheckSystemsUpdate') as HTMLButtonElement | null;
+  if (!select || !checkBtn) return;
+
+  select.innerHTML = `<option value="">${escapeHtml(t('settings.systemsUpdate.loadingVersions'))}</option>`;
+  select.disabled = true;
+  checkBtn.disabled = true;
+
+  const result = await window.api.systems.listRecalboxTags();
+  if (!result.success || !result.tags) {
+    select.innerHTML = `<option value="">${escapeHtml(t('settings.systemsUpdate.versionsError'))}</option>`;
+    // Nouvelle tentative au prochain clic sur l'onglet
+    recalboxTagsLoaded = false;
+    return;
+  }
+
+  select.innerHTML = '';
+  const channels: Array<'stable' | 'patron' | 'patronAlpha' | 'alpha'> = ['stable', 'patron', 'patronAlpha', 'alpha'];
+  for (const channel of channels) {
+    const tags = result.tags.filter(tag => tag.channel === channel).slice(0, RECALBOX_TAGS_PER_CHANNEL);
+    if (tags.length === 0) continue;
+    const group = document.createElement('optgroup');
+    group.label = t(`settings.systemsUpdate.channel.${channel}`);
+    for (const tag of tags) {
+      const opt = document.createElement('option');
+      opt.value = tag.name;
+      opt.textContent = tag.date
+        ? `${tag.name} (${new Date(tag.date).toLocaleDateString(getLanguage())})`
+        : tag.name;
+      group.appendChild(opt);
+    }
+    select.appendChild(group);
+  }
+  const devGroup = document.createElement('optgroup');
+  devGroup.label = t('settings.systemsUpdate.channel.development');
+  const master = document.createElement('option');
+  master.value = 'master';
+  master.textContent = 'master';
+  devGroup.appendChild(master);
+  select.appendChild(devGroup);
+
+  // Par défaut : la version déjà appliquée si elle est listée, sinon la dernière stable
+  const current = getSystemsOverlay()?.recalboxRef;
+  const firstStable = result.tags.find(tag => tag.channel === 'stable')?.name;
+  const options = Array.from(select.options).map(o => o.value);
+  select.value = current && options.includes(current) ? current : (firstStable ?? 'master');
+  select.disabled = false;
+  checkBtn.disabled = false;
+}
+
+async function checkSystemsUpdate(): Promise<void> {
+  const select = document.getElementById('recalboxRefSelect') as HTMLSelectElement | null;
+  const ref = select?.value;
+  if (!ref) {
+    await loadRecalboxTags();
+    return;
+  }
+  const result = await openSystemsUpdateModal(ref);
+  if (result?.systemIds?.length) {
+    // Le main a recalculé ces systèmes dans chaque profil (selon sa règle) : on
+    // reporte ces seules entrées dans les copies de travail, sans perdre le reste.
+    const updated = new Set(result.systemIds.map(id => id.toLowerCase()));
+    const { profiles } = await window.api.profiles.list();
+    for (const draft of profileDrafts) {
+      const saved = profiles.find(p => p.id === draft.id);
+      if (!saved) continue;
+      const kept = (draft.settings.systemCompatibility ?? []).filter(c => !updated.has(c.systemId.toLowerCase()));
+      const fresh = (saved.settings.systemCompatibility ?? []).filter(c => updated.has(c.systemId.toLowerCase()));
+      draft.settings.systemCompatibility = [...kept, ...fresh];
+    }
+    refreshSystemsViews();
+  }
+}
+
+async function resetSystemsData(): Promise<void> {
+  if (!confirm(t('settings.systemsUpdate.resetConfirm'))) return;
+  const result = await window.api.systems.resetToBundled();
+  if (!result.success) alert(t('settings.systemsUpdate.applyError', { error: result.error ?? '' }));
+}
+
+/** Le registre des systèmes a changé (mise à jour, retour aux données intégrées). */
+function refreshSystemsViews(): void {
+  renderSystemsDataStatus();
+  if (!currentSettings) return;
+  renderSystemCompatibility();
+  renderDownloadSystemExtensions();
+}
 
 // ============================================
 // TOGGLE OPTIONS DE NETTOYAGE
@@ -886,28 +1329,56 @@ function toggleCleanupOptions(): void {
 }
 
 /**
- * Active ou désactive (grise) les champs "ROMs non référencées" selon l'état des deux
- * checkboxes du nettoyage. Les deux champs (onglet Dossiers + onglet Nettoyage) sont synchronisés.
+ * Affiche l'avertissement sous le champ « ROMs non référencées » (onglet Dossiers)
+ * quand le profil affiché ne l'utilise pas (nettoyage ou déplacement désactivé).
+ * Le champ reste modifiable : c'est un paramètre global, commun à tous les profils.
  */
 function updateUnmatchedFolderEnabled(): void {
   const cleanCb = document.getElementById('cleanSourceAfterConsolidation') as HTMLInputElement | null;
   const moveCb = document.getElementById('moveUnmatchedFiles') as HTMLInputElement | null;
   const enabled = !!cleanCb?.checked && !!moveCb?.checked;
 
-  for (const id of ['unmatchedRomsFolder', 'unmatchedRomsFolderCleanup']) {
-    const input = document.getElementById(id) as HTMLInputElement | null;
-    if (input) {
-      input.disabled = !enabled;
-      input.style.opacity = enabled ? '' : '0.55';
-    }
-  }
-  for (const id of ['unmatchedRomsFolderBrowse']) {
-    const btn = document.getElementById(id) as HTMLButtonElement | null;
-    if (btn) btn.disabled = !enabled;
-  }
-
   const msg = document.getElementById('unmatchedRomsFolderDisabledMsg');
   if (msg) msg.style.display = enabled ? 'none' : 'block';
+}
+
+/**
+ * Rappelle, sous « Déplacer les fichiers non matchés » (onglet Nettoyage), le dossier
+ * global « ROMs non référencées » et l'état de l'option « Dossiers cibles multi-systèmes ».
+ * Lit les champs de l'onglet Dossiers pour refléter les modifications non encore enregistrées.
+ */
+function updateUnmatchedFolderReminder(): void {
+  const container = document.getElementById('moveUnmatchedFolderReminder');
+  if (!container) return;
+
+  const folder = (document.getElementById('unmatchedRomsFolder') as HTMLInputElement | null)?.value.trim() || '';
+  const multiSystem = !!(document.getElementById('validatedRomsMultiSystem') as HTMLInputElement | null)?.checked;
+
+  const folderLine = document.createElement('div');
+  folderLine.append(`📁 ${t('settings.cleanup.unmatchedFolderCurrent')} `);
+  if (folder) {
+    const code = document.createElement('code');
+    code.textContent = folder;
+    folderLine.append(code);
+  } else {
+    folderLine.append(t('settings.cleanup.unmatchedFolderNotSet'));
+  }
+
+  // Rien à signaler si l'option est désactivée : le dossier affiché est la cible réelle
+  if (!multiSystem) {
+    container.replaceChildren(folderLine);
+    return;
+  }
+
+  const multiLine = document.createElement('div');
+  const sep = folder.includes('\\') ? '\\' : '/';
+  const example = folder ? `${folder.replace(/[\\/]+$/, '')}${sep}psx` : 'psx';
+  const [before, after = ''] = t('settings.cleanup.unmatchedMultiSystemOn').split('{example}');
+  const code = document.createElement('code');
+  code.textContent = example;
+  multiLine.append(`🗂️ ${before}`, code, after);
+
+  container.replaceChildren(folderLine, multiLine);
 }
 
 // ============================================
@@ -918,6 +1389,18 @@ function toggleBestCompressionWarning(show: boolean): void {
   const warning = document.getElementById('bestCompressionWarning');
   if (warning) {
     warning.style.display = show ? 'block' : 'none';
+  }
+}
+
+/**
+ * Option .m3u : les jeux multi-disques ne sont jamais archivés en 7z/zip. Signalé
+ * dans l'onglet Multi-disques et sous l'ordre de priorité des formats (Compression).
+ */
+function updateM3uNotices(): void {
+  const enabled = (document.getElementById('generateM3u') as HTMLInputElement | null)?.checked ?? false;
+  for (const id of ['m3uWarning', 'm3uPriorityNotice']) {
+    const box = document.getElementById(id);
+    if (box) box.style.display = enabled ? 'block' : 'none';
   }
 }
 
@@ -1115,10 +1598,6 @@ function removeSystemFromSource(sourceIndex: number, systemId: string): void {
   if (!source?.systems) return;
   source.systems = source.systems.filter(s => s.systemId !== systemId);
   renderDownloadSources();
-}
-
-function escapeHtml(str: string): string {
-  return str.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
 }
 
 function addDownloadSource(): void {
@@ -1365,43 +1844,14 @@ function collectDownloadSystemExtensions(): AppSettings['downloadSystemExtension
 async function saveSettings(): Promise<void> {
   try {
     console.log('Saving settings...');
-    
-    // Collecter la compatibilité système.
-    // Scopé à #systemCompatibilityList : sans ce scope, cette requête récupérait
-    // AUSSI les cartes de l'onglet Téléchargement (Extensions par système), qui
-    // réutilisent la même classe .system-compatibility-item pour un widget différent
-    // (tags d'extensions, sans cases 7z/zip/chd). Résultat : un doublon par système
-    // était poussé dans systemCompatibility à chaque sauvegarde, avec des formats
-    // vides pour la copie fantôme — corrompant systemCompatibility en mémoire jusqu'au
-    // prochain redémarrage (où le dédoublonnage au chargement rattrapait le coup).
-    const systemCompatibility: SystemCompatibility[] = [];
-    const systemItems = document.querySelectorAll('#systemCompatibilityList .system-compatibility-item');
 
-    systemItems.forEach(item => {
-      const systemId = (item as HTMLElement).dataset.systemId!;
-      const defaultEntry = defaultSystemCompatibility.find(s => s.systemId === systemId);
-      const systemName = defaultEntry?.systemName || systemId;
-      const supportedFormats: ArchiveFormat[] = [];
+    // Profils : la copie de travail du profil affiché est relue, puis tous les
+    // profils (créés, renommés, supprimés, modifiés) sont enregistrés ensemble.
+    readProfileIntoDraft();
+    await window.api.profiles.saveAll(profileDrafts);
 
-      const checkboxes = item.querySelectorAll('input[type="checkbox"]');
-      checkboxes.forEach(checkbox => {
-        if ((checkbox as HTMLInputElement).checked) {
-          supportedFormats.push((checkbox as HTMLInputElement).dataset.format as ArchiveFormat);
-        }
-      });
-
-      systemCompatibility.push({
-        systemId,
-        systemName,
-        category: defaultEntry?.category || 'Autres',
-        subcategory: defaultEntry?.subcategory,
-        supportedFormats,
-        warningFormats: defaultEntry?.warningFormats,
-        unsupportedFormats: defaultEntry?.unsupportedFormats
-      });
-    });
-    
-    const newSettings: AppSettings = {
+    // Paramètres globaux uniquement : les clés de profil passent par saveAll
+    const newSettings: Partial<AppSettings> = {
       // Général
       theme: (document.getElementById('theme') as HTMLSelectElement).value as 'light' | 'dark',
       language: (document.getElementById('language') as HTMLSelectElement).value as 'fr' | 'en',
@@ -1416,53 +1866,25 @@ async function saveSettings(): Promise<void> {
       validatedRomsFolder: (document.getElementById('validatedRomsFolder') as HTMLInputElement).value,
       validatedRomsMultiSystem: (document.getElementById('validatedRomsMultiSystem') as HTMLInputElement).checked,
       tempExtractionFolder: (document.getElementById('tempExtractionFolder') as HTMLInputElement).value,
-      cleanSourceAfterConsolidation: (document.getElementById('cleanSourceAfterConsolidation') as HTMLInputElement).checked,
-      cleanupScope: (document.getElementById('cleanupScope') as HTMLSelectElement).value as CleanupScope,
-      protectFilesForUnselectedGames: (document.getElementById('protectFilesForUnselectedGames') as HTMLInputElement).checked,
 
-      // Arcade — mode du set cible (MAME uniquement, ignoré pour les autres systèmes)
-      arcadeTargetSetMode: ((document.querySelector('input[name="arcadeTargetSetMode"]:checked') as HTMLInputElement | null)?.value as ArcadeTargetSetMode) || 'split',
-      arcadeSeparateBios: (document.getElementById('arcadeSeparateBios') as HTMLInputElement).checked,
-      arcadeChdEmptyZip: (document.getElementById('arcadeChdEmptyZip') as HTMLInputElement).checked,
-
-      // Compression
-      compressionLevel: (document.getElementById('compressionLevel') as HTMLSelectElement).value as any,
-      recreateArchivesIfNeeded: (document.getElementById('recreateArchivesIfNeeded') as HTMLInputElement).checked,
-      archiveFormatPriority: currentFormatPriority,
-      useBestCompression: (document.getElementById('useBestCompression') as HTMLInputElement).checked,
-      solidArchive: (document.getElementById('solidArchive') as HTMLInputElement).checked,
-      multithreading: (document.getElementById('multithreading') as HTMLInputElement).checked,
-      
       // Outils externes
       sevenZipPath: (document.getElementById('sevenZipPath') as HTMLInputElement).value,
       winrarPath: (document.getElementById('winrarPath') as HTMLInputElement).value,
       unrarPath: (document.getElementById('unrarPath') as HTMLInputElement).value,
       chdmanPath: (document.getElementById('chdmanPath') as HTMLInputElement).value,
-      useEmbeddedChdman: (document.getElementById('useEmbeddedChdman') as HTMLInputElement).checked,
+      chdmanVersion: (document.getElementById('chdmanVersion') as HTMLSelectElement).value || currentSettings.chdmanVersion,
       rarToolPriority: currentRarToolPriority,
-
-      // Sélection 1G1R
-      oneGameOneRom: {
-        enabled: (document.getElementById('ogorEnabled') as HTMLInputElement).checked,
-        regionPriority: [...ogorRegionPriority],
-        languagePriority: [...ogorLanguagePriority],
-        languageOverRegion: (document.getElementById('ogorLanguageOverRegion') as HTMLInputElement).checked,
-        videoPriority: [...ogorVideoPriority],
-        preferLatestRevision: (document.getElementById('ogorPreferLatestRevision') as HTMLInputElement).checked,
-        fallbackToOwned: (document.getElementById('ogorFallbackToOwned') as HTMLInputElement).checked
-      },
 
       // Clone lists — lastDownload est piloté par le main process, pas par cet écran
       cloneLists: {
         sourceUrl: (document.getElementById('cloneListSourceUrl') as HTMLInputElement).value.trim(),
         folder: (document.getElementById('cloneListFolder') as HTMLInputElement).value.trim(),
         lastDownload: currentSettings.cloneLists?.lastDownload,
-        autoApply: (document.getElementById('cloneListAutoApply') as HTMLInputElement).checked,
-        autoDownload: (document.getElementById('cloneListAutoDownload') as HTMLInputElement).checked
+        // Le cache d'ETag est piloté par le main process : le réécrire depuis cet
+        // écran perdrait les entrées posées depuis l'ouverture de la fenêtre.
+        etags: currentSettings.cloneLists?.etags,
+        autoUpdate: (document.getElementById('cloneListAutoUpdate') as HTMLInputElement).checked
       },
-
-      // Compatibilité système
-      systemCompatibility,
 
       // Paramètres No-Intro par défaut
       noIntroDefaults: {
@@ -1485,7 +1907,7 @@ async function saveSettings(): Promise<void> {
 
     await window.api.updateSettings(newSettings);
     console.log('Settings saved successfully');
-    
+
     const status = document.getElementById('save-status');
     if (status) {
       status.textContent = t('settings.savedStatus');

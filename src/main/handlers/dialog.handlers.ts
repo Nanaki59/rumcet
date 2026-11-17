@@ -29,12 +29,15 @@ export function registerDialogHandlers(ipcMain: IpcMain, mainWindow: BrowserWind
   });
 
   // Handler pour sélectionner un dossier
-  ipcMain.handle('dialog:select-folder', async (_event, options?: {
+  ipcMain.handle('dialog:select-folder', async (event, options?: {
     title?: string;
     defaultPath?: string;
     multiSelections?: boolean;
   }) => {
-    const result = await dialog.showOpenDialog(mainWindow, {
+    // Rattacher le dialogue à la fenêtre appelante (ex. écran de chargement DAT),
+    // sinon il s'ouvre derrière elle, attaché à la fenêtre principale
+    const parent = BrowserWindow.fromWebContents(event.sender) || mainWindow;
+    const result = await dialog.showOpenDialog(parent, {
       title: options?.title || 'Sélectionner un dossier',
       defaultPath: options?.defaultPath,
       properties: options?.multiSelections 

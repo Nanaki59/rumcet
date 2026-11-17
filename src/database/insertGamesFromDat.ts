@@ -286,8 +286,10 @@ export async function insertGamesFromDat(
       `parent_name_ref, cloneof_ref, romof_ref, driver_status, source_id, ` +
       // v2.1 — métadonnées extraites du nom (voir src/shared/romNaming/)
       `base_title, regions, languages, video_mode, revision, revision_rank, ` +
-      `dev_status, release_flags, disc_number, release_date)`;
-    const gamePlaceholders = `VALUES (${new Array(22).fill('?').join(', ')})`;
+      // dat_category : copie intacte de la catégorie du DAT, pour que la surcharge
+      // éventuelle d'une clone list reste réversible.
+      `dev_status, release_flags, disc_number, release_date, dat_category)`;
+    const gamePlaceholders = `VALUES (${new Array(23).fill('?').join(', ')})`;
     const insertGame = db.prepare(
       isComplementary
         ? `INSERT OR IGNORE INTO games ${gameColumns} ${gamePlaceholders}`
@@ -354,7 +356,7 @@ export async function insertGamesFromDat(
           gameName, description, category, isSelected, isBios, isDevice, isMechanical, parentNameRef, cloneof, romof, driverStatus, sourceId,
           naming.base_title, naming.regions, naming.languages, naming.video_mode,
           naming.revision, naming.revision_rank, naming.dev_status, naming.release_flags,
-          naming.disc_number, naming.release_date,
+          naming.disc_number, naming.release_date, category,
           function (this: import('sqlite3').RunResult, err: Error | null) {
             if (err) return reject(err);
             resolve((this.changes ?? 0) > 0);
@@ -514,7 +516,11 @@ export async function insertGamesFromDat(
     return { gamesCount, romsCount, relationshipsCount, disksCount, datSetMode, sourceId };
 
   } catch (error) {
-    await db.run('ROLLBACK');
+    // Le ROLLBACK ne doit jamais remplacer l'erreur d'origine. Quand l'échec vient
+    // du disque plein, le BEGIN lui-même a pu échouer : le ROLLBACK lève alors
+    // « cannot rollback - no transaction is active », et c'est cette erreur-là,
+    // incompréhensible, qui remontait à l'utilisateur à la place de la vraie cause.
+    try { await db.run('ROLLBACK'); } catch { /* pas de transaction active */ }
     throw error;
   }
 }

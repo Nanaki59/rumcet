@@ -6,8 +6,9 @@ import { IpcMain, BrowserWindow, dialog } from 'electron';
 import { archiveManager } from '../../helpers/archives/ArchiveManager.js';
 import { settingsManager } from '../../helpers/settingsManager.js';
 import { sendLogToRenderer } from '../utils/logger.js';
+import { t } from '../i18n.js';
+import { detectSevenZip, detectRar, detectUnrar } from '../../helpers/toolPaths.js';
 import path from 'path';
-import fs from 'fs/promises';
 
 /**
  * Gestionnaire IPC pour toutes les opérations d'archives
@@ -42,7 +43,11 @@ export function registerArchiveHandlers(ipcMain: IpcMain, mainWindow: BrowserWin
       archiveManager.setRarToolPriority(settings.rarToolPriority);
       console.log('🔧 RAR priority initialized:', settings.rarToolPriority);
     }
-    
+
+    // 3. Archives 7z : 7-Zip configuré par l'utilisateur, sinon 7za embarqué
+    archiveManager.setSevenZipPath(settings.sevenZipPath || '');
+    console.log('🔧 7z archives tool:', settings.sevenZipPath || 'bundled 7za');
+
     sendLogToRenderer(mainWindow, 'info', 'archive', 'logs.archive.rarConfigured');
   }
   
@@ -54,75 +59,20 @@ export function registerArchiveHandlers(ipcMain: IpcMain, mainWindow: BrowserWin
 
   
   // ============================================
-  // DÉTECTION AUTOMATIQUE DES OUTILS
+  // SÉLECTION DES OUTILS
   // ============================================
   
   /**
-   * Détecte automatiquement l'emplacement de 7-Zip
+   * Filtres du dialogue de sélection d'un exécutable : sous Linux/macOS les
+   * exécutables n'ont pas d'extension, donc aucun filtre .exe.
    */
-  async function detect7ZipPath(): Promise<string | null> {
-    const possiblePaths = [
-      'C:\\Program Files\\7-Zip\\7z.exe',
-      'C:\\Program Files (x86)\\7-Zip\\7z.exe',
-      '/usr/bin/7z',
-      '/usr/local/bin/7z'
-    ];
-    
-    for (const path of possiblePaths) {
-      try {
-        await fs.access(path);
-        return path;
-      } catch {
-        continue;
-      }
-    }
-    
-    return null;
-  }
-  
-  /**
-   * Détecte automatiquement l'emplacement de WinRAR
-   */
-  async function detectWinRarPath(): Promise<string | null> {
-    if (process.platform !== 'win32') return null;
-    
-    const possiblePaths = [
-      'C:\\Program Files\\WinRAR\\WinRAR.exe',
-      'C:\\Program Files (x86)\\WinRAR\\WinRAR.exe'
-    ];
-    
-    for (const path of possiblePaths) {
-      try {
-        await fs.access(path);
-        return path;
-      } catch {
-        continue;
-      }
-    }
-    
-    return null;
-  }
-  
-  /**
-   * Détecte automatiquement l'emplacement de unrar
-   */
-  async function detectUnrarPath(): Promise<string | null> {
-    const possiblePaths = [
-      '/usr/bin/unrar',
-      '/usr/local/bin/unrar',
-      'C:\\Program Files\\UnRAR\\unrar.exe'
-    ];
-    
-    for (const path of possiblePaths) {
-      try {
-        await fs.access(path);
-        return path;
-      } catch {
-        continue;
-      }
-    }
-    
-    return null;
+  function executableFilters(): Electron.FileFilter[] {
+    return process.platform === 'win32'
+      ? [
+          { name: t('common.filterExecutables'), extensions: ['exe'] },
+          { name: t('common.filterAllFiles'), extensions: ['*'] }
+        ]
+      : [];
   }
   
   // ============================================
@@ -145,9 +95,9 @@ export function registerArchiveHandlers(ipcMain: IpcMain, mainWindow: BrowserWin
    */
   ipcMain.handle('archive:detect-tools', async () => {
     const tools = {
-      sevenZip: await detect7ZipPath(),
-      winrar: await detectWinRarPath(),
-      unrar: await detectUnrarPath()
+      sevenZip: await detectSevenZip(),
+      winrar: await detectRar(),
+      unrar: await detectUnrar()
     };
     
     // Appliquer automatiquement les outils détectés
@@ -163,11 +113,8 @@ export function registerArchiveHandlers(ipcMain: IpcMain, mainWindow: BrowserWin
    */
   ipcMain.handle('archive:set-chdman-path', async () => {
     const result = await dialog.showOpenDialog(mainWindow, {
-      title: 'Sélectionner chdman.exe',
-      filters: [
-        { name: 'Exécutable', extensions: ['exe'] },
-        { name: 'Tous les fichiers', extensions: ['*'] }
-      ],
+      title: t('dialogs.selectChdman'),
+      filters: executableFilters(),
       properties: ['openFile']
     });
     
@@ -185,11 +132,8 @@ export function registerArchiveHandlers(ipcMain: IpcMain, mainWindow: BrowserWin
    */
   ipcMain.handle('archive:set-7zip-path', async () => {
     const result = await dialog.showOpenDialog(mainWindow, {
-      title: 'Sélectionner 7z.exe',
-      filters: [
-        { name: 'Exécutable', extensions: ['exe'] },
-        { name: 'Tous les fichiers', extensions: ['*'] }
-      ],
+      title: t('dialogs.select7zip'),
+      filters: executableFilters(),
       properties: ['openFile']
     });
     
@@ -207,17 +151,14 @@ export function registerArchiveHandlers(ipcMain: IpcMain, mainWindow: BrowserWin
    */
   ipcMain.handle('archive:set-rar-tool-path', async (_event, toolType: 'unrar' | 'sevenZip' | 'winrar') => {
     const titles = {
-      unrar: 'Sélectionner unrar',
-      sevenZip: 'Sélectionner 7z.exe',
-      winrar: 'Sélectionner WinRAR.exe'
+      unrar: t('dialogs.selectUnrar'),
+      sevenZip: t('dialogs.select7zip'),
+      winrar: t('dialogs.selectRar')
     };
     
     const result = await dialog.showOpenDialog(mainWindow, {
       title: titles[toolType],
-      filters: [
-        { name: 'Exécutable', extensions: ['exe'] },
-        { name: 'Tous les fichiers', extensions: ['*'] }
-      ],
+      filters: executableFilters(),
       properties: ['openFile']
     });
     

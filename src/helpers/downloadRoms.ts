@@ -29,11 +29,12 @@ import { detectSystemFromDatName, getSystemById } from '../config/systems.js';
 import { compareHashes } from './matchRoms.js';
 import { calculateFileHashes } from './hashCalculator.js';
 import { ArchiveManager } from './archives/ArchiveManager.js';
-import type { RomDownloadProgress, RomDownloadResult, RomDownloadGameResult, DownloadSource } from '../types/global.js';
+import { OperationSignal, OperationAbortedError, raceAbort, throwIfAborted } from './operationSignal.js';
+import type { RomDownloadProgress, RomDownloadResult, RomDownloadGameResult, DownloadSource, DownloadAttempt } from '../types/global.js';
 import path from 'path';
 import fs from 'fs/promises';
 import { createWriteStream } from 'fs';
-import { net } from 'electron';
+import { net, ClientRequest } from 'electron';
 
 // ============================================
 // TYPES INTERNES
@@ -56,6 +57,64 @@ interface MatchedFile {
 }
 
 type ProgressCallback = (progress: RomDownloadProgress) => void;
+
+/**
+ * Tentatives de téléchargement du jeu en cours (recherche locale, puis chaque
+ * source × archive/fichier), affichées en tableau dans la modale. Chaque
+ * modification réémet la progression du jeu.
+ */
+class AttemptReporter {
+  private attempts: DownloadAttempt[] = [];
+
+  constructor(private readonly emit: () => void) {}
+
+  set(attempts: DownloadAttempt[]): void {
+    this.attempts = attempts.map(a => ({ ...a }));
+    this.emit();
+  }
+
+  update(id: string, patch: Partial<DownloadAttempt>): void {
+    const attempt = this.attempts.find(a => a.id === id);
+    if (attempt) {
+      Object.assign(attempt, patch);
+      this.emit();
+    }
+  }
+
+  /** Les tentatives jamais lancées deviennent « inutiles » (jeu complet ou interrompu) */
+  skipPending(): void {
+    let changed = false;
+    for (const attempt of this.attempts) {
+      if (attempt.status === 'pending') {
+        attempt.status = 'skipped';
+        attempt.note = 'notNeeded';
+        changed = true;
+      }
+    }
+    if (changed) this.emit();
+  }
+
+  snapshot(): DownloadAttempt[] {
+    return this.attempts.map(a => ({ ...a }));
+  }
+}
+
+const sourceKey = (source: DownloadSource, index: number) => source.id || `source-${index}`;
+const archiveAttemptId = (source: DownloadSource, index: number, ext: string) => `${sourceKey(source, index)}|archive|${ext}`;
+const fileAttemptId = (source: DownloadSource, index: number, fileName: string) => `${sourceKey(source, index)}|file|${fileName}`;
+const LOCAL_ATTEMPT_ID = 'local';
+
+/** Statut d'une tentative après vérification des fichiers obtenus */
+function verificationStatus(matchedHere: number, remaining: number): DownloadAttempt['status'] {
+  if (matchedHere === 0) return 'mismatch';
+  return remaining === 0 ? 'verified' : 'partial';
+}
+
+/** Statut d'un téléchargement en échec : 404 = introuvable, sinon erreur */
+function failureStatus(error: any): Pick<DownloadAttempt, 'status' | 'detail'> {
+  const message = String(error?.message || error);
+  return /HTTP 404/.test(message) ? { status: 'notFound' } : { status: 'failed', detail: message };
+}
 
 // ============================================
 // RÉSOLUTION DES EXTENSIONS
@@ -123,6 +182,17 @@ function resolveExtensions(
 // TÉLÉCHARGEMENT STREAMING
 // ============================================
 
+/** Requêtes HTTP en cours (pour l'arrêt forcé) */
+const activeRequests = new Set<ClientRequest>();
+
+/** Arrêt forcé : interrompt tous les téléchargements en cours. */
+export function abortActiveDownloads(): void {
+  for (const request of activeRequests) {
+    try { request.abort(); } catch { /* déjà terminée */ }
+  }
+  activeRequests.clear();
+}
+
 function streamDownload(
   url: string,
   destPath: string,
@@ -130,6 +200,12 @@ function streamDownload(
 ): Promise<void> {
   return new Promise((resolve, reject) => {
     const request = net.request(url);
+    activeRequests.add(request);
+    const forget = () => activeRequests.delete(request);
+    request.on('abort', () => {
+      forget();
+      reject(new Error('Download aborted'));
+    });
 
     request.on('response', (response) => {
       if (response.statusCode >= 300 && response.statusCode < 400) {
@@ -170,18 +246,23 @@ function streamDownload(
       });
 
       response.on('end', () => {
+        forget();
         fileStream.end(() => {
           resolve();
         });
       });
 
       response.on('error', (err: Error) => {
+        forget();
         fileStream.close();
         reject(err);
       });
     });
 
-    request.on('error', reject);
+    request.on('error', (err: Error) => {
+      forget();
+      reject(err);
+    });
     request.end();
   });
 }
@@ -196,7 +277,8 @@ async function searchLocalFiles(
   incompleteFolder: string | undefined,
   onProgress?: ProgressCallback,
   gameIndex?: number,
-  totalGames?: number
+  totalGames?: number,
+  attempts?: AttemptReporter
 ): Promise<Map<number, MatchedFile>> {
   const matchedFiles = new Map<number, MatchedFile>();
 
@@ -207,8 +289,10 @@ async function searchLocalFiles(
   try {
     await fs.access(gameFolder);
   } catch {
+    attempts?.update(LOCAL_ATTEMPT_ID, { status: 'notFound' });
     return matchedFiles; // Dossier inexistant
   }
+  attempts?.update(LOCAL_ATTEMPT_ID, { status: 'verifying' });
 
   onProgress?.({
     phase: 'local-search',
@@ -252,6 +336,11 @@ async function searchLocalFiles(
     console.error(`Local search error ${gameFolder}:`, error);
   }
 
+  attempts?.update(LOCAL_ATTEMPT_ID, {
+    status: verificationStatus(matchedFiles.size, datRoms.length - matchedFiles.size),
+    matched: matchedFiles.size,
+    total: datRoms.length
+  });
   return matchedFiles;
 }
 
@@ -270,7 +359,8 @@ async function tryDownloadAndVerifyGame(
   onProgress?: ProgressCallback,
   gameIndex?: number,
   totalGames?: number,
-  isCancelled?: () => boolean
+  isCancelled?: () => boolean,
+  attempts?: AttemptReporter
 ): Promise<{ matchedFiles: Map<number, MatchedFile>; partial: boolean }> {
   const gameTempDir = path.join(tempFolder, gameName);
   await fs.mkdir(gameTempDir, { recursive: true });
@@ -278,7 +368,7 @@ async function tryDownloadAndVerifyGame(
   const archiveManager = new ArchiveManager();
   const remainingDatRoms = () => datRoms.filter(r => !matchedFiles.has(r.id));
 
-  for (const source of sources) {
+  for (const [sourceIndex, source] of sources.entries()) {
     if (!source.enabled) continue;
     if (remainingDatRoms().length === 0) break;
     if (isCancelled?.()) break;
@@ -295,9 +385,12 @@ async function tryDownloadAndVerifyGame(
         // ─── Mode archive : tenter gameName.ext, extraire, hasher, matcher ───
         const url = `${baseUrl}/${encodeURIComponent(gameName)}.${entry.ext}`;
         const destPath = path.join(gameTempDir, `_download.${entry.ext}`);
+        const attemptId = archiveAttemptId(source, sourceIndex, entry.ext);
+        const remainingBefore = remainingDatRoms().length;
+        attempts?.update(attemptId, { status: 'running' });
 
         console.log(`[Download archive] Trying: ${url}`);
-        onProgress?.({
+        const downloadProgress: RomDownloadProgress = {
           phase: 'downloading',
           currentGame: gameName,
           currentGameIndex: gameIndex || 0,
@@ -306,16 +399,23 @@ async function tryDownloadAndVerifyGame(
           currentExtension: entry.ext,
           key: 'logs.download.progress.trying',
           params: { game: gameName, url }
-        });
+        };
+        onProgress?.(downloadProgress);
 
         try {
-          await streamDownload(url, destPath);
+          await streamDownload(url, destPath, percent => {
+            attempts?.update(attemptId, { percent });
+            onProgress?.({ ...downloadProgress, downloadPercent: percent });
+          });
           console.log(`[Download archive] OK : ${url}`);
         } catch (err: any) {
           console.log(`[Download archive] Failed (${err.message}): ${url}`);
+          attempts?.update(attemptId, failureStatus(err));
           try { await fs.unlink(destPath); } catch { /* ignore */ }
           continue;
         }
+        const downloadedSize = await fs.stat(destPath).then(st => st.size).catch(() => undefined);
+        attempts?.update(attemptId, { status: 'extracting', size: downloadedSize, percent: undefined });
 
         onProgress?.({
           phase: 'extracting',
@@ -338,6 +438,7 @@ async function tryDownloadAndVerifyGame(
           extractedFiles = [destPath];
         }
 
+        attempts?.update(attemptId, { status: 'verifying' });
         for (const filePath of extractedFiles) {
           if (remainingDatRoms().length === 0) break;
 
@@ -375,6 +476,13 @@ async function tryDownloadAndVerifyGame(
 
         try { await fs.rm(extractDir, { recursive: true, force: true }); } catch { /* ignore */ }
         try { await fs.unlink(destPath); } catch { /* ignore */ }
+
+        const matchedHere = remainingBefore - remainingDatRoms().length;
+        attempts?.update(attemptId, {
+          status: verificationStatus(matchedHere, remainingDatRoms().length),
+          matched: datRoms.length - remainingDatRoms().length,
+          total: datRoms.length
+        });
       } else {
         // ─── Mode raw : tenter chaque datRom dont le nom se termine par .ext ───
         const targetRoms = remainingDatRoms().filter(r =>
@@ -387,9 +495,11 @@ async function tryDownloadAndVerifyGame(
 
           const url = `${baseUrl}/${encodeURIComponent(datRom.name)}`;
           const destPath = path.join(gameTempDir, datRom.name);
+          const attemptId = fileAttemptId(source, sourceIndex, datRom.name);
+          attempts?.update(attemptId, { status: 'running' });
 
           console.log(`[Download raw] Trying: ${url}`);
-          onProgress?.({
+          const downloadProgress: RomDownloadProgress = {
             phase: 'downloading',
             currentGame: gameName,
             currentGameIndex: gameIndex || 0,
@@ -398,16 +508,23 @@ async function tryDownloadAndVerifyGame(
             currentExtension: entry.ext,
             key: 'logs.download.progress.individualDownload',
             params: { game: gameName, url }
-          });
+          };
+          onProgress?.(downloadProgress);
 
           try {
-            await streamDownload(url, destPath);
+            await streamDownload(url, destPath, percent => {
+              attempts?.update(attemptId, { percent });
+              onProgress?.({ ...downloadProgress, downloadPercent: percent });
+            });
             console.log(`[Download raw] OK : ${url}`);
           } catch (err: any) {
             console.log(`[Download raw] Failed (${err.message}): ${url}`);
+            attempts?.update(attemptId, failureStatus(err));
             try { await fs.unlink(destPath); } catch { /* ignore */ }
             continue;
           }
+          const downloadedSize = await fs.stat(destPath).then(st => st.size).catch(() => undefined);
+          attempts?.update(attemptId, { status: 'verifying', size: downloadedSize, percent: undefined });
 
           const hashes = await calculateFileHashes(destPath);
           const result = compareHashes(
@@ -422,7 +539,9 @@ async function tryDownloadAndVerifyGame(
               filePath: destPath,
               source: source.name
             });
+            attempts?.update(attemptId, { status: 'verified', matched: 1, total: 1 });
           } else {
+            attempts?.update(attemptId, { status: 'mismatch', matched: 0, total: 1 });
             try { await fs.unlink(destPath); } catch { /* ignore */ }
           }
         }
@@ -437,6 +556,56 @@ async function tryDownloadAndVerifyGame(
 // ============================================
 // UTILITAIRES
 // ============================================
+
+/**
+ * Liste prévisionnelle des tentatives d'un jeu, dans l'ordre où elles seront
+ * essayées : fichiers déjà récupérés lors d'un téléchargement précédent incomplet
+ * (dossier des ROMs incomplètes, seulement s'il existe pour ce jeu), puis chaque
+ * source × extension dans l'ordre de priorité des paramètres (archive `Jeu.ext`,
+ * ou fichier brut par ROM concernée).
+ */
+async function planAttempts(
+  gameName: string,
+  datRoms: DatRomInfo[],
+  sources: DownloadSource[],
+  systemId: string,
+  settings: ReturnType<typeof settingsManager.getAll>
+): Promise<DownloadAttempt[]> {
+  const plan: DownloadAttempt[] = [];
+  if (settings.incompleteRomsFolder) {
+    const localFolder = path.join(settings.incompleteRomsFolder, gameName);
+    if (await fs.access(localFolder).then(() => true, () => false)) {
+      plan.push({ id: LOCAL_ATTEMPT_ID, kind: 'local', ext: '', source: '', target: localFolder, status: 'pending' });
+    }
+  }
+  for (const [sourceIndex, source] of sources.entries()) {
+    if (!source.enabled) continue;
+    for (const entry of resolveExtensions(source, systemId, settings)) {
+      if (entry.isArchive) {
+        plan.push({
+          id: archiveAttemptId(source, sourceIndex, entry.ext),
+          kind: 'archive',
+          ext: entry.ext,
+          source: source.name,
+          target: `${gameName}.${entry.ext}`,
+          status: 'pending'
+        });
+      } else {
+        for (const datRom of datRoms.filter(r => r.name.toLowerCase().endsWith(`.${entry.ext.toLowerCase()}`))) {
+          plan.push({
+            id: fileAttemptId(source, sourceIndex, datRom.name),
+            kind: 'file',
+            ext: entry.ext,
+            source: source.name,
+            target: datRom.name,
+            status: 'pending'
+          });
+        }
+      }
+    }
+  }
+  return plan;
+}
 
 
 async function getAllFilesRecursive(dir: string): Promise<string[]> {
@@ -460,8 +629,9 @@ async function getAllFilesRecursive(dir: string): Promise<string[]> {
 export async function downloadRoms(
   db: Database,
   gameIds: number[],
-  onProgress: ProgressCallback,
-  isCancelled: () => boolean
+  rawOnProgress: ProgressCallback,
+  isCancelled: () => boolean,
+  signal?: OperationSignal
 ): Promise<RomDownloadResult> {
   const settings = settingsManager.getAll();
   const datName = await getMetadata(db, 'dat_name') || '';
@@ -480,9 +650,15 @@ export async function downloadRoms(
   await fs.mkdir(tempFolder, { recursive: true });
 
   const result: RomDownloadResult = {
-    stats: { totalGames: gameIds.length, downloaded: 0, matched: 0, consolidated: 0, failed: 0 },
+    stats: { totalGames: gameIds.length, downloaded: 0, matched: 0, consolidated: 0, failed: 0, remaining: 0 },
     results: []
   };
+  // Chaque événement porte les compteurs cumulés
+  const onProgress: ProgressCallback = progress => rawOnProgress({
+    ...progress,
+    consolidated: result.stats.consolidated,
+    failed: result.stats.failed
+  });
 
   onProgress({
     phase: 'preparing',
@@ -492,14 +668,18 @@ export async function downloadRoms(
     params: { count: gameIds.length }
   });
 
+  let gamesHandled = 0;
   for (let i = 0; i < gameIds.length; i++) {
-    if (isCancelled()) break;
+    if (isCancelled() || signal?.abort.signal.aborted) {
+      result.cancelled = true;
+      break;
+    }
 
     const gameId = gameIds[i];
 
     // Charger les infos du jeu
     const game = await db.get<{ id: number; name: string }>('SELECT id, name FROM games WHERE id = ?', [gameId]);
-    if (!game) continue;
+    if (!game) { gamesHandled++; continue; }
 
     // Charger les dat_roms
     const datRoms = await db.all<DatRomInfo>(
@@ -507,118 +687,194 @@ export async function downloadRoms(
       [gameId]
     );
 
-    if (datRoms.length === 0) continue;
+    if (datRoms.length === 0) { gamesHandled++; continue; }
 
-    // Phase 1 : Recherche locale (incompleteRomsFolder)
-    const matchedFiles = await searchLocalFiles(
-      game.name, datRoms, settings.incompleteRomsFolder,
-      onProgress, i + 1, gameIds.length
-    );
+    // Progression du jeu : chaque événement porte le tableau des tentatives, et
+    // chaque mise à jour du tableau réémet le dernier événement du jeu
+    let lastGameProgress: RomDownloadProgress | null = null;
+    const attempts = new AttemptReporter(() => {
+      if (lastGameProgress) gameOnProgress(lastGameProgress);
+    });
+    const gameOnProgress: ProgressCallback = progress => {
+      lastGameProgress = progress;
+      onProgress({ ...progress, attempts: attempts.snapshot() });
+    };
+    gameOnProgress({
+      phase: 'local-search',
+      currentGame: game.name,
+      currentGameIndex: i + 1,
+      totalGames: gameIds.length,
+      key: 'logs.download.progress.localSearch',
+      params: { game: game.name }
+    });
+    attempts.set(await planAttempts(game.name, datRoms, sources, systemId, settings));
 
-    if (matchedFiles.size === datRoms.length) {
-      // Tous les fichiers trouvés localement
-      onProgress({
-        phase: 'matching',
-        currentGame: game.name,
-        currentGameIndex: i + 1,
-        totalGames: gameIds.length,
-        key: 'logs.download.progress.allFoundLocally',
-        params: { game: game.name }
-      });
-    }
-
-    // Phase 2 : Téléchargement (si fichiers manquants)
-    let partial = matchedFiles.size < datRoms.length;
-    if (partial) {
-      const downloadResult = await tryDownloadAndVerifyGame(
-        game.name, datRoms, sources, systemId, settings, tempFolder,
-        matchedFiles, onProgress, i + 1, gameIds.length, isCancelled
+    // Traitement du jeu (recherche, téléchargement, consolidation), abandonnable
+    // immédiatement par un arrêt forcé
+    const processGame = async (): Promise<void> => {
+      // Phase 1 : Recherche locale (incompleteRomsFolder)
+      const matchedFiles = await searchLocalFiles(
+        game.name, datRoms, settings.incompleteRomsFolder,
+        gameOnProgress, i + 1, gameIds.length, attempts
       );
-      partial = downloadResult.partial;
-    }
 
-    const gameResult: RomDownloadGameResult = {
-      gameName: game.name,
-      success: false,
+      if (matchedFiles.size === datRoms.length) {
+        // Tous les fichiers trouvés localement
+        gameOnProgress({
+          phase: 'matching',
+          currentGame: game.name,
+          currentGameIndex: i + 1,
+          totalGames: gameIds.length,
+          key: 'logs.download.progress.allFoundLocally',
+          params: { game: game.name }
+        });
+      }
+
+      // Phase 2 : Téléchargement (si fichiers manquants)
+      let partial = matchedFiles.size < datRoms.length;
+      if (partial) {
+        const downloadResult = await tryDownloadAndVerifyGame(
+          game.name, datRoms, sources, systemId, settings, tempFolder,
+          matchedFiles, gameOnProgress, i + 1, gameIds.length,
+          // Seul l'arrêt forcé interrompt le jeu en cours : une interruption normale
+          // laisse le jeu se terminer (toutes ses sources sont essayées)
+          () => !!signal?.abort.signal.aborted,
+          attempts
+        );
+        partial = downloadResult.partial;
+      }
+      // Arrêt forcé pendant la recherche/le téléchargement : le jeu est abandonné,
+      // il ne doit être compté ni comme réussi ni comme en échec
+      throwIfAborted(signal);
+      attempts.skipPending();
+
+      const gameResult: RomDownloadGameResult = {
+        gameName: game.name,
+        success: false,
+      };
+
+      if (matchedFiles.size === datRoms.length) {
+        // Jeu complet → consolider
+        gameOnProgress({
+          phase: 'consolidating',
+          currentGame: game.name,
+          currentGameIndex: i + 1,
+          totalGames: gameIds.length,
+          key: 'logs.download.progress.consolidating',
+          params: { game: game.name }
+        });
+
+        const consolidationProgress = (state: Partial<RomDownloadProgress>) => gameOnProgress({
+          phase: 'consolidating',
+          currentGame: game.name,
+          currentGameIndex: i + 1,
+          totalGames: gameIds.length,
+          key: 'logs.download.progress.consolidating',
+          params: { game: game.name },
+          ...state
+        });
+        try {
+          throwIfAborted(signal);
+          const extractedFiles = Array.from(matchedFiles.values()).map(m => m.filePath);
+          // Map filename → datRomId pour permettre l'enregistrement direct des rom_matches
+          const datRomMap = new Map<string, number>();
+          for (const m of matchedFiles.values()) {
+            datRomMap.set(path.basename(m.filePath), m.datRomId);
+          }
+          let lastState: Partial<RomDownloadProgress> = {};
+          await consolidateSingleGame(db, game.name, extractedFiles, systemId, datRomMap, {
+            onProgress: state => { lastState = state as Partial<RomDownloadProgress>; consolidationProgress(lastState); },
+            signal
+          });
+
+          // Nettoyer le dossier incomplet s'il existait
+          if (settings.incompleteRomsFolder) {
+            const incompleteDir = path.join(settings.incompleteRomsFolder, game.name);
+            try { await fs.rm(incompleteDir, { recursive: true, force: true }); } catch { /* ignore */ }
+          }
+
+          // Auto-sélectionner le jeu après téléchargement réussi
+          try {
+            await db.run('UPDATE games SET is_selected = 1 WHERE id = ?', [game.id]);
+          } catch { /* ignore */ }
+
+          gameResult.success = true;
+          gameResult.sourcesUsed = [...new Set(Array.from(matchedFiles.values()).map(m => m.source))];
+          result.stats.consolidated++;
+          result.stats.matched++;
+          consolidationProgress({ ...lastState, step: 'done' });
+        } catch (error: any) {
+          if (error instanceof OperationAbortedError || signal?.abort.signal.aborted) throw error;
+          gameResult.error = `Erreur consolidation : ${error.message}`;
+          result.stats.failed++;
+          consolidationProgress({ step: 'error', error: error.message || String(error) });
+        }
+      } else if (matchedFiles.size > 0) {
+        // Jeu incomplet → stocker dans incompleteRomsFolder
+        if (settings.incompleteRomsFolder) {
+          const incompleteDir = path.join(settings.incompleteRomsFolder, game.name);
+          await fs.mkdir(incompleteDir, { recursive: true });
+
+          for (const matched of matchedFiles.values()) {
+            const destPath = path.join(incompleteDir, matched.datRomName);
+            try {
+              await fs.copyFile(matched.filePath, destPath);
+            } catch { /* ignore */ }
+          }
+
+          gameOnProgress({
+            phase: 'incomplete',
+            currentGame: game.name,
+            currentGameIndex: i + 1,
+            totalGames: gameIds.length,
+            key: 'logs.download.progress.incomplete',
+            params: { game: game.name, found: matchedFiles.size, total: datRoms.length }
+          });
+        }
+
+        gameResult.error = `${matchedFiles.size}/${datRoms.length} fichiers trouvés`;
+        gameResult.sourcesUsed = [...new Set(Array.from(matchedFiles.values()).map(m => m.source))];
+        result.stats.failed++;
+      } else {
+        // Aucun fichier trouvé
+        gameResult.error = 'Aucune source n\'a fourni de fichier valide';
+        result.stats.failed++;
+      }
+
+      if (matchedFiles.size > 0) {
+        result.stats.downloaded++;
+      }
+
+      result.results.push(gameResult);
     };
 
-    if (matchedFiles.size === datRoms.length) {
-      // Jeu complet → consolider
-      onProgress({
+    const gamePromise = processGame();
+    try {
+      await (signal ? raceAbort(gamePromise, signal.abort.signal) : gamePromise);
+      gamesHandled++;
+    } catch (error) {
+      if (!(error instanceof OperationAbortedError)) throw error;
+      // Arrêt forcé : le jeu est abandonné ; laisser ses opérations (tuées) se terminer
+      result.cancelled = true;
+      gameOnProgress({
         phase: 'consolidating',
         currentGame: game.name,
         currentGameIndex: i + 1,
         totalGames: gameIds.length,
         key: 'logs.download.progress.consolidating',
-        params: { game: game.name }
+        params: { game: game.name },
+        step: 'aborted'
       });
-
-      try {
-        const extractedFiles = Array.from(matchedFiles.values()).map(m => m.filePath);
-        // Map filename → datRomId pour permettre l'enregistrement direct des rom_matches
-        const datRomMap = new Map<string, number>();
-        for (const m of matchedFiles.values()) {
-          datRomMap.set(path.basename(m.filePath), m.datRomId);
-        }
-        await consolidateSingleGame(db, game.name, extractedFiles, systemId, datRomMap);
-
-        // Nettoyer le dossier incomplet s'il existait
-        if (settings.incompleteRomsFolder) {
-          const incompleteDir = path.join(settings.incompleteRomsFolder, game.name);
-          try { await fs.rm(incompleteDir, { recursive: true, force: true }); } catch { /* ignore */ }
-        }
-
-        // Auto-sélectionner le jeu après téléchargement réussi
-        try {
-          await db.run('UPDATE games SET is_selected = 1 WHERE id = ?', [game.id]);
-        } catch { /* ignore */ }
-
-        gameResult.success = true;
-        gameResult.sourcesUsed = [...new Set(Array.from(matchedFiles.values()).map(m => m.source))];
-        result.stats.consolidated++;
-        result.stats.matched++;
-      } catch (error: any) {
-        gameResult.error = `Erreur consolidation : ${error.message}`;
-        result.stats.failed++;
-      }
-    } else if (matchedFiles.size > 0) {
-      // Jeu incomplet → stocker dans incompleteRomsFolder
-      if (settings.incompleteRomsFolder) {
-        const incompleteDir = path.join(settings.incompleteRomsFolder, game.name);
-        await fs.mkdir(incompleteDir, { recursive: true });
-
-        for (const matched of matchedFiles.values()) {
-          const destPath = path.join(incompleteDir, matched.datRomName);
-          try {
-            await fs.copyFile(matched.filePath, destPath);
-          } catch { /* ignore */ }
-        }
-
-        onProgress({
-          phase: 'incomplete',
-          currentGame: game.name,
-          currentGameIndex: i + 1,
-          totalGames: gameIds.length,
-          key: 'logs.download.progress.incomplete',
-          params: { game: game.name, found: matchedFiles.size, total: datRoms.length }
-        });
-      }
-
-      gameResult.error = `${matchedFiles.size}/${datRoms.length} fichiers trouvés`;
-      gameResult.sourcesUsed = [...new Set(Array.from(matchedFiles.values()).map(m => m.source))];
-      result.stats.failed++;
-    } else {
-      // Aucun fichier trouvé
-      gameResult.error = 'Aucune source n\'a fourni de fichier valide';
-      result.stats.failed++;
+      await Promise.race([
+        gamePromise.then(() => true, () => true),
+        new Promise<boolean>(resolve => setTimeout(() => resolve(false), 10000))
+      ]);
+      console.warn(`⏹️ Download/consolidation of ${game.name} aborted (forced stop)`);
+      break;
     }
-
-    if (matchedFiles.size > 0) {
-      result.stats.downloaded++;
-    }
-
-    result.results.push(gameResult);
   }
+  if (isCancelled()) result.cancelled = true;
+  result.stats.remaining = gameIds.length - gamesHandled;
 
   // Nettoyage du dossier temporaire
   try { await fs.rm(tempFolder, { recursive: true, force: true }); } catch { /* ignore */ }
@@ -638,7 +894,8 @@ export async function downloadRoms(
     currentGameIndex: gameIds.length,
     totalGames: gameIds.length,
     key: 'logs.download.done',
-    params: { consolidated: result.stats.consolidated, failed: result.stats.failed }
+    params: { consolidated: result.stats.consolidated, failed: result.stats.failed },
+    cancelled: !!result.cancelled
   });
 
   return result;

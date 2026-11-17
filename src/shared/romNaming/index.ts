@@ -41,9 +41,12 @@ export {
 export {
   canonicalizeLanguage,
   parseLanguageList,
+  languageDisplayName,
   CANONICAL_LANGUAGES,
   type LanguageCode
 } from './languages.js';
+
+export { multiDiscInfo, type MultiDiscInfo } from './multiDisc.js';
 
 import { parseTitle, type NamingMode } from './parseTitle.js';
 

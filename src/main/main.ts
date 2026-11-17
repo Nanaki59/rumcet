@@ -25,8 +25,8 @@ import { settingsManager } from '../helpers/settingsManager.js';
 import { initI18n, t, tEn, getLanguage, getMessages } from './i18n.js';
 import { logManager } from '../helpers/logManager.js';
 import { databaseService } from './services/database.service.js';
+import { archiveManager } from '../helpers/archives/ArchiveManager.js';
 import { sendLogToRenderer } from './utils/logger.js';
-import fs from 'fs/promises';
 
 // Import des handlers
 import { registerArchiveHandlers } from './handlers/archive.handlers.js';
@@ -37,11 +37,15 @@ import { registerRomsHandlers } from './handlers/roms.handlers.js';
 import { registerMatchingHandlers } from './handlers/matching.handlers.js';
 import { registerNavigationHandlers } from './handlers/navigation.handlers.js';
 import { registerSettingsHandlers } from './handlers/settings.handlers.js';
+import { registerProfilesHandlers } from './handlers/profiles.handlers.js';
 import { registerSearchHandlers } from './handlers/search.handlers.js';
 import { registerConsolidationHandlers } from './handlers/consolidation.handlers.js';
 import { registerDatDownloadHandlers } from './handlers/datDownload.handlers.js';
 import { registerRomDownloadHandlers } from './handlers/romDownload.handlers.js';
 import { registerCloneListHandlers } from './handlers/cloneList.handlers.js';
+import { registerSystemsHandlers } from './handlers/systems.handlers.js';
+import { registerChdmanHandlers } from './handlers/chdman.handlers.js';
+import { loadSystemsOverlay } from './services/systemsRegistry.service.js';
 
 // Définition de __dirname pour les modules ES6
 const __filename = fileURLToPath(import.meta.url);
@@ -366,9 +370,10 @@ function registerDatDownloadWindowHandlers(): void {
     createDatDownloadWindow();
   });
 
-  ipcMain.handle('dat-download:select-folder', async () => {
+  ipcMain.handle('dat-download:select-folder', async (_event, defaultPath?: string) => {
     const result = await dialog.showOpenDialog(datDownloadWindow || mainWindow!, {
       properties: ['openDirectory'],
+      defaultPath: defaultPath || undefined,
       title: t('dialogs.selectDestinationFolder')
     });
     return result.canceled ? null : result.filePaths[0];
@@ -379,29 +384,6 @@ function registerDatDownloadWindowHandlers(): void {
 // Initialisation de l'application
 // ==========================================
 
-async function setupTools() {
-  const toolsDir = path.join(app.getPath('userData'), 'tools');
-  const chdmanDest = path.join(toolsDir, 'chdman.exe');
-  
-  // Créer le dossier tools s'il n'existe pas
-  await fs.mkdir(toolsDir, { recursive: true });
-  
-  // Si chdman n'existe pas, le copier depuis les ressources
-  try {
-    await fs.access(chdmanDest);
-    console.log('chdman.exe already present');
-  } catch {
-    // Le fichier n'existe pas, essayer de le copier
-    const chdmanSource = path.join(__dirname, '../../resources/chdman.exe');
-    try {
-      await fs.access(chdmanSource);
-      await fs.copyFile(chdmanSource, chdmanDest);
-      console.log('chdman.exe copied successfully');
-    } catch (error) {
-      console.log('chdman.exe not found in resources, the user will need to configure it');
-    }
-  }
-}
 
 /**
  * Capture les console.log/warn/error du process main (helpers inclus) vers le
@@ -443,11 +425,18 @@ async function initializeApp(): Promise<void> {
   await logManager.initialize();
   setupConsoleCapture();
 
+  // Surcharge Recalbox du registre des systèmes AVANT les paramètres : le
+  // backfill de systemCompatibility doit voir les systèmes ajoutés par mise à jour
+  await loadSystemsOverlay();
+
   // Charger les paramètres
   await settingsManager.load();
 
   // Charger les traductions AVANT la création du menu et des fenêtres
   initI18n(settingsManager.get('language'));
+
+  // Résoudre le chemin de chdman (binaire embarqué de la plateforme, chemin utilisateur ou PATH)
+  await archiveManager.refreshChdmanPath(settingsManager.getAll());
 
   // Créer la fenêtre principale
   createMainWindow();
@@ -463,11 +452,14 @@ async function initializeApp(): Promise<void> {
     registerConsolidationHandlers(ipcMain, mainWindow);
     registerNavigationHandlers(ipcMain);
     registerSettingsHandlers(ipcMain, mainWindow, handleLanguageChanged);
+    registerProfilesHandlers(ipcMain, mainWindow);
     registerSearchHandlers(ipcMain);
     registerDatDownloadHandlers(() => mainWindow);
     registerDatDownloadWindowHandlers();
     registerRomDownloadHandlers(ipcMain, mainWindow);
     registerCloneListHandlers(ipcMain, mainWindow);
+    registerSystemsHandlers(ipcMain, mainWindow);
+    registerChdmanHandlers(ipcMain, mainWindow);
     registerLogHandlers();
     registerMenuHandlers();
     registerI18nHandlers();
@@ -479,7 +471,6 @@ async function initializeApp(): Promise<void> {
 // ==========================================
 
 app.whenReady().then(async () => {
-  await setupTools();  // Appeler setupTools ici
   await initializeApp();
 });
 

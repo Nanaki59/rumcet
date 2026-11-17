@@ -1,5 +1,7 @@
 // src/types/global.d.ts
 
+import type { SystemsOverlay } from '../config/systems.js';
+
 export type ArchiveFormat = '7z' | 'zip' | 'chd';
 export type CompressionLevel = 'fastest' | 'normal' | 'maximum';
 export type CleanupScope = 'used-only' | 'all-matched';
@@ -35,11 +37,11 @@ export interface AppSettings {
    * Modèles de règles d'auto-sélection enregistrés « par défaut », indexés par type
    * de DAT (clé « sys:<systemId> », repli « arcade » / « generic »).
    */
-  defaultSelectionRules?: Record<string, { base: string; rules: any[] }>;
+  defaultSelectionRules?: Record<string, { base: string; rules: any[]; oneGameOneRom?: AppSettings['oneGameOneRom'] }>;
 
   /**
    * Presets d'auto-sélection personnalisés (créés par l'utilisateur), globaux, avec
-   * un scope (arcade / nointro-redump / global) pilotant leur visibilité.
+   * un scope (arcade / no-intro / redump / nointro-redump / other / global) pilotant leur visibilité.
    */
   customSelectionPresets?: Array<{ id: string; name: string; scope: string; rules: any[] }>;
 
@@ -55,7 +57,6 @@ export interface AppSettings {
     videoPriority: string[];
     preferLatestRevision: boolean;
     fallbackToOwned: boolean;
-    perSystem?: Record<string, Partial<Omit<AppSettings['oneGameOneRom'] & {}, 'perSystem'>>>;
   };
 
   /**
@@ -66,8 +67,9 @@ export interface AppSettings {
     sourceUrl: string;
     folder?: string;
     lastDownload?: string;
-    autoApply: boolean;
-    autoDownload: boolean;
+    autoUpdate: boolean;
+    /** ETag de la dernière version téléchargée, par nom de fichier. */
+    etags?: Record<string, string>;
   };
 
   // ========================================
@@ -92,6 +94,7 @@ export interface AppSettings {
   cleanSourceAfterConsolidation: boolean;
   cleanupScope: CleanupScope;
   protectFilesForUnselectedGames: boolean;
+  moveUnmatchedFiles: boolean;
 
   // ========================================
   // ONGLET ARCADE (MAME)
@@ -101,6 +104,12 @@ export interface AppSettings {
   arcadeSeparateBios?: boolean;
   /** Créer un .zip vide pour les jeux CHD-only (visibilité Recalbox). */
   arcadeChdEmptyZip?: boolean;
+
+  // ========================================
+  // ONGLET MULTI-DISQUES
+  // ========================================
+  /** Créer un .m3u pour les jeux multi-disques (disques jamais archivés en 7z/zip/rar). */
+  generateM3u?: boolean;
 
   // ========================================
   // ONGLET GÉNÉRAL - Mise à jour DAT
@@ -145,18 +154,51 @@ export interface AppSettings {
   winrarPath?: string;
   unrarPath?: string;
   chdmanPath?: string;
-  useEmbeddedChdman?: boolean;
+  /** 'latest' (la plus récente), 'default' (embarquée), 'manual' (chdmanPath) ou un tag téléchargé (ex. mame0289) */
+  chdmanVersion?: string;
   rarToolPriority?: RarTool[];
   
   // ========================================
   // ONGLET COMPATIBILITÉ - Compatibilité archives par système
   // ========================================
   systemCompatibility?: SystemCompatibility[];
+
+  // ========================================
+  // PROFILS DE CONSOLIDATION
+  // ========================================
+  /** Profils (les clés de profil ci-dessus reflètent le profil courant). */
+  profiles?: ConsolidationProfile[];
+  activeProfileId?: string;
   
   // ========================================
   // VERSION DES PARAMÈTRES (pour migrations futures)
   // ========================================
   settingsVersion?: number;
+}
+
+/** Règle de base de la compatibilité par système (src/shared/compatRules.ts). */
+export type CompatRule = 'universal' | 'recalbox' | 'master';
+
+/** Paramètres portés par un profil. Miroir de ProfileSettings (settingsManager.ts). */
+export type ProfileSettings = Pick<AppSettings,
+  | 'compressionLevel' | 'recreateArchivesIfNeeded' | 'archiveFormatPriority' | 'useBestCompression'
+  | 'solidArchive' | 'multithreading' | 'systemCompatibility' | 'generateM3u'
+  | 'cleanSourceAfterConsolidation' | 'cleanupScope' | 'protectFilesForUnselectedGames' | 'moveUnmatchedFiles'
+  | 'arcadeTargetSetMode' | 'arcadeSeparateBios' | 'arcadeChdEmptyZip' | 'oneGameOneRom'>;
+
+/** Profil de consolidation. Miroir de ConsolidationProfile (settingsManager.ts). */
+export interface ConsolidationProfile {
+  id: string;
+  /** Vide = nom traduit d'après l'id (profils intégrés, « Mon profil »). */
+  name: string;
+  builtin: boolean;
+  compatRule: CompatRule | null;
+  settings: ProfileSettings;
+}
+
+export interface ProfilesState {
+  profiles: ConsolidationProfile[];
+  activeProfileId: string;
 }
 
 // Interface pour les résultats de test de compression
@@ -238,18 +280,96 @@ export interface DisappearedGame {
 // Interfaces pour le téléchargement de fichiers DAT
 export interface DatSystemInfo {
   name: string;
+  systemId: string;
   sources: Array<{
     type: 'no-intro' | 'redump';
     id: string;
     recommended: boolean;
   }>;
+  /** Système ajouté par une mise à jour Recalbox, sans source DAT connue. */
+  unknownSource?: boolean;
+  /** Sources associées manuellement par l'utilisateur (modifiables). */
+  userDefinedSources?: boolean;
+}
+
+// ========================================
+// Mise à jour des systèmes depuis Recalbox
+// ========================================
+
+/** État de chdman (Paramètres → Outils externes) */
+export interface ChdmanStatus {
+  current: {
+    path: string | null;
+    version: string | null;
+    source: 'custom' | 'downloaded' | 'embedded' | 'path' | null;
+  };
+  /** Embarquée ('default') et téléchargées (tag), de la plus récente à la plus ancienne */
+  versions: { id: string; version: string | null; source: 'downloaded' | 'embedded' }[];
+  /** Réglage chdmanVersion enregistré */
+  selected: string;
+  customPath: string;
+  /** Mise à jour depuis les releases MAME possible (Windows uniquement) */
+  updateSupported: boolean;
+}
+
+export interface RecalboxTagInfo {
+  name: string;
+  channel: 'stable' | 'patron' | 'patronAlpha' | 'alpha';
+  date: string | null;
+}
+
+export type SystemUpdateField =
+  | 'fullname' | 'manufacturer' | 'type' | 'releaseDate'
+  | 'supportedFormats' | 'warningFormats' | 'unsupportedFormats' | 'extraRawFormats';
+
+export interface SystemUpdateChange {
+  field: SystemUpdateField;
+  before: string | string[] | null;
+  after: string | string[] | null;
+}
+
+export interface SystemUpdateDiff {
+  systemId: string;
+  fullname: string;
+  manufacturer: string | null;
+  type: string | null;
+  status: 'new' | 'changed';
+  changes: SystemUpdateChange[];
+  /** Formats archive personnalisés par l'utilisateur (différents des valeurs par défaut actuelles). */
+  customized: boolean;
+}
+
+export interface SystemsUpdatePreview {
+  success: boolean;
+  error?: string;
+  ref?: string;
+  diffs?: SystemUpdateDiff[];
+  unchangedCount?: number;
+}
+
+export interface SystemsUpdateApplyResult {
+  success: boolean;
+  error?: string;
+  /** Systèmes acceptés, recalculés dans chaque profil (pour rafraîchir la fenêtre paramètres). */
+  systemIds?: string[];
+}
+
+export type RecalboxMameChannel = 'stable' | 'patron' | 'patronAlpha' | 'alpha';
+
+/** Dernier tag d'un canal Recalbox embarquant une version de MAME donnée. */
+export interface RecalboxMameRef {
+  channel: RecalboxMameChannel;
+  ref: string;
 }
 
 export interface MameVersion {
   version: string;
   date?: string;
   isLatest?: boolean;
+  /** Canaux Recalbox joints par « / » (recherche). */
   recalboxTag?: string;
+  /** Derniers tags Stable / Patron / Patron Alpha / Alpha de Recalbox utilisant cette version. */
+  recalboxRefs?: RecalboxMameRef[];
   downloadUrl: string;
 }
 
@@ -262,7 +382,8 @@ export interface NoIntroFormParams {
 }
 
 export interface DatDownloadParams {
-  type: 'system' | 'mame' | 'pleasuredome';
+  /** 'source-index' : page d'index No-Intro / Redump (recherche manuelle d'un système sans source connue). */
+  type: 'system' | 'mame' | 'pleasuredome' | 'source-index';
   source?: 'no-intro' | 'redump';
   systemId?: string;
   mameVersion?: string;
@@ -331,6 +452,44 @@ export interface RomDownloadProgress {
   key: string;
   /** Paramètres d'interpolation {nom} de la clé. */
   params?: Record<string, string | number>;
+  /** Tentatives de téléchargement du jeu en cours */
+  attempts?: DownloadAttempt[];
+  /** Détail de la consolidation du jeu (phase 'consolidating'), comme ConsolidationProgress */
+  step?: ConsolidationProgress['step'];
+  mode?: ConsolidationProgress['mode'];
+  formats?: ConsolidationFormatCandidate[];
+  chosenFormat?: string;
+  error?: string;
+  /** Compteurs cumulés */
+  consolidated?: number;
+  failed?: number;
+  /** Opération interrompue par l'utilisateur (phase 'complete') */
+  cancelled?: boolean;
+}
+
+/** Tentative de téléchargement d'un jeu (recherche locale, ou source × archive/fichier) */
+export interface DownloadAttempt {
+  id: string;
+  /** 'local' = dossier des ROMs incomplètes ; 'archive' = Jeu.ext ; 'file' = fichier brut d'une ROM */
+  kind: 'local' | 'archive' | 'file';
+  /** Extension testée (ordre de priorité des paramètres) ; vide pour 'local' */
+  ext: string;
+  /** Nom de la source (vide pour 'local') */
+  source: string;
+  /** Archive ou fichier tenté */
+  target: string;
+  status: 'pending' | 'running' | 'extracting' | 'verifying' | 'verified' | 'partial' | 'mismatch' | 'notFound' | 'failed' | 'skipped';
+  /** Pourcentage de téléchargement (connu si le serveur annonce la taille) */
+  percent?: number;
+  /** Taille téléchargée (octets) */
+  size?: number;
+  /** Fichiers du jeu vérifiés après cette tentative / total */
+  matched?: number;
+  total?: number;
+  /** Clé i18n sous index.downloadModal.attemptNotes */
+  note?: string;
+  /** Message brut (erreur HTTP…) */
+  detail?: string;
 }
 
 export interface RomDownloadGameResult {
@@ -341,8 +500,10 @@ export interface RomDownloadGameResult {
 }
 
 export interface RomDownloadResult {
-  stats: { totalGames: number; downloaded: number; matched: number; consolidated: number; failed: number };
+  stats: { totalGames: number; downloaded: number; matched: number; consolidated: number; failed: number; remaining?: number };
   results: RomDownloadGameResult[];
+  /** Interrompu par l'utilisateur */
+  cancelled?: boolean;
 }
 
 // Interface pour l'ouverture d'une base de données existante
@@ -370,7 +531,60 @@ export interface DatabaseOpenResult {
 
 // Interface pour les statistiques de scan
 export interface ScanStats {
+  /** Fichiers présents en base pour les dossiers traités (analysés + inchangés) */
   length: number;
+  scanned: number;
+  unchanged: number;
+  removed: number;
+  cancelled: boolean;
+  /** Dossiers dont le scan a été interrompu */
+  partialFolders: string[];
+}
+
+/** Mode de scan : 'quick' = fichiers nouveaux/modifiés uniquement (et reprise), 'full' = tout */
+export type ScanMode = 'quick' | 'full';
+
+/** Événement 'scan-progress' (voir ScanProgress dans src/helpers/scanFolder.ts) */
+export interface ScanProgressEvent {
+  phase: 'counting' | 'scanning';
+  rootPath: string;
+  folder: string;
+  file: string;
+  current: number;
+  total: number;
+  status?: 'start' | 'done' | 'unchanged' | 'aborted' | 'error';
+  isArchive?: boolean;
+  archiveType?: string;
+  contentCount?: number;
+  error?: string;
+  scannedCount?: number;
+  unchangedCount?: number;
+}
+
+/** Dossiers propres à une base, tels que saisis (vide = paramètre global) */
+export interface DbFolderInput {
+  targetFolder: string;
+  targetSystemSubfolder: boolean;
+  unmatchedFolder?: string;
+  incompleteFolder?: string;
+  tempFolder?: string;
+}
+
+export interface DbFolderSettingsInfo extends DbFolderInput {
+  dbOpen: boolean;
+  systemId: string | null;
+  effectiveTarget: string;
+  effectiveUnmatched: string;
+  unmatchedFolder: string;
+  incompleteFolder: string;
+  tempFolder: string;
+  globals: {
+    validatedRomsFolder: string;
+    validatedRomsMultiSystem: boolean;
+    unmatchedRomsFolder: string;
+    incompleteRomsFolder: string;
+    tempExtractionFolder: string;
+  };
 }
 
 // Interface pour les messages de log
@@ -467,6 +681,27 @@ export interface ConsolidationProgress {
   key: string;
   /** Paramètres d'interpolation {nom} de la clé. */
   params?: Record<string, string | number>;
+  /** Détail du jeu en cours (voir ConsolidationProgress dans src/helpers/consolidateRoms.ts) */
+  step?: 'analyzing' | 'direct-copy' | 'extracting' | 'compressing' | 'copying' | 'done' | 'skipped' | 'error' | 'aborted';
+  mode?: 'standard' | 'best' | 'direct' | 'raw' | 'chd-copy';
+  formats?: ConsolidationFormatCandidate[];
+  chosenFormat?: string;
+  error?: string;
+  consolidated?: number;
+  errored?: number;
+  skipped?: number;
+  cancelled?: boolean;
+}
+
+/** Format cible étudié (ou archive source candidate en copie directe) */
+export interface ConsolidationFormatCandidate {
+  id: string;
+  format: string;
+  label?: string;
+  status: 'pending' | 'running' | 'done' | 'failed' | 'skipped' | 'rejected' | 'chosen';
+  size?: number;
+  /** Clé i18n sous index.consolidationModal.notes */
+  note?: string;
 }
 
 export interface ConsolidationResult {
@@ -478,8 +713,11 @@ export interface ConsolidationResult {
     romsExtracted: number;
     archivesCreated: number;
     unmatchedFilesMoved: number;
+    gamesRemaining?: number;
   };
   errors: Array<{ gameName: string; error: string }>;
+  cancelled?: boolean;
+  m3u?: { forcedGames: number; created: number; skipped: number };
 }
 
 // ========================================
@@ -702,7 +940,11 @@ declare global {
        * @param folderPaths - Le ou les chemins des dossiers de ROMs à scanner.
        * @returns Les statistiques du scan.
        */
-      addRomsFolder: (folderPaths: string | string[]) => Promise<ScanStats>;
+      addRomsFolder: (folderPaths: string | string[], options?: { mode?: ScanMode }) => Promise<ScanStats>;
+      /** Interrompt le scan après le fichier en cours */
+      cancelRomScan: () => Promise<void>;
+      /** Abandonne immédiatement le fichier en cours (outils externes tués) */
+      forceCancelRomScan: () => Promise<void>;
 
       /**
        * Chargement rapide : crée une DB et charge le DAT en une fois.
@@ -740,6 +982,10 @@ declare global {
        * Sinon retourne validatedRomsFolder tel quel.
        */
       getEffectiveValidatedFolder: () => Promise<string>;
+      /** Dossiers de la base active (ou paramètres globaux si aucune base) */
+      getDbFolderSettings: () => Promise<DbFolderSettingsInfo>;
+      /** Enregistre les dossiers de la base active ; retourne l'ancien et le nouveau dossier cible effectif */
+      setDbFolderSettings: (input: DbFolderInput) => Promise<{ previousTarget: string; target: string }>;
 
       /**
        * Supprime un dossier de la base de données.
@@ -820,7 +1066,7 @@ declare global {
        * Récupère les dossiers racines.
        * @returns La liste des dossiers racines.
        */
-      getRootFolders: () => Promise<Array<{ path: string; fileCount: number }>>;
+      getRootFolders: () => Promise<Array<{ path: string; fileCount: number; scanStatus?: 'in_progress' | 'partial' | 'complete' }>>;
 
       // ========================================
       // API CHD
@@ -976,6 +1222,10 @@ declare global {
        * Étape 6 - Lance la consolidation des ROMs.
        */
       runConsolidation: () => Promise<ConsolidationResult>;
+      /** Interrompt la consolidation après le jeu en cours */
+      cancelConsolidation: () => Promise<void>;
+      /** Abandonne immédiatement le jeu en cours (outils externes tués) */
+      forceCancelConsolidation: () => Promise<void>;
 
       /**
        * Récupère le log de consolidation.
@@ -1021,6 +1271,18 @@ declare global {
       resetSettings: () => Promise<AppSettings>;
 
       // ========================================
+      // API des profils de consolidation
+      // ========================================
+
+      profiles: {
+        list: () => Promise<ProfilesState>;
+        setActive: (id: string) => Promise<{ success: boolean; error?: 'busy' | 'unknown' }>;
+        saveAll: (profiles: ConsolidationProfile[]) => Promise<ProfilesState>;
+        getBuiltinDefaults: (id: string) => Promise<ConsolidationProfile | null>;
+        onChanged: (callback: () => void) => void;
+      };
+
+      // ========================================
       // API des clone lists (regroupement 1G1R)
       // ========================================
 
@@ -1037,17 +1299,13 @@ declare global {
           appliedList: string | null;
           lastDownload: string | null;
         }>;
-        download: (fileName?: string) => Promise<{
+        sync: (options?: { force?: boolean }) => Promise<{
           success: boolean;
+          /** 'no-database' | 'no-dat' | 'arcade' | 'no-match' */
           error?: string;
           datName?: string;
-          fileName?: string;
-          variants?: number;
-          path?: string;
-        }>;
-        apply: (fileName?: string) => Promise<{
-          success: boolean;
-          error?: string;
+          /** Vrai si la source était injoignable et qu'on a appliqué la copie locale. */
+          offline?: boolean;
           report?: {
             listName: string;
             lastUpdated: string | null;
@@ -1068,7 +1326,7 @@ declare global {
       // ========================================
 
       onMenuAction: (callback: (action: string) => void) => void;
-      onScanProgress: (callback: (data: any) => void) => (() => void);
+      onScanProgress: (callback: (data: ScanProgressEvent) => void) => (() => void);
       onViewMode: (callback: (mode: string) => void) => void;
 
       // ========================================
@@ -1081,7 +1339,38 @@ declare global {
       downloadDat: (params: DatDownloadParams) => Promise<DatDownloadResult>;
       openDatPage: (params: DatDownloadParams) => Promise<DatDownloadResult>;
       openDatDownloadWindow: () => Promise<void>;
-      selectDownloadFolder: () => Promise<string | null>;
+      selectDownloadFolder: (defaultPath?: string) => Promise<string | null>;
+
+      // ========================================
+      // API chdman (version utilisée, mise à jour depuis les releases MAME)
+      // ========================================
+      chdman: {
+        getInfo: () => Promise<ChdmanStatus>;
+        checkUpdate: () => Promise<{ success: boolean; latest?: { tag: string; version: string; size: number }; error?: string }>;
+        update: () => Promise<{ success: boolean; version?: string; status?: ChdmanStatus; error?: string }>;
+        deleteVersion: (tag: string) => Promise<{ success: boolean; inUse?: boolean; status?: ChdmanStatus; error?: string }>;
+        onUpdateProgress: (callback: (progress: { key: string; params?: Record<string, string | number> }) => void) => void;
+      };
+
+      // ========================================
+      // API registre des systèmes (mise à jour Recalbox)
+      // ========================================
+
+      systems: {
+        /** Surcharge appliquée (null = données embarquées). */
+        getOverlay: () => Promise<SystemsOverlay | null>;
+        listRecalboxTags: () => Promise<{ success: boolean; tags?: RecalboxTagInfo[]; error?: string }>;
+        previewUpdate: (ref: string) => Promise<SystemsUpdatePreview>;
+        applyUpdate: (ref: string, systemIds: string[]) => Promise<SystemsUpdateApplyResult>;
+        resetToBundled: () => Promise<{ success: boolean; error?: string }>;
+        /** Associe (ou retire avec null) des sources DAT à un système sans source embarquée. */
+        setUserDatSources: (
+          systemId: string,
+          sources: { noIntroId?: string; redumpSlug?: string } | null
+        ) => Promise<{ success: boolean; error?: string }>;
+        /** Le registre a changé (mise à jour, retour aux données intégrées, association DAT). */
+        onUpdated: (callback: () => void) => void;
+      };
 
       /**
        * Écran unifié de chargement DAT — contexte : base ouverte ou non
@@ -1106,7 +1395,7 @@ declare global {
        * Peut retourner { fileExists: true } si la base cible existe déjà et
        * qu'overwrite n'a pas été confirmé.
        */
-      loadDatUnified: (params: { datPath: string; dbPath?: string; overwrite?: boolean }) => Promise<any>;
+      loadDatUnified: (params: { datPath: string; dbPath?: string; overwrite?: boolean; folders?: DbFolderInput }) => Promise<any>;
       /** Événement émis vers la fenêtre principale après un chargement réussi. */
       onDatDownloadLoaded: (callback: (payload: any) => void) => () => void;
 
@@ -1116,7 +1405,10 @@ declare global {
 
       downloadRom: (gameIds: number[]) => Promise<RomDownloadResult>;
       downloadAllMissingRoms: () => Promise<RomDownloadResult>;
+      /** Interrompt le téléchargement après le jeu en cours */
       cancelRomDownload: () => Promise<void>;
+      /** Abandonne immédiatement le jeu en cours (téléchargements interrompus, outils externes tués) */
+      forceCancelRomDownload: () => Promise<void>;
       onRomDownloadProgress: (callback: (data: RomDownloadProgress) => void) => () => void;
 
       // ========================================

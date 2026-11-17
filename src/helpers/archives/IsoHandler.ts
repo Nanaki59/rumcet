@@ -2,8 +2,7 @@
 
 import path from 'path';
 import fs from 'fs/promises';
-import { exec } from 'child_process';
-import { promisify } from 'util';
+import { trackedExecAsync } from './processRegistry.js';
 import { 
   IArchiveHandler, 
   ArchiveContent, 
@@ -12,7 +11,7 @@ import {
 } from './types.js';
 import { calculateFileHashes } from '../hashCalculator.js';
 
-const execAsync = promisify(exec);
+const execAsync = trackedExecAsync;
 
 /**
  * Handler pour les images ISO

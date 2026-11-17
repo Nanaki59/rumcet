@@ -4,6 +4,8 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title data-i18n="settings.windowTitle">Paramètres - RUMCET</title>
+  <!-- Widget de listes de priorité, partagé avec la fenêtre principale. -->
+  <link rel="stylesheet" href="priorityList.css">
   <style>
     * {
       box-sizing: border-box;
@@ -78,6 +80,81 @@
       text-transform: uppercase;
       letter-spacing: 0.08em;
       color: rgba(255, 255, 255, 0.4);
+    }
+
+    /* ========== SÉLECTEUR DE PROFIL ========== */
+    .profile-picker {
+      margin: 4px 12px 8px;
+      padding: 0 0 12px;
+      border-top: 1px solid rgba(255, 255, 255, 0.1);
+      border-bottom: 1px solid rgba(255, 255, 255, 0.1);
+    }
+
+    .profile-picker .tab-group-header {
+      display: block;
+      padding: 12px 8px 6px;
+    }
+
+    .profile-picker select {
+      width: 100%;
+      padding: 6px 8px;
+      border-radius: 4px;
+      border: 1px solid rgba(255, 255, 255, 0.2);
+      background: #34495e;
+      color: white;
+      font-size: 13px;
+    }
+
+    .profile-actions {
+      display: flex;
+      gap: 6px;
+      margin-top: 6px;
+    }
+
+    .profile-actions button {
+      flex: 1;
+      padding: 4px 0;
+      border: 1px solid rgba(255, 255, 255, 0.2);
+      border-radius: 4px;
+      background: none;
+      color: rgba(255, 255, 255, 0.85);
+      cursor: pointer;
+      font-size: 13px;
+    }
+
+    .profile-actions button:hover:not(:disabled) {
+      background: rgba(255, 255, 255, 0.1);
+    }
+
+    .profile-actions button:disabled {
+      opacity: 0.3;
+      cursor: default;
+    }
+
+    .profile-hint {
+      margin-top: 6px;
+      padding: 0 2px;
+      font-size: 11px;
+      color: rgba(255, 255, 255, 0.55);
+      line-height: 1.4;
+    }
+
+    .profile-banner {
+      margin: -10px 0 18px;
+      padding: 8px 12px;
+      border-left: 3px solid #3498db;
+      background: #eef6fc;
+      border-radius: 4px;
+      font-size: 13px;
+      color: #2c3e50;
+    }
+
+    .compat-rule-row {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      flex-wrap: wrap;
+      margin-bottom: 12px;
     }
 
     /* ========== CONTENU ========== */
@@ -179,6 +256,12 @@
       gap: 10px;
     }
 
+    .setting-row-buttons button:disabled,
+    #btnDeleteChdmanVersion:disabled {
+      opacity: 0.5;
+      cursor: not-allowed;
+    }
+
     .btn-browse {
       padding: 8px 16px;
       background-color: #95a5a6;
@@ -230,78 +313,9 @@
       color: #34495e;
     }
 
-    .format-priority-container {
-      background: #f8f9fa;
-      border: 1px solid #ddd;
-      border-radius: 4px;
-      padding: 15px;
-    }
-
-    .format-priority-list {
-      min-height: 120px;
-      margin-bottom: 15px;
-    }
-
-    .format-priority-item {
-      display: flex;
-      align-items: center;
-      gap: 10px;
-      background: white;
-      border: 1px solid #ddd;
-      border-radius: 4px;
-      padding: 12px;
-      margin-bottom: 8px;
-      cursor: move;
-      transition: all 0.2s;
-    }
-
-    .format-priority-item:hover {
-      border-color: #3498db;
-      box-shadow: 0 2px 4px rgba(52, 152, 219, 0.1);
-    }
-
-    .format-priority-item.dragging {
-      opacity: 0.5;
-    }
-
-    .format-priority-item.drag-over {
-      border-top: 3px solid #3498db;
-    }
-
-    .format-order {
-      font-weight: bold;
-      color: #7f8c8d;
-      min-width: 25px;
-    }
-
-    .format-name {
-      flex: 1;
-      font-weight: 500;
-    }
-
-    .format-name.format-7z { color: #e74c3c; }
-    .format-name.format-zip { color: #f39c12; }
-    .format-name.format-chd { color: #9b59b6; }
-
-    .format-actions {
-      display: flex;
-      gap: 5px;
-    }
-
-    .btn-icon {
-      background: none;
-      border: 1px solid #bdc3c7;
-      border-radius: 3px;
-      padding: 4px 8px;
-      cursor: pointer;
-      color: #7f8c8d;
-      font-size: 14px;
-    }
-
-    .btn-icon:hover {
-      border-color: #3498db;
-      color: #3498db;
-    }
+    /* Les styles du widget de listes de priorité (.format-priority-*, .format-order,
+       .format-name, .format-actions, .btn-icon) vivent désormais dans
+       priorityList.css, partagé avec la fenêtre principale. */
 
     /* ========== AVERTISSEMENT ========== */
     .warning-box {
@@ -745,6 +759,42 @@
       color: #27ae60;
       font-weight: 500;
     }
+    /* ===== Mise à jour des systèmes (Recalbox) ===== */
+    .systems-update-box {
+      border: 1px solid #dee2e6;
+      border-radius: 6px;
+      padding: 12px;
+      margin-bottom: 15px;
+      background: #f8f9fa;
+    }
+    .systems-update-box .systems-data-status { font-size: 13px; color: #2c3e50; margin: 0 0 8px; }
+    .systems-update-box .systems-update-controls { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+    .systems-update-box select { min-width: 220px; padding: 6px; }
+    .systems-update-box button:disabled,
+    .su-actions button:disabled { opacity: 0.5; cursor: not-allowed; }
+    .su-overlay { position: fixed; inset: 0; background: rgba(0,0,0,0.5); z-index: 9999; display: flex; align-items: center; justify-content: center; }
+    .su-dialog { background: #fff; border-radius: 8px; padding: 20px; width: 90%; max-width: 760px; max-height: 85vh; display: flex; flex-direction: column; box-shadow: 0 8px 32px rgba(0,0,0,0.25); }
+    .su-dialog h3 { margin: 0 0 12px; color: #2c3e50; }
+    .su-dialog h4 { margin: 14px 0 6px; color: #2c3e50; }
+    .su-content { overflow-y: auto; flex: 1; font-size: 13px; }
+    .su-summary { font-weight: 600; margin: 0 0 6px; }
+    .su-note { color: #7f8c8d; margin: 0 0 6px; }
+    .su-error { color: #c0392b; }
+    .su-loading { color: #7f8c8d; }
+    .su-row { display: flex; gap: 8px; align-items: flex-start; padding: 6px 4px; border-bottom: 1px solid #ecf0f1; cursor: pointer; }
+    .su-row input { margin-top: 3px; }
+    .su-row-title { font-weight: 600; color: #2c3e50; }
+    .su-row-title code { font-weight: normal; color: #7f8c8d; font-size: 12px; }
+    .su-badge { display: inline-block; font-size: 11px; font-weight: normal; padding: 1px 6px; border-radius: 10px; background: #fdebd0; color: #a04000; }
+    .su-change { margin-top: 3px; color: #34495e; }
+    .su-field { display: inline-block; min-width: 170px; color: #7f8c8d; }
+    .su-tag { display: inline-block; padding: 0 5px; margin: 1px 3px 1px 0; border-radius: 3px; font-size: 12px; background: #ecf0f1; }
+    .su-tag.su-added { background: #d5f5e3; color: #1e8449; }
+    .su-tag.su-removed { background: #fadbd8; color: #922b21; text-decoration: line-through; }
+    .su-added-text { color: #1e8449; }
+    .su-removed-text { color: #922b21; text-decoration: line-through; }
+    .su-actions { display: flex; gap: 8px; align-items: center; margin-top: 14px; }
+    .su-spacer { flex: 1; }
   </style>
 </head>
 <body>
@@ -767,10 +817,31 @@
         <span class="tab-icon">🛠️</span>
         <span data-i18n="settings.tabs.tools">Outils externes</span>
       </button>
+      <button class="tab-button" data-tab="download">
+        <span class="tab-icon">⬇</span>
+        <span data-i18n="settings.tabs.download">Téléchargement</span>
+      </button>
+      <button class="tab-button" data-tab="clonelists">
+        <span class="tab-icon">🔗</span>
+        <span data-i18n="settings.tabs.cloneLists">Clone lists</span>
+      </button>
+    </div>
+
+    <!-- Sélecteur du profil édité : les onglets ci-dessous en dépendent -->
+    <div class="profile-picker">
+      <label for="profileSelect" class="tab-group-header" data-i18n="settings.profiles.label">Profil de consolidation</label>
+      <select id="profileSelect"></select>
+      <div class="profile-actions">
+        <button type="button" id="btnProfileNew" data-i18n-title="settings.profiles.newTitle" title="Nouveau profil (copie du profil affiché)">＋</button>
+        <button type="button" id="btnProfileRename" data-i18n-title="settings.profiles.renameTitle" title="Renommer">✎</button>
+        <button type="button" id="btnProfileReset" data-i18n-title="settings.profiles.resetTitle" title="Réinitialiser le profil intégré">↺</button>
+        <button type="button" id="btnProfileDelete" data-i18n-title="settings.profiles.deleteTitle" title="Supprimer">🗑</button>
+      </div>
+      <p class="profile-hint" id="profileHint"></p>
     </div>
 
     <div class="tab-group">
-      <div class="tab-group-header" data-i18n="settings.tabs.groupConsolidation">Consolidation</div>
+      <div class="tab-group-header" data-i18n="settings.tabs.groupProfile">Paramètres du profil</div>
       <button class="tab-button" data-tab="archives">
         <span class="tab-icon">📦</span>
         <span data-i18n="settings.tabs.archives">Compression</span>
@@ -778,6 +849,10 @@
       <button class="tab-button" data-tab="compatibility">
         <span class="tab-icon">🎮</span>
         <span data-i18n="settings.tabs.compatibility">Compatibilité par système</span>
+      </button>
+      <button class="tab-button" data-tab="multidisc">
+        <span class="tab-icon">💿</span>
+        <span data-i18n="settings.tabs.multiDisc">Multi-disques</span>
       </button>
       <button class="tab-button" data-tab="cleanup">
         <span class="tab-icon">🧹</span>
@@ -790,10 +865,6 @@
       <button class="tab-button" data-tab="onegameonerom">
         <span class="tab-icon">🎯</span>
         <span data-i18n="settings.tabs.oneGameOneRom">1G1R</span>
-      </button>
-      <button class="tab-button" data-tab="download">
-        <span class="tab-icon">⬇</span>
-        <span data-i18n="settings.tabs.download">Téléchargement</span>
       </button>
     </div>
   </nav>
@@ -900,7 +971,7 @@
         <div class="setting-row">
           <label for="defaultDatFolder" data-i18n="settings.folders.datFolder">Dossier des fichiers DAT/XML :</label>
           <div class="setting-row-inline">
-            <input type="text" id="defaultDatFolder" readonly data-i18n-placeholder="settings.folders.notConfigured" placeholder="Non configuré">
+            <input type="text" id="defaultDatFolder" spellcheck="false" data-i18n-placeholder="settings.folders.notConfigured" placeholder="Non configuré">
             <button class="btn-browse" onclick="browseFolder('defaultDatFolder')" data-i18n="common.browse">Parcourir</button>
           </div>
           <p class="info-text" data-i18n="settings.folders.datFolderInfo">Dossier par défaut lors de l'ouverture de la boîte de dialogue pour charger un DAT</p>
@@ -909,7 +980,7 @@
         <div class="setting-row">
           <label for="defaultDatabaseFolder" data-i18n="settings.folders.databaseFolder">Dossier Rumcet DB :</label>
           <div class="setting-row-inline">
-            <input type="text" id="defaultDatabaseFolder" readonly data-i18n-placeholder="settings.folders.notConfigured" placeholder="Non configuré">
+            <input type="text" id="defaultDatabaseFolder" spellcheck="false" data-i18n-placeholder="settings.folders.notConfigured" placeholder="Non configuré">
             <button class="btn-browse" onclick="browseFolder('defaultDatabaseFolder')" data-i18n="common.browse">Parcourir</button>
           </div>
           <p class="info-text" data-i18n="settings.folders.databaseFolderInfo">Emplacement où seront stockées les Rumcet DB</p>
@@ -918,7 +989,7 @@
         <div class="setting-row">
           <label for="defaultRomsFolder" data-i18n="settings.folders.romsFolder">Dossier source des ROMs :</label>
           <div class="setting-row-inline">
-            <input type="text" id="defaultRomsFolder" readonly data-i18n-placeholder="settings.folders.notConfigured" placeholder="Non configuré">
+            <input type="text" id="defaultRomsFolder" spellcheck="false" data-i18n-placeholder="settings.folders.notConfigured" placeholder="Non configuré">
             <button class="btn-browse" onclick="browseFolder('defaultRomsFolder')" data-i18n="common.browse">Parcourir</button>
           </div>
           <p class="info-text" data-i18n="settings.folders.romsFolderInfo">Dossier par défaut lors de l'ajout de dossiers de ROMs</p>
@@ -943,7 +1014,7 @@
         <div class="setting-row">
           <label for="validatedRomsFolder" data-i18n="settings.folders.validatedFolder">Dossier cible des ROMs validées :</label>
           <div class="setting-row-inline">
-            <input type="text" id="validatedRomsFolder" readonly data-i18n-placeholder="settings.folders.notConfigured" placeholder="Non configuré">
+            <input type="text" id="validatedRomsFolder" spellcheck="false" data-i18n-placeholder="settings.folders.notConfigured" placeholder="Non configuré">
             <button class="btn-browse" onclick="browseFolder('validatedRomsFolder')" data-i18n="common.browse">Parcourir</button>
           </div>
           <p class="info-text" data-i18n="settings.folders.validatedFolderInfo">Emplacement où seront stockées les archives de ROMs consolidées</p>
@@ -952,7 +1023,7 @@
         <div class="setting-row">
           <label for="tempExtractionFolder" data-i18n="settings.folders.tempFolder">Dossier temporaire d'extraction :</label>
           <div class="setting-row-inline">
-            <input type="text" id="tempExtractionFolder" readonly data-i18n-placeholder="settings.folders.notConfigured" placeholder="Non configuré">
+            <input type="text" id="tempExtractionFolder" spellcheck="false" data-i18n-placeholder="settings.folders.notConfigured" placeholder="Non configuré">
             <button class="btn-browse" onclick="browseFolder('tempExtractionFolder')" data-i18n="common.browse">Parcourir</button>
           </div>
           <p class="info-text" data-i18n="settings.folders.tempFolderInfo">Dossier utilisé temporairement lors de l'extraction et du renommage des ROMs</p>
@@ -961,7 +1032,7 @@
         <div class="setting-row">
           <label for="incompleteRomsFolder" data-i18n="settings.folders.incompleteFolder">Dossier cible des ROMs incomplètes :</label>
           <div class="setting-row-inline">
-            <input type="text" id="incompleteRomsFolder" readonly data-i18n-placeholder="settings.folders.notConfigured" placeholder="Non configuré">
+            <input type="text" id="incompleteRomsFolder" spellcheck="false" data-i18n-placeholder="settings.folders.notConfigured" placeholder="Non configuré">
             <button class="btn-browse" onclick="browseFolder('incompleteRomsFolder')" data-i18n="common.browse">Parcourir</button>
           </div>
           <p class="info-text" data-i18n="settings.folders.incompleteFolderInfo">
@@ -972,7 +1043,7 @@
         <div class="setting-row" id="unmatchedRomsFolderRow">
           <label for="unmatchedRomsFolder" data-i18n="settings.folders.unmatchedFolder">Dossier cible des fichiers non matchés :</label>
           <div class="setting-row-inline">
-            <input type="text" id="unmatchedRomsFolder" readonly data-i18n-placeholder="settings.folders.notConfigured" placeholder="Non configuré">
+            <input type="text" id="unmatchedRomsFolder" spellcheck="false" data-i18n-placeholder="settings.folders.notConfigured" placeholder="Non configuré">
             <button class="btn-browse" id="unmatchedRomsFolderBrowse" onclick="browseFolder('unmatchedRomsFolder')" data-i18n="common.browse">Parcourir</button>
           </div>
           <p class="info-text" data-i18n="settings.folders.unmatchedFolderInfo">Emplacement pour stocker les fichiers qui ne correspondent à aucune entrée du DAT</p>
@@ -993,9 +1064,9 @@
         <h4>7-Zip</h4>
 
         <div class="setting-row">
-          <label for="sevenZipPath" data-i18n="settings.tools.sevenZipPath">Chemin vers 7z.exe :</label>
+          <label for="sevenZipPath" data-i18n="settings.tools.sevenZipPath">Chemin vers 7-Zip (7z) :</label>
           <div class="setting-row-inline">
-            <input type="text" id="sevenZipPath" readonly data-i18n-placeholder="settings.tools.autoDetectPlaceholder" placeholder="Détection automatique">
+            <input type="text" id="sevenZipPath" spellcheck="false" data-i18n-placeholder="settings.tools.autoDetectPlaceholder" placeholder="Détection automatique">
             <div class="setting-row-buttons">
               <button class="btn-auto-detect" onclick="autoDetect7Zip()" data-i18n="settings.tools.autoDetect">Auto-détection</button>
               <button class="btn-browse" onclick="browseFile('sevenZipPath', '7z.exe')" data-i18n="common.browse">Parcourir</button>
@@ -1008,31 +1079,41 @@
       <div class="settings-section">
         <h4>chdman (MAME)</h4>
 
-        <div class="setting-row">
-          <label>
-            <input type="checkbox" id="useEmbeddedChdman" checked>
-            <span data-i18n="settings.tools.useEmbeddedChdman">Utiliser la version embarquée de chdman</span>
-          </label>
-          <p class="info-text" data-i18n="settings.tools.useEmbeddedChdmanInfo">Version fournie avec l'application (recommandé)</p>
-        </div>
+        <p class="info-text" style="margin: 0 0 12px;" data-i18n="settings.tools.chdmanInfo">Utilisé pour créer/extraire les images au format CHD : jeux sur CD/DVD/GD-ROM/UMD, certains ordinateurs (Amiga…) et disques des jeux arcade MAME.</p>
 
         <div class="setting-row">
-          <label for="chdmanPath" data-i18n="settings.tools.chdmanPath">Chemin vers chdman personnalisé :</label>
+          <label for="chdmanVersion" data-i18n="settings.tools.chdmanVersionLabel">Version à utiliser :</label>
           <div class="setting-row-inline">
-            <input type="text" id="chdmanPath" readonly data-i18n-placeholder="settings.tools.embeddedByDefault" placeholder="Version embarquée par défaut">
+            <select id="chdmanVersion"></select>
+            <button class="btn-browse" id="btnDeleteChdmanVersion" disabled data-i18n="settings.tools.chdmanDelete">Supprimer</button>
+          </div>
+          <div class="setting-row-buttons" style="margin-top: 10px;">
+            <button class="btn-auto-detect" id="btnCheckChdmanUpdate" data-i18n="settings.tools.chdmanCheckUpdate">🔄 Rechercher une mise à jour</button>
+          </div>
+          <p class="info-text" id="chdmanUpdateProgress" style="display:none; margin: 8px 0 0;"></p>
+          <p class="info-text" id="chdmanUpdateUnsupported" data-i18n="settings.tools.chdmanUpdateUnsupported" style="display:none; margin: 8px 0 0;">
+            La mise à jour automatique n'est disponible que sous Windows. Pour utiliser une version plus récente, installez chdman avec votre gestionnaire de paquets, choisissez « Sélection manuelle » puis renseignez son chemin.
+          </p>
+        </div>
+
+        <div class="setting-row" id="chdmanPathRow" style="display:none;">
+          <label for="chdmanPath" data-i18n="settings.tools.chdmanPath">Chemin vers chdman :</label>
+          <div class="setting-row-inline">
+            <input type="text" id="chdmanPath" spellcheck="false">
             <button class="btn-browse" onclick="browseFile('chdmanPath', 'chdman.exe')" data-i18n="common.browse">Parcourir</button>
           </div>
-          <p class="info-text" data-i18n="settings.tools.chdmanInfo">Utilisé pour créer/extraire les images CD/DVD au format CHD (si version embarquée désactivée)</p>
         </div>
+
+        <p class="info-text" id="chdmanStatus" style="margin: 0;"></p>
       </div>
 
       <div class="settings-section">
         <h4>WinRAR</h4>
 
         <div class="setting-row">
-          <label for="winrarPath" data-i18n="settings.tools.winrarPath">Chemin vers Rar.exe :</label>
+          <label for="winrarPath" data-i18n="settings.tools.winrarPath">Chemin vers Rar (Rar.exe / rar) :</label>
           <div class="setting-row-inline">
-            <input type="text" id="winrarPath" readonly data-i18n-placeholder="settings.tools.optionalPlaceholder" placeholder="Optionnel">
+            <input type="text" id="winrarPath" spellcheck="false" data-i18n-placeholder="settings.tools.optionalPlaceholder" placeholder="Optionnel">
             <div class="setting-row-buttons">
               <button class="btn-auto-detect" onclick="autoDetectWinRAR()" data-i18n="settings.tools.autoDetect">Auto-détection</button>
               <button class="btn-browse" onclick="browseFile('winrarPath', 'Rar.exe')" data-i18n="common.browse">Parcourir</button>
@@ -1046,9 +1127,9 @@
         <h4>UnRAR</h4>
 
         <div class="setting-row">
-          <label for="unrarPath" data-i18n="settings.tools.unrarPath">Chemin vers UnRAR.exe :</label>
+          <label for="unrarPath" data-i18n="settings.tools.unrarPath">Chemin vers UnRAR :</label>
           <div class="setting-row-inline">
-            <input type="text" id="unrarPath" readonly data-i18n-placeholder="settings.tools.optionalPlaceholder" placeholder="Optionnel">
+            <input type="text" id="unrarPath" spellcheck="false" data-i18n-placeholder="settings.tools.optionalPlaceholder" placeholder="Optionnel">
             <div class="setting-row-buttons">
               <button class="btn-auto-detect" onclick="autoDetectUnRAR()" data-i18n="settings.tools.autoDetect">Auto-détection</button>
               <button class="btn-browse" onclick="browseFile('unrarPath', 'UnRAR.exe')" data-i18n="common.browse">Parcourir</button>
@@ -1079,6 +1160,7 @@
     <!-- ===== ONGLET ARCHIVES ===== -->
     <div id="tab-archives" class="tab-pane">
       <h3 data-i18n="settings.tabs.archives">Compression</h3>
+      <p class="profile-banner" data-profile-banner></p>
 
       <div class="settings-section">
         <h4 data-i18n="settings.archives.prioritySection">Ordre de priorité des formats d'archives cibles</h4>
@@ -1095,6 +1177,9 @@
           Les formats d'archives seront choisis dans cet ordre en fonction
           de la compatibilité avec le système du fichier DAT.
         </p>
+        <div id="m3uPriorityNotice" class="warning-box" data-i18n-html="settings.archives.m3uPriorityNotice" style="display: none;">
+          <strong>💿 La création de .m3u est activée pour ce profil :</strong> les jeux multi-disques ignorent le 7Z et le ZIP.
+        </div>
       </div>
 
       <div class="settings-section">
@@ -1165,6 +1250,7 @@
     <!-- ===== ONGLET NETTOYAGE ===== -->
     <div id="tab-cleanup" class="tab-pane">
       <h3 data-i18n="settings.tabs.cleanup">Nettoyage</h3>
+      <p class="profile-banner" data-profile-banner></p>
 
       <div class="settings-section">
         <h4 data-i18n="settings.cleanup.afterConsolidationSection">Nettoyage après consolidation</h4>
@@ -1209,23 +1295,20 @@
             <span data-i18n="settings.cleanup.moveUnmatched">Déplacer les fichiers non matchés vers le dossier dédié</span>
           </label>
           <p class="info-text" data-i18n="settings.cleanup.moveUnmatchedInfo">Les fichiers qui ne correspondent à aucun jeu du DAT seront déplacés dans le dossier ci-dessous</p>
+          <div class="info-text" id="moveUnmatchedFolderReminder"></div>
         </div>
 
-        <div class="setting-row" id="unmatchedRomsFolderCleanupRow">
-          <label for="unmatchedRomsFolderCleanup" data-i18n="settings.folders.unmatchedFolder">Dossier cible des fichiers non matchés :</label>
-          <div class="setting-row-inline">
-            <input type="text" id="unmatchedRomsFolderCleanup" readonly data-i18n-placeholder="settings.folders.notConfigured" placeholder="Non configuré">
-            <button class="btn-browse" onclick="browseFolder('unmatchedRomsFolderCleanup')" data-i18n="common.browse">Parcourir</button>
-          </div>
-          <p class="info-text" data-i18n="settings.folders.unmatchedFolderInfo">Emplacement pour stocker les fichiers qui ne correspondent à aucune entrée du DAT</p>
-          <p class="info-text" data-i18n="settings.cleanup.syncedWithFolders">Synchronisé avec le champ identique dans l'onglet « Dossiers ».</p>
-        </div>
+        <p class="info-text" data-i18n-html="settings.cleanup.unmatchedFolderGlobal">
+          Le dossier de destination est un paramètre global, commun à tous les profils :
+          <a href="#" data-goto-tab="folders">onglet « Dossiers »</a>.
+        </p>
       </div>
     </div>
 
     <!-- ===== ONGLET ARCADE (MAME) ===== -->
     <div id="tab-arcade" class="tab-pane">
       <h3 data-i18n="settings.tabs.arcade">Arcade (MAME)</h3>
+      <p class="profile-banner" data-profile-banner></p>
 
       <div class="settings-section">
         <h4 data-i18n="settings.arcade.setModeSection">Mode du set cible</h4>
@@ -1309,9 +1392,41 @@
       </div>
     </div>
 
+    <!-- ===== ONGLET MULTI-DISQUES ===== -->
+    <div id="tab-multidisc" class="tab-pane">
+      <h3 data-i18n="settings.tabs.multiDisc">Multi-disques</h3>
+      <p class="profile-banner" data-profile-banner></p>
+
+      <div class="settings-section">
+        <h4 data-i18n="settings.multiDisc.section">Listes de lecture .m3u</h4>
+
+        <div class="setting-row">
+          <label>
+            <input type="checkbox" id="generateM3u">
+            <span data-i18n="settings.multiDisc.generateM3u">Créer un fichier .m3u pour les jeux multi-disques / multi-supports</span>
+          </label>
+          <p class="info-text" data-i18n-html="settings.multiDisc.generateM3uInfo">
+            Les jeux découpés en plusieurs entrées du DAT reçoivent un fichier <code>&lt;jeu&gt;.m3u</code> placé à côté de leurs disques.
+          </p>
+          <div id="m3uWarning" class="warning-box" data-i18n-html="settings.multiDisc.warning" style="display: none;">
+            <strong>⚠️ Impact sur la compression :</strong> les disques des jeux multi-disques ne sont jamais compressés en 7Z ou ZIP.
+          </div>
+        </div>
+      </div>
+    </div>
+
     <!-- ===== ONGLET 1G1R ===== -->
     <div id="tab-onegameonerom" class="tab-pane">
       <h3 data-i18n="settings.oneGameOneRom.title">1G1R — 1 jeu, 1 ROM</h3>
+      <p class="profile-banner" data-profile-banner></p>
+
+      <div class="warning-box" style="margin-bottom: 16px;">
+        <p class="info-text" style="margin: 0;" data-i18n-html="settings.oneGameOneRom.tabIntro">
+          Ces valeurs servent de <strong>point de départ</strong> pour un système dont aucun modèle
+          n'a encore été enregistré. Les réglages réellement appliqués à une base se modifient dans
+          <strong>Sélection auto</strong>, depuis la fenêtre principale, et sont propres à chaque base.
+        </p>
+      </div>
 
       <div class="settings-section">
         <div class="setting-row">
@@ -1319,11 +1434,11 @@
             <input type="checkbox" id="ogorEnabled">
             <span data-i18n="settings.oneGameOneRom.enable">Activer la sélection 1G1R</span>
           </label>
-          <p class="info-text" data-i18n-html="settings.oneGameOneRom.enableInfo">
-            Désactivé, <strong>rien ne change</strong> : RUMCET se comporte exactement comme sans
-            cette fonction. Activé, la sélection automatique ne conserve qu'une version par jeu,
-            en arbitrant les variantes selon les priorités ci-dessous. La sélection reste
-            entièrement modifiable à la main ensuite.
+          <p class="info-text" data-i18n="settings.oneGameOneRom.enableInfo">
+            Détermine si le 1G1R est coché d'emblée pour une nouvelle base. La sélection
+            automatique ne conserve alors qu'une version par jeu, en arbitrant les variantes
+            selon les priorités ci-dessous. Rien n'est appliqué tant que vous ne cliquez pas
+            sur « Appliquer » dans l'écran de sélection automatique.
           </p>
         </div>
       </div>
@@ -1399,30 +1514,35 @@
             <input type="checkbox" id="ogorFallbackToOwned" checked>
             <span data-i18n="settings.oneGameOneRom.fallbackToOwned">Retomber sur une version que je possède</span>
           </label>
-          <p class="info-text" data-i18n-html="settings.oneGameOneRom.fallbackToOwnedInfo">
+          <p class="info-text" data-i18n="settings.oneGameOneRom.fallbackToOwnedInfo">
             Quand la version préférée est absente de votre collection mais qu'une autre est présente,
-            garder celle que vous avez plutôt que de laisser un trou. <strong>C'est ce qu'un outil
-            travaillant sur le seul fichier DAT ne peut pas faire</strong> : il ignore ce que vous
-            possédez réellement. Décochez pour un 1G1R strict, calculé sur le DAT seul.
+            garder celle que vous possédez plutôt que de laisser un trou. Décochez pour appliquer
+            les priorités à la lettre : le jeu sera alors signalé manquant tant que la version
+            préférée n'aura pas été trouvée.
           </p>
         </div>
       </div>
 
+    </div>
+
+    <!-- ===== ONGLET CLONE LISTS ===== -->
+    <div id="tab-clonelists" class="tab-pane">
+      <h3 data-i18n="settings.tabs.cloneLists">Clone lists</h3>
+
       <div class="settings-section">
         <h4 data-i18n="settings.oneGameOneRom.cloneListSection">Clone lists</h4>
         <p class="info-text" style="margin-bottom: 12px;" data-i18n-html="settings.oneGameOneRom.cloneListInfo">
-          Un même jeu paraît parfois sous des noms sans rapport selon la région
-          (<em>Pokémon Version Or</em> / <em>Pokémon Goldene Edition</em> / <em>Pocket Monsters Kin</em>).
-          Aucune analyse de titre ne peut le deviner : ces relations sont une donnée éditoriale,
-          curée à la main par la communauté. RUMCET les <strong>consomme</strong> sans les maintenir.
+          Un même jeu paraît parfois sous des noms sans rapport selon la région —
+          <em>Pokémon Version Or</em>, <em>Pokémon Goldene Edition</em> et <em>Pocket Monsters Kin</em>
+          sont tous Pokémon Or. Les clone lists consignent ces correspondances, qu'aucune analyse
+          de titre ne peut deviner, pour que le 1G1R n'en garde qu'une.
         </p>
 
         <div class="setting-row">
           <label for="cloneListSourceUrl" data-i18n="settings.oneGameOneRom.cloneListSource">Source des listes :</label>
           <input type="text" id="cloneListSourceUrl" style="width: 100%;">
           <p class="info-text" data-i18n="settings.oneGameOneRom.cloneListSourceInfo">
-            URL du dossier contenant les fichiers .json. Modifiable : c'est ce qui rend RUMCET
-            indépendant du sort d'un dépôt en particulier.
+            URL du dossier contenant les fichiers .json. Modifiez-la pour utiliser un miroir ou un fork.
           </p>
         </div>
 
@@ -1433,40 +1553,30 @@
             <button class="btn-secondary" onclick="browseFolder('cloneListFolder')" data-i18n="common.browse">Parcourir</button>
           </div>
           <p class="info-text" data-i18n="settings.oneGameOneRom.cloneListFolderInfo">
-            Laissez vide pour utiliser le dossier de données de l'application.
+            Emplacement des clone lists téléchargées. Laissez vide pour utiliser le dossier de
+            données de l'application.
           </p>
+          <p class="info-text" id="cloneListFolderEffective"></p>
         </div>
 
         <div class="setting-row">
           <label>
-            <input type="checkbox" id="cloneListAutoApply">
-            <span data-i18n="settings.oneGameOneRom.cloneListAutoApply">Réappliquer automatiquement après chaque chargement de DAT</span>
+            <input type="checkbox" id="cloneListAutoUpdate" checked>
+            <span data-i18n="settings.oneGameOneRom.cloneListAutoUpdate">Tenir les clone lists à jour automatiquement</span>
           </label>
-          <p class="info-text" data-i18n-html="settings.oneGameOneRom.cloneListAutoApplyInfo">
-            Charger un DAT <strong>principal</strong> vide et réécrit la table des jeux : les
-            regroupements posés par une clone list disparaissent avec elle. Charger un DAT
-            <strong>complémentaire</strong> ajoute des jeux qui n'en ont pas encore.
-            Sans cette option, il faut rouvrir « Sélection auto » et cliquer « Appliquer » à chaque fois.
-          </p>
-        </div>
-
-        <div class="setting-row">
-          <label>
-            <input type="checkbox" id="cloneListAutoDownload">
-            <span data-i18n="settings.oneGameOneRom.cloneListAutoDownload">Télécharger la liste manquante avant de l'appliquer</span>
-          </label>
-          <p class="info-text" data-i18n="settings.oneGameOneRom.cloneListAutoDownloadInfo">
-            Sous-option de la précédente. Au chargement d'un DAT, si aucune clone list locale ne
-            correspond au système, elle est téléchargée puis appliquée. Une liste déjà présente
-            n'est jamais retéléchargée : la mise à jour reste une action manuelle.
+          <p class="info-text" data-i18n="settings.oneGameOneRom.cloneListAutoUpdateInfo">
+            À chaque chargement de DAT et à chaque ouverture d'une base, RUMCET vérifie si la
+            clone list du système a été mise à jour, la télécharge le cas échéant, puis l'applique.
+            Décochée, RUMCET utilise les clone lists déjà présentes dans le dossier local, sans rien
+            télécharger. Dans les deux cas, vous pouvez mettre à jour la clone list à tout moment
+            par un clic droit sur le fichier DAT/XML dans le volet de gauche.
           </p>
         </div>
 
         <div class="warning-box" style="margin-top: 12px;">
           <p class="info-text" style="margin: 0;" data-i18n-html="settings.oneGameOneRom.cloneListAttribution">
-            Le format des clone lists et le dépôt proposé par défaut proviennent du projet
-            <strong>Retool</strong> de unexpectedpanda, sous licence <strong>BSD-3-Clause</strong>.
-            RUMCET n'en est ni l'auteur ni le mainteneur. Voir <code>THIRD_PARTY_NOTICES.md</code>.
+            Les clone lists proviennent du projet <strong>Retool</strong> de unexpectedpanda,
+            sous licence <strong>BSD-3-Clause</strong>. Voir <code>THIRD_PARTY_NOTICES.md</code>.
           </p>
         </div>
       </div>
@@ -1475,17 +1585,39 @@
     <!-- ===== ONGLET COMPATIBILITÉ ===== -->
     <div id="tab-compatibility" class="tab-pane">
       <h3 data-i18n="settings.tabs.compatibility">Compatibilité par système</h3>
+      <p class="profile-banner" data-profile-banner></p>
 
       <div class="settings-section">
-        <div style="display: flex; justify-content: space-between; align-items: start; margin-bottom: 10px;">
-          <p class="info-text" style="margin: 0;" data-i18n="settings.compatibility.info">
-            Configurez les formats d'archives compatibles par système.
-            Certains émulateurs ne supportent pas tous les formats.
-            Les formats avec ⚠️ fonctionnent mais peuvent avoir des limitations.
+        <p class="info-text" style="margin: 0 0 10px;" data-i18n="settings.compatibility.info">
+          Configurez les formats d'archives compatibles par système.
+          Certains émulateurs ne supportent pas tous les formats.
+          Les formats avec ⚠️ fonctionnent mais peuvent avoir des limitations.
+        </p>
+
+        <div class="compat-rule-row">
+          <label for="compatRuleSelect" data-i18n="settings.compatibility.ruleLabel">Appliquer une règle à tous les systèmes :</label>
+          <select id="compatRuleSelect">
+            <option value="universal" data-i18n="settings.compatibility.rules.universal">Compatibilité 100 %</option>
+            <option value="recalbox" data-i18n="settings.compatibility.rules.recalbox">Recalbox</option>
+            <option value="master" data-i18n="settings.compatibility.rules.master">Archivage / Master</option>
+          </select>
+          <button class="btn-secondary" id="btnApplyCompatRule" data-i18n="settings.compatibility.applyRule">Appliquer</button>
+        </div>
+        <p class="info-text" style="margin: -4px 0 12px;" id="compatRuleInfo"></p>
+
+        <div class="systems-update-box">
+          <p class="systems-data-status" id="systemsDataStatus"></p>
+          <p class="info-text" style="margin: 0 0 8px;" data-i18n="settings.systemsUpdate.info">
+            Recalbox évolue indépendamment de Rumcet : vous pouvez actualiser la liste des systèmes et leurs formats depuis la version de Recalbox que vous utilisez. Un aperçu des différences est affiché avant application.
           </p>
-          <button class="btn-secondary" onclick="resetAllSystemCompatibility()" style="white-space: nowrap; margin-left: 15px;" data-i18n="settings.compatibility.resetAll" data-i18n-title="settings.compatibility.resetAllTitle" title="Réinitialiser tous les systèmes aux valeurs par défaut">
-            ↺ Tout réinitialiser
-          </button>
+          <div class="systems-update-controls">
+            <label for="recalboxRefSelect" data-i18n="settings.systemsUpdate.versionLabel">Version de Recalbox :</label>
+            <select id="recalboxRefSelect" disabled>
+              <option value="" data-i18n="settings.systemsUpdate.versionsNotLoaded">—</option>
+            </select>
+            <button class="btn-primary" id="btnCheckSystemsUpdate" disabled data-i18n="settings.systemsUpdate.check">🔄 Vérifier les mises à jour</button>
+            <button class="btn-secondary" id="btnResetSystemsData" disabled data-i18n="settings.systemsUpdate.reset" data-i18n-title="settings.systemsUpdate.resetTitle" title="Revenir aux données livrées avec Rumcet">Revenir aux données intégrées</button>
+          </div>
         </div>
 
         <div class="setting-row">

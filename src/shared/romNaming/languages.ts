@@ -56,6 +56,28 @@ export function canonicalizeLanguage(raw: string): LanguageCode | null {
 }
 
 /**
+ * Libellé lisible d'un code langue : « En » → « English (En) ».
+ *
+ * S'appuie sur `Intl.DisplayNames`, fourni par l'ICU embarqué : les 50 codes sont
+ * traduits dans la langue de l'interface sans qu'aucune table n'ait à être maintenue
+ * ni traduite à la main. Le code reste affiché entre parenthèses, car c'est lui qui
+ * figure dans les noms de fichiers des DAT.
+ *
+ * Retombe sur le code brut si l'ICU ne connaît pas la valeur (codes non ISO).
+ */
+export function languageDisplayName(code: string, locale = 'en'): string {
+  try {
+    const name = new Intl.DisplayNames([locale], { type: 'language' }).of(code.toLowerCase());
+    if (name && name.toLowerCase() !== code.toLowerCase()) {
+      return `${name.charAt(0).toUpperCase()}${name.slice(1)} (${code})`;
+    }
+  } catch {
+    // Intl.DisplayNames indisponible ou code non reconnu : on garde le code.
+  }
+  return code;
+}
+
+/**
  * Teste si un groupe de parenthèses est une liste de langues.
  * Exige que **tous** les éléments séparés par virgule soient des codes connus : un
  * seul intrus (« Europe ») disqualifie le groupe, qui sera traité comme région.

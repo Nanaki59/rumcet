@@ -1,0 +1,122 @@
+/*
+ * RUMCET - ROM's Ultimate Manager, Conversion and Editor Tool
+ * Copyright (C) 2025 Nanaki59
+ *
+ * This program is free software: you can redistribute it and/or modify
+ * it under the terms of the GNU Affero General Public License as published
+ * by the Free Software Foundation, either version 3 of the License, or
+ * (at your option) any later version.
+ *
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU Affero General Public License for more details.
+ *
+ * You should have received a copy of the GNU Affero General Public License
+ * along with this program.  If not, see <https://www.gnu.org/licenses/>.
+ */
+
+/* src/renderer/priorityList.css
+ *
+ * Styles du widget de listes de priorité ordonnables (src/renderer/priorityList.ts).
+ * Partagés par la fenêtre des paramètres (formats d'archive, outils RAR) et la
+ * fenêtre principale (priorités 1G1R de la modale de sélection automatique) : ces
+ * règles vivaient dans le <style> de settings.html et n'étaient donc pas atteignables
+ * depuis index.html.
+ */
+
+.format-priority-container {
+  background: #f8f9fa;
+  border: 1px solid #ddd;
+  border-radius: 4px;
+  padding: 15px;
+}
+
+.format-priority-list {
+  min-height: 120px;
+  margin-bottom: 15px;
+}
+
+.format-priority-item {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  background: white;
+  border: 1px solid #ddd;
+  border-radius: 4px;
+  padding: 12px;
+  margin-bottom: 8px;
+  cursor: move;
+  transition: all 0.2s;
+}
+
+.format-priority-item:hover {
+  border-color: #3498db;
+  box-shadow: 0 2px 4px rgba(52, 152, 219, 0.1);
+}
+
+.format-priority-item.dragging {
+  opacity: 0.5;
+}
+
+.format-priority-item.drag-over {
+  border-top: 3px solid #3498db;
+}
+
+.format-order {
+  font-weight: bold;
+  color: #7f8c8d;
+  min-width: 25px;
+}
+
+/* Les noms de langues complets peuvent être longs dans une colonne étroite : on
+   tronque proprement, le libellé entier restant accessible en infobulle. */
+.format-name {
+  flex: 1;
+  min-width: 0;
+  font-weight: 500;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.format-name.format-7z { color: #e74c3c; }
+.format-name.format-zip { color: #f39c12; }
+.format-name.format-chd { color: #9b59b6; }
+
+.format-actions {
+  display: flex;
+  gap: 5px;
+}
+
+.btn-icon {
+  background: none;
+  border: 1px solid #bdc3c7;
+  border-radius: 3px;
+  padding: 4px 8px;
+  cursor: pointer;
+  color: #7f8c8d;
+  font-size: 14px;
+}
+
+.btn-icon:hover {
+  border-color: #3498db;
+  color: #3498db;
+}
+
+/* Variante compacte, utilisée dans la modale de sélection automatique où trois
+   listes cohabitent avec le reste du formulaire. */
+.priority-compact .format-priority-list {
+  min-height: 0;
+  margin-bottom: 8px;
+}
+
+.priority-compact .format-priority-container {
+  padding: 8px;
+}
+
+.priority-compact .format-priority-item {
+  padding: 5px 8px;
+  margin-bottom: 4px;
+  font-size: 13px;
+}

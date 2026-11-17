@@ -25,17 +25,19 @@ import path from 'path';
 import fs from 'fs/promises';
 import AdmZip from 'adm-zip';
 import Seven from 'node-7z';
-import sevenBin from '7zip-bin';
-import { SYSTEMS } from '../../config/systems.js';
+import { getBundled7zaPath } from '../../helpers/toolPaths.js';
+import { SYSTEMS, getBundledSystem } from '../../config/systems.js';
+import { fetchRecalboxTags, type RecalboxChannel } from '../../helpers/recalboxGitlab.js';
 import { settingsManager } from '../../helpers/settingsManager.js';
 import { getDatabasePathFromDat } from '../../helpers/getDatabasePathFromDat.js';
 import { databaseService } from '../services/database.service.js';
 import { getMetadata } from '../../database/init.js';
-import { createDatabaseAndLoadDat } from './database.handlers.js';
+import { createDatabaseAndLoadDat, saveDbFolderSettings, DbFolderInput } from './database.handlers.js';
 import { loadComplementaryDatFromPath } from './dat.handlers.js';
-import type { DatSystemInfo, MameVersion, DatDownloadParams, DatDownloadResult, NoIntroFormParams, PleasuredomeDatEntry } from '../../types/global.js';
+import type { DatSystemInfo, MameVersion, RecalboxMameChannel, RecalboxMameRef, DatDownloadParams, DatDownloadResult, NoIntroFormParams, PleasuredomeDatEntry } from '../../types/global.js';
 
-const pathTo7zip = sevenBin.path7za;
+// 7za de 7zip-bin, hors de app.asar dans la version packagée
+const pathTo7zip = getBundled7zaPath();
 
 const USER_AGENT = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36';
 const REQUEST_TIMEOUT = 60000;
@@ -140,12 +142,24 @@ function httpPost(url: string, body: string, contentType: string): Promise<Buffe
 // Récupération des listes de systèmes
 // ==========================================
 
+/**
+ * Pages d'index des sources, ouvertes dans le navigateur externe pour les systèmes
+ * sans source DAT connue (jamais interrogées par l'application : DAT-o-Matic
+ * bannit les IP des outils qui ne sont pas un navigateur reconnu).
+ */
+const SOURCE_INDEX_URLS: Record<'no-intro' | 'redump', string> = {
+  'no-intro': 'https://datomatic.no-intro.org/index.php?page=download',
+  'redump': 'http://redump.org/downloads/'
+};
+
 function buildUnifiedSystemList(): DatSystemInfo[] {
+  // Systèmes avec sources DAT + systèmes ajoutés par une mise à jour Recalbox
+  // (sans source connue : l'utilisateur peut chercher puis associer manuellement)
   return SYSTEMS
-    .filter(sys => sys.datSources && (sys.datSources['no-intro'] || sys.datSources['redump']))
+    .filter(sys => sys.datSources?.['no-intro'] || sys.datSources?.['redump'] || sys.addedByUpdate)
     .map(sys => {
       const sources: DatSystemInfo['sources'] = [];
-      const ds = sys.datSources!;
+      const ds = sys.datSources ?? {};
       if (ds['no-intro']) {
         sources.push({
           type: 'no-intro',
@@ -162,71 +176,79 @@ function buildUnifiedSystemList(): DatSystemInfo[] {
       }
       // Format d'affichage : "Manufacturer - Fullname" pour préserver le tri par constructeur
       const displayName = sys.manufacturer ? `${sys.manufacturer} - ${sys.fullname}` : sys.fullname;
-      return { name: displayName, sources };
+      const info: DatSystemInfo = { name: displayName, systemId: sys.systemId, sources };
+      if (sources.length === 0) info.unknownSource = true;
+      else if (!getBundledSystem(sys.systemId)?.datSources) info.userDefinedSources = true;
+      return info;
     })
     .sort((a, b) => a.name.localeCompare(b.name));
 }
 
 interface RecalboxMameInfo {
-  /** Versions MAME par type de release : 'Stable' | 'Patron' | 'Alpha' → Set de versions Recalbox (ex: '0278') */
-  byRelease: Map<string, Set<string>>;
+  /**
+   * Par type de release ('Stable' | 'Patron' | 'Alpha') : dernier tag Recalbox de ce
+   * canal et versions MAME qu'il embarque (ex: '0278').
+   */
+  byRelease: Map<RecalboxMameChannel, { ref: string; versions: Set<string> }>;
 }
+
+const RECALBOX_CHANNEL_LABELS: Record<RecalboxMameChannel, string> = {
+  stable: 'Stable',
+  patron: 'Patron',
+  patronAlpha: 'Patron Alpha',
+  alpha: 'Alpha'
+};
 
 async function fetchRecalboxMameVersions(): Promise<RecalboxMameInfo> {
   const info: RecalboxMameInfo = { byRelease: new Map() };
 
   try {
-    // 1) Récupérer les tags récents pour identifier le dernier stable, patron, alpha
-    const tagsJson = (await httpGet(
-      'https://gitlab.com/api/v4/projects/recalbox%2Frecalbox/repository/tags?per_page=100&order_by=updated&sort=desc'
-    )).toString('utf-8');
-    const tags: Array<{ name: string }> = JSON.parse(tagsJson);
+    // 1) Dernier tag de chaque canal (tags triés du plus récent au plus ancien ;
+    //    classement partagé avec la mise à jour des systèmes)
+    const tags = await fetchRecalboxTags();
+    const latest = (channel: RecalboxChannel) => tags.find(tag => tag.channel === channel)?.name ?? null;
 
-    let stableTag: string | null = null;
-    let patronTag: string | null = null;
-    let alphaTag: string | null = null;
-
-    for (const t of tags) {
-      const n = t.name;
-      if (!stableTag && !n.includes('alpha') && !n.includes('patron') && !n.includes('special') && !n.includes('rpi')) {
-        stableTag = n;
-      }
-      if (!patronTag && n.includes('patron')) {
-        patronTag = n;
-      }
-      if (!alphaTag && n.includes('alpha') && !n.includes('patron') && !n.includes('special')) {
-        alphaTag = n;
-      }
-      if (stableTag && patronTag && alphaTag) break;
-    }
-
-    // 2) Pour chaque type de release, récupérer les versions MAME
-    const releases: Array<[string, string | null]> = [
-      ['Stable', stableTag],
-      ['Patron', patronTag],
-      ['Alpha', alphaTag],
+    // 2) Pour chaque canal, récupérer les versions MAME
+    const releases: Array<[RecalboxMameChannel, string | null]> = [
+      ['stable', latest('stable')],
+      ['patron', latest('patron')],
+      ['patronAlpha', latest('patronAlpha')],
+      ['alpha', latest('alpha')],
     ];
 
     await Promise.all(releases.map(async ([label, ref]) => {
       if (!ref) return;
       const versions = new Set<string>();
       try {
+        let unifiedPackage = false;
         for (let page = 1; page <= 5; page++) {
           const url = `https://gitlab.com/api/v4/projects/recalbox%2Frecalbox/repository/tree?path=package&per_page=100&page=${page}&ref=${encodeURIComponent(ref)}`;
           const data = JSON.parse((await httpGet(url)).toString('utf-8'));
           if (!Array.isArray(data) || data.length === 0) break;
 
           for (const entry of data) {
-            if (entry.type === 'tree' && entry.name.startsWith('libretro-mame')) {
-              versions.add(entry.name.replace('libretro-mame', ''));
-            }
+            if (entry.type !== 'tree' || !entry.name.startsWith('libretro-mame')) continue;
+            if (entry.name === 'libretro-mame') unifiedPackage = true;
+            else versions.add(entry.name.replace('libretro-mame', ''));
+          }
+        }
+
+        // Recalbox 11+ : un seul paquet libretro-mame (sous-paquets -latest / -old),
+        // versions déclarées dans libretro-mame.mk (LIBRETRO_MAME_*_VERSION_NAME = 0287)
+        if (unifiedPackage) {
+          const mkPath = encodeURIComponent('package/libretro-mame/libretro-mame.mk');
+          const mk = (await httpGet(
+            `https://gitlab.com/api/v4/projects/recalbox%2Frecalbox/repository/files/${mkPath}/raw?ref=${encodeURIComponent(ref)}`
+          )).toString('utf-8');
+          for (const m of mk.matchAll(/^\s*LIBRETRO_MAME_\w*VERSION_NAME\s*=\s*(\d+)\s*$/gm)) {
+            versions.add(m[1]);
           }
         }
       } catch {
         // Ignorer les erreurs par release
       }
       if (versions.size > 0) {
-        info.byRelease.set(label, versions);
+        info.byRelease.set(label, { ref, versions });
       }
     }));
   } catch (error) {
@@ -236,13 +258,18 @@ async function fetchRecalboxMameVersions(): Promise<RecalboxMameInfo> {
   return info;
 }
 
-function matchRecalboxTags(progettoVersion: string, recalboxInfo: RecalboxMameInfo): string | undefined {
+/** Canaux Recalbox (dernier tag de chacun) utilisant cette version de MAME. */
+function matchRecalboxTags(progettoVersion: string, recalboxInfo: RecalboxMameInfo): RecalboxMameRef[] {
   // progettoVersion est au format "0.278" — on cherche "0278" dans Recalbox
   const noDot = progettoVersion.replace('.', '');
 
-  const matchedLabels: string[] = [];
+  const matched: RecalboxMameRef[] = [];
 
-  for (const [label, versions] of recalboxInfo.byRelease) {
+  // Ordre fixe des badges (byRelease est rempli dans l'ordre d'arrivée des requêtes)
+  for (const channel of Object.keys(RECALBOX_CHANNEL_LABELS) as RecalboxMameChannel[]) {
+    const release = recalboxInfo.byRelease.get(channel);
+    if (!release) continue;
+    const { ref, versions } = release;
     let found = false;
     // Correspondance directe
     if (versions.has(noDot)) {
@@ -257,12 +284,11 @@ function matchRecalboxTags(progettoVersion: string, recalboxInfo: RecalboxMameIn
       }
     }
     if (found) {
-      matchedLabels.push(label);
+      matched.push({ channel, ref });
     }
   }
 
-  if (matchedLabels.length === 0) return undefined;
-  return matchedLabels.join(' / ');
+  return matched;
 }
 
 async function fetchMameVersions(): Promise<MameVersion[]> {
@@ -303,12 +329,14 @@ async function fetchMameVersions(): Promise<MameVersion[]> {
     }
 
     // Vérifier si cette version est utilisée par Recalbox
-    const recalboxTag = matchRecalboxTags(versionText, recalboxVersions);
+    const recalboxRefs = matchRecalboxTags(versionText, recalboxVersions);
 
     versions.push({
       version: versionText,
       date: dateText || undefined,
-      recalboxTag,
+      // Texte de recherche (libellés non traduits) ; l'affichage traduit recalboxRefs
+      recalboxTag: recalboxRefs.length > 0 ? recalboxRefs.map(r => RECALBOX_CHANNEL_LABELS[r.channel]).join(' / ') : undefined,
+      recalboxRefs: recalboxRefs.length > 0 ? recalboxRefs : undefined,
       downloadUrl
     });
   }
@@ -604,7 +632,7 @@ export function registerDatDownloadHandlers(getMainWindow?: () => BrowserWindow 
    * Notifie la fenêtre principale via l'événement 'dat-download:loaded' pour
    * qu'elle rafraîchisse son état (bandeau, liste de jeux, workflow).
    */
-  ipcMain.handle('dat-download:load', async (_event, params: { datPath: string; dbPath?: string; overwrite?: boolean }) => {
+  ipcMain.handle('dat-download:load', async (_event, params: { datPath: string; dbPath?: string; overwrite?: boolean; folders?: DbFolderInput }) => {
     const { datPath } = params;
     if (!datPath) throw new Error('Aucun fichier DAT spécifié.');
 
@@ -633,6 +661,11 @@ export function registerDatDownloadHandlers(getMainWindow?: () => BrowserWindow 
     }
 
     const result = await createDatabaseAndLoadDat(datPath, dbPath);
+    // Dossiers choisis pour cette base (cible, sous-dossier système, dossiers de travail)
+    const created = databaseService.getDatabase();
+    if (params.folders && created) {
+      await saveDbFolderSettings(created, params.folders);
+    }
     const payload = { mode: 'primary' as const, datPath, ...result };
     getMainWindow?.()?.webContents.send('dat-download:loaded', payload);
     return payload;
@@ -698,6 +731,9 @@ export function registerDatDownloadHandlers(getMainWindow?: () => BrowserWindow 
         url = version.downloadUrl;
       } else if (type === 'pleasuredome') {
         url = params.url || PLEASUREDOME_MAME_URL;
+      } else if (type === 'source-index') {
+        if (source !== 'no-intro' && source !== 'redump') return { success: false, error: `Source inconnue: ${source}` };
+        url = SOURCE_INDEX_URLS[source];
       } else if (type === 'system') {
         if (!source || !systemId) return { success: false, error: 'Source ou système non spécifié' };
         if (source === 'redump') url = `http://redump.org/datfile/${systemId}/`;

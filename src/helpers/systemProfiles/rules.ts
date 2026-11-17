@@ -64,6 +64,38 @@ export function determineTargetFormat(
   return null;
 }
 
+/** Formats cibles qu'un .m3u peut référencer (une archive 7z/zip n'est pas lisible par les cores). */
+export const M3U_COMPATIBLE_FORMATS: readonly ArchiveFormat[] = ['chd'];
+
+/** Le système accepte-t-il les .m3u (extensions du registre) ? */
+export function systemAcceptsM3u(systemId: string): boolean {
+  const sys = getSystemById(systemId);
+  if (!sys) return false;
+  return [...sys.datRawFormats, ...sys.extraRawFormats].some(ext => ext.toLowerCase() === 'm3u');
+}
+
+/**
+ * Copie superficielle des paramètres où les formats autorisés du système sont
+ * restreints aux formats compatibles .m3u. Liste vide → mode brut (fichiers à plat).
+ * Le reste du moteur (format cible, copie directe, meilleure compression) suit sans
+ * logique spécifique.
+ */
+export function withM3uCompatibleFormats<T extends AppSettings>(settings: T, systemId: string): T {
+  const supportedFormats = getSystemAllowedFormats(systemId, settings)
+    .filter(f => M3U_COMPATIBLE_FORMATS.includes(f));
+  const sameSystem = (sc: { systemId: string }) => sc.systemId.toLowerCase() === systemId.toLowerCase();
+  const current = settings.systemCompatibility ?? [];
+  const existing = current.find(sameSystem);
+  const sys = getSystemById(systemId);
+  const restricted = existing
+    ? { ...existing, supportedFormats }
+    : { systemId, systemName: sys?.fullname ?? systemId, category: 'console' as const, supportedFormats };
+  return {
+    ...settings,
+    systemCompatibility: [...current.filter(sc => !sameSystem(sc)), restricted]
+  };
+}
+
 /**
  * Extensions acceptées comme point d'entrée pour chdman
  * (.bin seul n'est PAS suffisant — il faut un .cue, .gdi, .iso, etc.)

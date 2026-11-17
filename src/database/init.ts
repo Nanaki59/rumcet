@@ -4,7 +4,7 @@ import fs from 'fs/promises';
 import path from 'path';
 import { buildGameNamingColumns, namingModeFromSetMode } from '../shared/romNaming/index.js';
 
-const currentSchemaVersion = '2.2';
+const currentSchemaVersion = '2.5';
 
 export class Database {
   private db: sqlite3.Database;
@@ -183,6 +183,10 @@ async function initSchema(db: Database): Promise<void> {
       --                   par elle, et un tri alphabétique retiendrait la plus ancienne.
       release_date TEXT,
       group_key TEXT,
+      -- v2.3 — catégorie telle que déclarée par le DAT, conservée intacte.
+      -- Une clone list peut surcharger la colonne category ; sans cette copie, la
+      -- surcharge serait irréversible et survivrait au retrait de la liste.
+      dat_category TEXT,
       created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
       FOREIGN KEY (source_id) REFERENCES dat_sources(id) ON DELETE SET NULL
     );
@@ -246,6 +250,7 @@ async function initSchema(db: Database): Promise<void> {
       parent_folder_id INTEGER,
       is_root BOOLEAN DEFAULT 0,
       file_count INTEGER DEFAULT 0,
+      scan_status TEXT DEFAULT 'complete',
       scanned_at DATETIME DEFAULT CURRENT_TIMESTAMP,
       FOREIGN KEY (parent_folder_id) REFERENCES scanned_folders(id) ON DELETE CASCADE
     );
@@ -268,6 +273,7 @@ async function initSchema(db: Database): Promise<void> {
       compression_level INTEGER,
       has_comment BOOLEAN DEFAULT 0,
       has_global_comment BOOLEAN DEFAULT 0,
+      file_mtime INTEGER,
       scanned_at DATETIME DEFAULT CURRENT_TIMESTAMP,
       FOREIGN KEY (folder_id) REFERENCES scanned_folders(id) ON DELETE CASCADE
     );
@@ -469,6 +475,15 @@ async function migrateSchemaIfNeeded(db: Database, currentVersion: string): Prom
   }
   if (currentVersion < '2.2') {
     await migrateToV2_2(db);
+  }
+  if (currentVersion < '2.3') {
+    await migrateToV2_3(db);
+  }
+  if (currentVersion < '2.4') {
+    await migrateToV2_4(db);
+  }
+  if (currentVersion < '2.5') {
+    await migrateToV2_5(db);
   }
 }
 
@@ -842,7 +857,8 @@ async function migrateToV2_1(db: Database): Promise<void> {
       }
       await db.exec('COMMIT');
     } catch (error) {
-      await db.exec('ROLLBACK');
+      // L'échec du ROLLBACK ne doit pas masquer l'erreur d'origine.
+      try { await db.exec('ROLLBACK'); } catch { /* pas de transaction active */ }
       throw error;
     }
     console.log(`✅ Naming metadata backfilled for ${games.length} games`);
@@ -888,7 +904,8 @@ async function migrateToV2_2(db: Database): Promise<void> {
       await db.exec('COMMIT');
       console.log(`✅ release_date backfilled (${dated}/${games.length} games carry a date)`);
     } catch (error) {
-      await db.exec('ROLLBACK');
+      // L'échec du ROLLBACK ne doit pas masquer l'erreur d'origine.
+      try { await db.exec('ROLLBACK'); } catch { /* pas de transaction active */ }
       throw error;
     }
   }
@@ -899,6 +916,85 @@ async function migrateToV2_2(db: Database): Promise<void> {
   );
 
   console.log('✅ Migration to schema v2.2 complete');
+}
+
+async function migrateToV2_3(db: Database): Promise<void> {
+  console.log('Migrating to schema v2.3 (games.dat_category — original DAT category)...');
+
+  const gamesCols = await db.all<{ name: string }>('PRAGMA table_info(games)');
+  if (!gamesCols.some(c => c.name === 'dat_category')) {
+    await db.run('ALTER TABLE games ADD COLUMN dat_category TEXT');
+  }
+
+  // Sur une base existante, la valeur d'origine est la catégorie courante — sauf pour
+  // les jeux déjà surchargés par une clone list appliquée avant cette version, dont
+  // l'original est définitivement perdu. On repart donc de ce qui est en base, et le
+  // prochain chargement de DAT rétablira la vérité.
+  await db.run('UPDATE games SET dat_category = category WHERE dat_category IS NULL');
+
+  await db.run(
+    'UPDATE metadata SET value = ?, updated_at = CURRENT_TIMESTAMP WHERE key = ?',
+    [currentSchemaVersion, 'schema_version']
+  );
+
+  console.log('✅ Migration to schema v2.3 complete');
+}
+
+async function migrateToV2_4(db: Database): Promise<void> {
+  console.log('Migrating to schema v2.4 (scan status per root folder, file modification time)...');
+
+  // Statut du dernier scan d'un dossier racine : 'in_progress' | 'partial' | 'complete'.
+  // Les dossiers existants ont été scannés d'un bloc : ils sont complets.
+  const folderCols = await db.all<{ name: string }>('PRAGMA table_info(scanned_folders)');
+  if (!folderCols.some(c => c.name === 'scan_status')) {
+    await db.run("ALTER TABLE scanned_folders ADD COLUMN scan_status TEXT DEFAULT 'complete'");
+  }
+
+  // Date de modification du fichier sur disque (ms) au moment du scan : permet au
+  // scan rapide de ne re-hasher que les fichiers modifiés. NULL pour les lignes
+  // existantes → le scan rapide se rabat sur scanned_at.
+  const fileCols = await db.all<{ name: string }>('PRAGMA table_info(scanned_files)');
+  if (!fileCols.some(c => c.name === 'file_mtime')) {
+    await db.run('ALTER TABLE scanned_files ADD COLUMN file_mtime INTEGER');
+  }
+
+  await db.run(
+    'UPDATE metadata SET value = ?, updated_at = CURRENT_TIMESTAMP WHERE key = ?',
+    [currentSchemaVersion, 'schema_version']
+  );
+
+  console.log('✅ Migration to schema v2.4 complete');
+}
+
+async function migrateToV2_5(db: Database): Promise<void> {
+  console.log('Migrating to schema v2.5 (removal of the phantom "disk" entry of Redump-style CHDs)...');
+
+  // Avant la v2.5, le scan ajoutait à TOUS les CHD une entrée « disque » sans
+  // extension (SHA1 d'en-tête, identité MAME), y compris pour les romsets Redump
+  // où elle ne correspond à aucune ROM : chaque CHD paraissait partiellement
+  // matché. Discriminant : un CHD Redump a cette entrée ET ses fichiers extraits ;
+  // un CHD MAME n'a QUE l'entrée disque, qui est donc conservée.
+  const result = await db.run(`
+    DELETE FROM archive_contents
+    WHERE archive_id IN (SELECT id FROM scanned_files WHERE archive_type = 'chd')
+      AND file_name NOT LIKE '%.%'
+      AND (crc32 IS NULL OR crc32 = '')
+      AND EXISTS (
+        SELECT 1 FROM archive_contents other
+        WHERE other.archive_id = archive_contents.archive_id
+          AND other.id <> archive_contents.id
+      )
+  `);
+  if (result.changes > 0) {
+    console.log(`  ${result.changes} phantom CHD "disk" entry(ies) removed — run the matching again to refresh the statuses`);
+  }
+
+  await db.run(
+    'UPDATE metadata SET value = ?, updated_at = CURRENT_TIMESTAMP WHERE key = ?',
+    [currentSchemaVersion, 'schema_version']
+  );
+
+  console.log('✅ Migration to schema v2.5 complete');
 }
 
 async function migrateToV1_6(db: Database): Promise<void> {

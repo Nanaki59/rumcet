@@ -3,7 +3,45 @@
 import { app } from 'electron';
 import path from 'path';
 import fs from 'fs/promises';
-import { SYSTEMS } from '../config/systems.js';
+import { SYSTEMS, getDefaultSystemCompatibility, getSystemById } from '../config/systems.js';
+import {
+  PROFILE_KEYS,
+  BUILTIN_PROFILE_IDS,
+  CUSTOM_PROFILE_ID,
+  isProfileKey,
+  splitProfileSettings,
+  type ProfileKey,
+  type BuiltinProfileId
+} from '../shared/profileKeys.js';
+import { applyCompatRule, compatEntryForRule, isCompatRule, type CompatRule } from '../shared/compatRules.js';
+
+/**
+ * Dossiers propres à une base, stockés dans sa table `metadata`. Une valeur
+ * nulle/vide signifie « utiliser le paramètre global ».
+ */
+export interface DbFolderSettings {
+  /** `target_folder_base` : dossier cible choisi pour cette base (avant sous-dossier système) */
+  targetFolderBase: string | null;
+  /** `target_folder` : dossier cible effectif (seule information des bases antérieures) */
+  targetFolderLegacy: string | null;
+  /** `target_system_subfolder` : sous-dossier système pour cette base (null = paramètre global) */
+  systemSubfolder: boolean | null;
+  /** `unmatched_folder` */
+  unmatchedFolder: string | null;
+  /** `incomplete_folder` */
+  incompleteFolder: string | null;
+  /** `temp_folder` */
+  tempFolder: string | null;
+}
+
+export const EMPTY_DB_FOLDER_SETTINGS: DbFolderSettings = {
+  targetFolderBase: null,
+  targetFolderLegacy: null,
+  systemSubfolder: null,
+  unmatchedFolder: null,
+  incompleteFolder: null,
+  tempFolder: null
+};
 
 export type ArchiveFormat = '7z' | 'zip' | 'chd';
 export type CompressionLevel = 'fastest' | 'normal' | 'maximum';
@@ -82,8 +120,6 @@ export interface OneGameOneRomSettings {
    * peut pas : il ignore ce que contient réellement la collection.
    */
   fallbackToOwned: boolean;
-  /** Surcharges par système (clé = systemId), fusionnées sur les valeurs globales. */
-  perSystem?: Record<string, Partial<Omit<OneGameOneRomSettings, 'perSystem'>>>;
 }
 
 // ─── Clone lists ───────────────────────────────────────────────────────────
@@ -92,33 +128,34 @@ export interface OneGameOneRomSettings {
  * selon la région (« Biohazard » / « Resident Evil »). Aucune heuristique ne peut
  * les deviner : c'est une donnée éditoriale curée à la main par la communauté.
  *
- * RUMCET les CONSOMME, ne les maintient pas. L'URL est un réglage précisément pour
- * que le projet ne dépende du sort d'aucun dépôt : si la source retenue s'arrête, on
- * en pointe une autre sans toucher au code.
+ * RUMCET les consomme sans les maintenir. L'URL est un réglage pour que le projet
+ * ne dépende du sort d'aucun dépôt en particulier.
  */
 export interface CloneListSettings {
   /** Base d'URL des fichiers JSON. Doit se terminer par un séparateur. */
   sourceUrl: string;
   /** Dossier local de dépôt. Vide = <userData>/clonelists. */
   folder?: string;
-  /** Horodatage ISO du dernier téléchargement réussi. */
+  /** Horodatage ISO de la dernière synchronisation réussie. */
   lastDownload?: string;
   /**
-   * Réappliquer la liste locale après chaque chargement de DAT.
+   * Synchroniser et appliquer automatiquement au chargement d'un DAT.
    *
    * Nécessaire parce qu'un chargement PRIMAIRE vide et réécrit la table des jeux :
-   * la colonne `group_key` posée par une application antérieure disparaît avec elle.
-   * Un chargement COMPLÉMENTAIRE ajoute des jeux dont la `group_key` est vide.
-   * Sans cette option, il faut rouvrir la sélection automatique et cliquer
-   * « Appliquer » à chaque fois.
+   * la colonne `group_key` disparaît avec elle. Un chargement COMPLÉMENTAIRE ajoute
+   * des jeux qui n'en ont pas encore.
+   *
+   * La synchronisation est conditionnelle (requête HTTP avec `If-None-Match`) : si
+   * la liste distante n'a pas bougé, le serveur répond 304 et rien n'est
+   * retéléchargé. Le coût par chargement de DAT est donc négligeable, ce qui permet
+   * d'activer ce comportement par défaut sans peser sur la source.
    */
-  autoApply: boolean;
+  autoUpdate: boolean;
   /**
-   * Télécharger la liste correspondante si elle est absente localement, avant de
-   * l'appliquer. N'a d'effet qu'avec `autoApply`, et ne retélécharge jamais une
-   * liste déjà présente : le rafraîchissement reste une action manuelle.
+   * ETag HTTP de la dernière version téléchargée, par nom de fichier.
+   * C'est ce qui rend la vérification de mise à jour quasi gratuite.
    */
-  autoDownload: boolean;
+  etags?: Record<string, string>;
 }
 
 export const DEFAULT_CLONE_LISTS: CloneListSettings = {
@@ -126,8 +163,8 @@ export const DEFAULT_CLONE_LISTS: CloneListSettings = {
   // données continuent d'être mises à jour ; un fork peut être substitué ici.
   sourceUrl: 'https://raw.githubusercontent.com/unexpectedpanda/retool-clonelists-metadata/main/clonelists/',
   folder: '',
-  autoApply: false,
-  autoDownload: false
+  autoUpdate: true,
+  etags: {}
 };
 
 /**
@@ -167,6 +204,8 @@ export interface AppSettings {
   cleanSourceAfterConsolidation: boolean;
   cleanupScope: CleanupScope;
   protectFilesForUnselectedGames: boolean;
+  /** Déplacer les fichiers non matchés vers le dossier dédié (si le nettoyage est activé) */
+  moveUnmatchedFiles: boolean;
 
   // Mise à jour DAT
   autoSelectNewGames: boolean;
@@ -197,16 +236,29 @@ export interface AppSettings {
   arcadeChdEmptyZip?: boolean;
 
   /**
+   * Crée un fichier `.m3u` pour chaque jeu multi-disques / multi-supports consolidé
+   * (« (Disc N) », « (Disk N of M) »…), à côté des disques, sur les systèmes qui
+   * acceptent le `.m3u`. Les disques de ces jeux ne sont alors jamais archivés en
+   * 7z/zip/rar (incompatibles avec le .m3u) : CHD/ISO/CSO si autorisés, sinon bruts.
+   */
+  generateM3u?: boolean;
+
+  /**
    * Modèles de règles d'auto-sélection enregistrés « par défaut », indexés par type
    * de DAT (clé « sys:<systemId> », repli « arcade » / « generic »). Permet de
    * réappliquer rapidement le même jeu de règles à une nouvelle base du même type.
    */
-  defaultSelectionRules?: Record<string, { base: string; rules: any[] }>;
+  defaultSelectionRules?: Record<string, {
+    base: string;
+    rules: any[];
+    /** Réglages 1G1R du modèle. Absent sur un modèle enregistré avant leur arrivée. */
+    oneGameOneRom?: OneGameOneRomSettings;
+  }>;
 
   /**
    * Presets d'auto-sélection personnalisés (créés par l'utilisateur), globaux et
-   * disponibles pour tous les DAT. Chaque preset porte un scope (arcade /
-   * nointro-redump / global) qui pilote sa visibilité selon le type de DAT.
+   * disponibles pour tous les DAT. Chaque preset porte un scope (arcade / no-intro /
+   * redump / nointro-redump / other / global) qui pilote sa visibilité selon la famille de DAT.
    * Miroir per-base stocké dans la metadata 'custom_selection_presets'.
    */
   customSelectionPresets?: Array<{ id: string; name: string; scope: string; rules: any[] }>;
@@ -246,7 +298,8 @@ export interface AppSettings {
   winrarPath?: string;
   unrarPath?: string;
   chdmanPath?: string;
-  useEmbeddedChdman?: boolean;
+  /** Version de chdman : 'latest' (la plus récente), 'default' (embarquée), 'manual' (chdmanPath) ou un tag téléchargé (ex. mame0289) */
+  chdmanVersion?: string;
   rarToolPriority?: RarTool[];
 
   // Compatibilité archives par système
@@ -292,7 +345,51 @@ export interface AppSettings {
   } & ExtensionPickerData>;
   incompleteRomsFolder?: string;
 
+  /**
+   * Profils de consolidation. Les clés de PROFILE_KEYS ne sont PAS stockées au
+   * premier niveau : elles vivent dans `profiles[].settings`. getAll() fusionne
+   * les paramètres globaux avec ceux du profil courant (`activeProfileId`), de
+   * sorte que le reste du code lit `settings.archiveFormatPriority` etc. sans
+   * connaître les profils.
+   */
+  profiles?: ConsolidationProfile[];
+  activeProfileId?: string;
+
   settingsVersion?: number;
+}
+
+/** Paramètres portés par un profil de consolidation. */
+export type ProfileSettings = Pick<AppSettings, ProfileKey>;
+
+export interface ConsolidationProfile {
+  /** 'universal' | 'recalbox' | 'master' (intégrés), 'custom' ou uuid. */
+  id: string;
+  /** Nom saisi par l'utilisateur. Vide = nom traduit d'après l'id (profils intégrés, « Mon profil »). */
+  name: string;
+  /** Profil intégré : modifiable et réinitialisable, mais ni supprimable ni renommable. */
+  builtin: boolean;
+  /**
+   * Dernière règle de base appliquée à la compatibilité par système. Sert aux
+   * mises à jour Recalbox pour recalculer les systèmes acceptés ; null = universal.
+   */
+  compatRule: CompatRule | null;
+  settings: ProfileSettings;
+}
+
+/** Règle et options propres à chaque profil intégré. */
+const BUILTIN_PROFILE_DEFS: Record<BuiltinProfileId, { compatRule: CompatRule; useBestCompression: boolean; generateM3u: boolean }> = {
+  universal: { compatRule: 'universal', useBestCompression: false, generateM3u: false },
+  recalbox: { compatRule: 'recalbox', useBestCompression: false, generateM3u: true },
+  master: { compatRule: 'master', useBestCompression: true, generateM3u: false }
+};
+
+function isBuiltinProfileId(id: string): id is BuiltinProfileId {
+  return (BUILTIN_PROFILE_IDS as readonly string[]).includes(id);
+}
+
+/** Retire les clés de profil d'un objet de paramètres (stockage du premier niveau). */
+function stripProfileKeys<T extends Record<string, any>>(settings: T): T {
+  return splitProfileSettings(settings).global as T;
 }
 
 // Mapping des niveaux de compression vers les valeurs 7z
@@ -309,22 +406,7 @@ export const compressionLevelToZip = {
   maximum: 9     // DEFLATE level 9 (best)
 };
 
-const CURRENT_SETTINGS_VERSION = 18;
-
-/**
- * Valeurs par défaut de compatibilité archives par système.
- * Dérivées dynamiquement du registre central src/config/systems.ts.
- * Pour modifier la liste des systèmes ou leurs formats : `npm run sync-systems`.
- */
-export const DEFAULT_SYSTEM_COMPATIBILITY: SystemCompatibility[] = SYSTEMS.map(s => ({
-  systemId: s.systemId,
-  systemName: s.fullname,
-  category: s.manufacturer ?? 'Autres',
-  subcategory: s.type ?? undefined,
-  supportedFormats: s.supportedFormats,
-  warningFormats: s.warningFormats,
-  unsupportedFormats: s.unsupportedFormats
-}));
+const CURRENT_SETTINGS_VERSION = 23;
 
 class SettingsManager {
   private settingsPath: string;
@@ -349,11 +431,13 @@ class SettingsManager {
       cleanSourceAfterConsolidation: true,
       cleanupScope: 'used-only',
       protectFilesForUnselectedGames: true,
+      moveUnmatchedFiles: true,
 
       autoSelectNewGames: true,
       arcadeTargetSetMode: 'split',
       arcadeSeparateBios: false,
       arcadeChdEmptyZip: false,
+      generateM3u: false,
 
       customSelectionPresets: [],
 
@@ -374,11 +458,12 @@ class SettingsManager {
       winrarPath: undefined,
       unrarPath: undefined,
       chdmanPath: undefined,
-      useEmbeddedChdman: true,
+      chdmanVersion: 'latest',
       rarToolPriority: ['7zip', 'winrar', 'unrar'],
 
       // Compatibilité archives par système
-      systemCompatibility: DEFAULT_SYSTEM_COMPATIBILITY,
+      // Recalculé dans load() une fois la surcharge Recalbox appliquée
+      systemCompatibility: getDefaultSystemCompatibility(),
 
       // Sélection 1G1R — désactivée par défaut (voir OneGameOneRomSettings)
       oneGameOneRom: { ...DEFAULT_ONE_GAME_ONE_ROM },
@@ -403,8 +488,58 @@ class SettingsManager {
 
       settingsVersion: CURRENT_SETTINGS_VERSION
     };
-    
-    this.settings = { ...this.defaultSettings };
+
+    this.settings = this.buildStoredDefaults();
+  }
+
+  // ─── Profils de consolidation : construction ───
+
+  /** Valeurs par défaut des paramètres de profil (copie indépendante). */
+  private defaultProfileSettings(): ProfileSettings {
+    const values: Record<string, any> = {};
+    for (const key of PROFILE_KEYS) values[key] = structuredClone(this.defaultSettings[key]);
+    values.systemCompatibility = getDefaultSystemCompatibility();
+    return values as ProfileSettings;
+  }
+
+  /** Profil intégré construit à partir de paramètres de base, avec sa règle appliquée. */
+  private buildBuiltinProfile(id: BuiltinProfileId, base: ProfileSettings): ConsolidationProfile {
+    const def = BUILTIN_PROFILE_DEFS[id];
+    return {
+      id,
+      name: '',
+      builtin: true,
+      compatRule: def.compatRule,
+      settings: {
+        ...structuredClone(base),
+        useBestCompression: def.useBestCompression,
+        generateM3u: def.generateM3u,
+        systemCompatibility: applyCompatRule(def.compatRule)
+      }
+    };
+  }
+
+  /** « Mon profil » (réglages de base) + les profils intégrés dérivés de ces réglages. */
+  private buildProfiles(base: ProfileSettings): ConsolidationProfile[] {
+    return [
+      { id: CUSTOM_PROFILE_ID, name: '', builtin: false, compatRule: null, settings: structuredClone(base) },
+      ...BUILTIN_PROFILE_IDS.map(id => this.buildBuiltinProfile(id, base))
+    ];
+  }
+
+  /** Paramètres stockés par défaut : globaux + profils, sans clé de profil au premier niveau. */
+  private buildStoredDefaults(): AppSettings {
+    return {
+      ...stripProfileKeys(structuredClone(this.defaultSettings)),
+      profiles: this.buildProfiles(this.defaultProfileSettings()),
+      activeProfileId: CUSTOM_PROFILE_ID
+    };
+  }
+
+  /** Profil courant (toujours défini après load/validation). */
+  private activeProfile(): ConsolidationProfile {
+    const profiles = this.settings.profiles ?? [];
+    return profiles.find(p => p.id === this.settings.activeProfileId) ?? profiles[0];
   }
 
   /**
@@ -780,6 +915,93 @@ class SettingsManager {
       };
     }
 
+    // Migration v18 -> v19 : les deux réglages de clone list (« réappliquer » et
+    // « télécharger si absent ») sont remplacés par un seul, qui synchronise ET
+    // applique. La vérification de mise à jour passant par une requête
+    // conditionnelle, elle est assez peu coûteuse pour être active par défaut.
+    if (version < 19) {
+      console.log('Migration v18 -> v19: cloneLists autoApply/autoDownload -> autoUpdate');
+      const previous = migratedSettings.cloneLists as Record<string, unknown> | undefined;
+      // Quiconque avait activé l'un des deux anciens réglages voulait de
+      // l'automatisme : on le conserve. Les autres reçoivent le nouveau défaut.
+      const hadAutomation = previous?.autoApply === true || previous?.autoDownload === true;
+      const carried = { ...(previous ?? {}) };
+      delete carried.autoApply;
+      delete carried.autoDownload;
+      migratedSettings = {
+        ...migratedSettings,
+        cloneLists: {
+          ...DEFAULT_CLONE_LISTS,
+          ...carried,
+          autoUpdate: previous ? hadAutomation || DEFAULT_CLONE_LISTS.autoUpdate : DEFAULT_CLONE_LISTS.autoUpdate
+        },
+        settingsVersion: 19
+      };
+    }
+
+    // Migration v19 -> v20 : suppression de la case « utiliser chdman embarqué ».
+    // Un chemin vide signifie désormais « version embarquée » (même logique que
+    // 7-Zip). Quand la case était cochée, le chemin personnalisé était ignoré :
+    // on le vide pour conserver le chdman réellement utilisé jusqu'ici.
+    if (version < 20) {
+      console.log('Migration v19 -> v20: removing useEmbeddedChdman (empty chdmanPath = embedded)');
+      if (migratedSettings.useEmbeddedChdman !== false) {
+        migratedSettings.chdmanPath = '';
+      }
+      delete migratedSettings.useEmbeddedChdman;
+      migratedSettings = {
+        ...migratedSettings,
+        settingsVersion: 20
+      };
+    }
+
+    // Migration v20 -> v21 : profils de consolidation. Les réglages de consolidation
+    // actuels deviennent « Mon profil » (profil courant, comportement inchangé) ; les
+    // profils intégrés sont créés à partir de ces mêmes réglages, avec leur règle de
+    // compatibilité appliquée. Les clés de profil quittent le premier niveau.
+    if (version < 21) {
+      console.log('Migration v20 -> v21: moving consolidation settings into profiles');
+      const base: Record<string, any> = this.defaultProfileSettings();
+      for (const key of PROFILE_KEYS) {
+        if (migratedSettings[key] !== undefined) base[key] = structuredClone(migratedSettings[key]);
+      }
+      migratedSettings = {
+        ...stripProfileKeys(migratedSettings),
+        profiles: this.buildProfiles(base as ProfileSettings),
+        activeProfileId: CUSTOM_PROFILE_ID,
+        settingsVersion: 21
+      };
+    }
+
+    // Migration v21 -> v22 : le chemin de chdman n'est utilisé qu'en « Sélection
+    // manuelle » (chdmanVersion = 'manual'). Un chemin déjà renseigné reste utilisé.
+    if (version < 22) {
+      console.log('Migration v21 -> v22: chdmanPath only used with chdmanVersion = manual');
+      if (migratedSettings.chdmanPath) {
+        migratedSettings.chdmanVersion = 'manual';
+      }
+      migratedSettings = {
+        ...migratedSettings,
+        settingsVersion: 22
+      };
+    }
+
+    // Migration v22 -> v23 : création des .m3u multi-disques. Activée par défaut
+    // dans le profil intégré Recalbox ; les autres profils la reçoivent désactivée
+    // (complétion par défaut dans validateProfiles).
+    if (version < 23) {
+      console.log('Migration v22 -> v23: adding generateM3u (on for the Recalbox profile)');
+      for (const profile of Array.isArray(migratedSettings.profiles) ? migratedSettings.profiles : []) {
+        if (profile?.id === 'recalbox' && profile.settings && profile.settings.generateM3u === undefined) {
+          profile.settings.generateM3u = true;
+        }
+      }
+      migratedSettings = {
+        ...migratedSettings,
+        settingsVersion: 23
+      };
+    }
+
     return migratedSettings as AppSettings;
   }
 
@@ -787,6 +1009,63 @@ class SettingsManager {
    * Valide les paramètres chargés
    */
   private validateSettings(settings: AppSettings): boolean {
+    this.validateProfiles(settings);
+
+    // ── Clone lists ──
+    // Une URL vide ou non http(s) empêcherait tout téléchargement en silence.
+    if (settings.cloneLists) {
+      const cl = settings.cloneLists;
+      const url = typeof cl.sourceUrl === 'string' ? cl.sourceUrl.trim() : '';
+      cl.sourceUrl = /^https?:\/\//i.test(url) ? url : DEFAULT_CLONE_LISTS.sourceUrl;
+      // La concaténation avec le nom de fichier suppose un séparateur final.
+      if (!cl.sourceUrl.endsWith('/')) cl.sourceUrl += '/';
+      cl.autoUpdate = cl.autoUpdate !== false;
+      // Un cache d'ETag corrompu ferait échouer chaque requête conditionnelle.
+      if (typeof cl.etags !== 'object' || cl.etags === null || Array.isArray(cl.etags)) {
+        cl.etags = {};
+      }
+    } else {
+      settings.cloneLists = { ...DEFAULT_CLONE_LISTS };
+    }
+
+    return true;
+  }
+
+  /**
+   * Valide la liste des profils : ids uniques, profils intégrés présents, profil
+   * courant existant, paramètres de chaque profil complets et cohérents.
+   */
+  private validateProfiles(settings: AppSettings): void {
+    const seen = new Set<string>();
+    const profiles: ConsolidationProfile[] = [];
+    for (const raw of Array.isArray(settings.profiles) ? settings.profiles : []) {
+      if (!raw || typeof raw.id !== 'string' || !raw.id || seen.has(raw.id)) continue;
+      seen.add(raw.id);
+      const profile: ConsolidationProfile = {
+        id: raw.id,
+        name: typeof raw.name === 'string' ? raw.name : '',
+        builtin: isBuiltinProfileId(raw.id),
+        compatRule: isCompatRule(raw.compatRule) ? raw.compatRule : null,
+        settings: { ...this.defaultProfileSettings(), ...(raw.settings ?? {}) }
+      };
+      if (profile.builtin) profile.name = '';
+      this.validateProfileSettings(profile.settings);
+      profiles.push(profile);
+    }
+
+    // Un profil intégré manquant (fichier édité à la main) est recréé avec ses valeurs par défaut
+    for (const id of BUILTIN_PROFILE_IDS) {
+      if (!seen.has(id)) profiles.push(this.buildBuiltinProfile(id, this.defaultProfileSettings()));
+    }
+
+    settings.profiles = profiles;
+    if (!profiles.some(p => p.id === settings.activeProfileId)) {
+      settings.activeProfileId = profiles.find(p => p.id === CUSTOM_PROFILE_ID)?.id ?? profiles[0].id;
+    }
+  }
+
+  /** Valide les paramètres d'un profil (priorité des formats, 1G1R). */
+  private validateProfileSettings(settings: ProfileSettings): void {
     // Vérifier que archiveFormatPriority est un tableau non vide
     if (!Array.isArray(settings.archiveFormatPriority) || 
         settings.archiveFormatPriority.length === 0) {
@@ -838,22 +1117,48 @@ class SettingsManager {
     } else {
       settings.oneGameOneRom = { ...DEFAULT_ONE_GAME_ONE_ROM };
     }
+  }
 
-    // ── Clone lists ──
-    // Une URL vide ou non http(s) empêcherait tout téléchargement en silence.
-    if (settings.cloneLists) {
-      const cl = settings.cloneLists;
-      const url = typeof cl.sourceUrl === 'string' ? cl.sourceUrl.trim() : '';
-      cl.sourceUrl = /^https?:\/\//i.test(url) ? url : DEFAULT_CLONE_LISTS.sourceUrl;
-      // La concaténation avec le nom de fichier suppose un séparateur final.
-      if (!cl.sourceUrl.endsWith('/')) cl.sourceUrl += '/';
-      cl.autoApply = cl.autoApply === true;
-      cl.autoDownload = cl.autoDownload === true;
-    } else {
-      settings.cloneLists = { ...DEFAULT_CLONE_LISTS };
+  /**
+   * Dédoublonne et complète la compatibilité par système d'un profil.
+   *
+   * Un ancien bug produisait des doublons (chaque systemId présent 2×) qui
+   * persistaient sur disque. Comme le rendu/save mémorisait "la dernière"
+   * entrée, une entrée vide dupliquée écrasait les formats réels de MAME
+   * (et d'autres), donnant l'impression d'une réinitialisation au restart.
+   *
+   * Règle de dédup : pour chaque systemId, on conserve l'entrée avec le PLUS
+   * de supportedFormats (l'entrée vide dupliquée perd donc face à l'entrée
+   * réelle). Puis on complète les systèmes absents selon la règle du profil.
+   * Retourne true si la liste a changé.
+   */
+  private normalizeProfileCompat(profile: ConsolidationProfile): boolean {
+    const loadedCompat = profile.settings.systemCompatibility ?? [];
+    const bestById = new Map<string, SystemCompatibility>();
+    for (const entry of loadedCompat) {
+      const key = entry.systemId.toLowerCase();
+      const existing = bestById.get(key);
+      if (!existing || (entry.supportedFormats?.length ?? 0) > (existing.supportedFormats?.length ?? 0)) {
+        bestById.set(key, entry);
+      }
     }
-
-    return true;
+    let backfilled = 0;
+    for (const sys of SYSTEMS) {
+      if (!bestById.has(sys.systemId.toLowerCase())) {
+        bestById.set(sys.systemId.toLowerCase(), compatEntryForRule(sys, profile.compatRule ?? 'universal'));
+        backfilled++;
+      }
+    }
+    const dedupedCompat = [...bestById.values()];
+    const changed = dedupedCompat.length !== loadedCompat.length;
+    profile.settings.systemCompatibility = dedupedCompat;
+    if (changed) {
+      console.log(
+        `systemCompatibility nettoyé (profil ${profile.id}) : ${loadedCompat.length} → ${dedupedCompat.length} entrées ` +
+        `(${loadedCompat.length - dedupedCompat.length + backfilled} doublon(s) retiré(s), ${backfilled} backfill).`
+      );
+    }
+    return changed;
   }
 
   async load(): Promise<void> {
@@ -864,52 +1169,24 @@ class SettingsManager {
       // Migrer si nécessaire
       const migratedSettings = this.migrateSettings(loadedSettings);
       
-      // Valider
-      this.validateSettings(migratedSettings);
-      
-      // Fusionner avec les paramètres par défaut pour gérer les nouvelles clés
-      this.settings = { ...this.defaultSettings, ...migratedSettings };
+      // Fusionner avec les paramètres par défaut pour gérer les nouvelles clés.
+      // Les clés de profil restent hors du premier niveau (elles vivent dans les profils).
+      this.settings = stripProfileKeys({ ...this.buildStoredDefaults(), ...migratedSettings });
 
-      // ── Dédoublonnage + backfill de systemCompatibility ──
-      // Un ancien bug produisait des doublons (chaque systemId présent 2×) qui
-      // persistaient sur disque. Comme le rendu/save mémorisait "la dernière"
-      // entrée, une entrée vide dupliquée écrasait les formats réels de MAME
-      // (et d'autres), donnant l'impression d'une réinitialisation au restart.
-      //
-      // Règle de dédup : pour chaque systemId, on conserve l'entrée avec le PLUS
-      // de supportedFormats (l'entrée vide dupliquée perd donc face à l'entrée
-      // réelle). Puis on backfille les systèmes absents depuis le registre.
-      const loadedCompat = this.settings.systemCompatibility ?? [];
-      const bestById = new Map<string, SystemCompatibility>();
-      for (const entry of loadedCompat) {
-        const key = entry.systemId.toLowerCase();
-        const existing = bestById.get(key);
-        if (!existing || (entry.supportedFormats?.length ?? 0) > (existing.supportedFormats?.length ?? 0)) {
-          bestById.set(key, entry);
-        }
-      }
-      let backfilled = 0;
-      for (const def of DEFAULT_SYSTEM_COMPATIBILITY) {
-        if (!bestById.has(def.systemId.toLowerCase())) {
-          bestById.set(def.systemId.toLowerCase(), def);
-          backfilled++;
-        }
-      }
-      const dedupedCompat = [...bestById.values()];
-      const hadDuplicatesOrBackfill = dedupedCompat.length !== loadedCompat.length;
-      this.settings.systemCompatibility = dedupedCompat;
-      if (hadDuplicatesOrBackfill) {
-        console.log(
-          `systemCompatibility nettoyé : ${loadedCompat.length} → ${dedupedCompat.length} entrées ` +
-          `(${loadedCompat.length - dedupedCompat.length + backfilled} doublon(s) retiré(s), ${backfilled} backfill).`
-        );
+      // Valider (profils compris)
+      this.validateSettings(this.settings);
+
+      // Dédoublonnage + backfill de la compatibilité de chaque profil
+      let compatChanged = false;
+      for (const profile of this.settings.profiles!) {
+        if (this.normalizeProfileCompat(profile)) compatChanged = true;
       }
 
       // Sauvegarder si des migrations ont été appliquées OU si le dédoublonnage
-      // a modifié systemCompatibility (pour nettoyer le disque définitivement).
+      // a modifié une compatibilité (pour nettoyer le disque définitivement).
       if (!loadedSettings.settingsVersion ||
           loadedSettings.settingsVersion < CURRENT_SETTINGS_VERSION ||
-          hadDuplicatesOrBackfill) {
+          compatChanged) {
         console.log('Saving migrated/cleaned settings');
         await this.save();
       }
@@ -920,6 +1197,7 @@ class SettingsManager {
     } catch (error) {
       // Si le fichier n'existe pas, utiliser les paramètres par défaut
       console.log('Settings not found, using default values');
+      this.settings = this.buildStoredDefaults();
       await this.save(); // Sauvegarder les paramètres par défaut
     }
   }
@@ -960,20 +1238,36 @@ class SettingsManager {
     }
   }
 
-  get(key: keyof AppSettings): any {
+  /** Lit un paramètre : une clé de profil est lue dans le profil courant. */
+  get<K extends keyof AppSettings>(key: K): AppSettings[K] {
+    if (isProfileKey(key)) return (this.activeProfile().settings as AppSettings)[key];
     return this.settings[key];
   }
 
-  set(key: keyof AppSettings, value: any): void {
-    (this.settings as any)[key] = value;
+  /** Écrit un paramètre en mémoire : une clé de profil est écrite dans le profil courant. */
+  set<K extends keyof AppSettings>(key: K, value: AppSettings[K]): void {
+    const target = isProfileKey(key) ? this.activeProfile().settings : this.settings;
+    (target as AppSettings)[key] = value;
   }
 
+  /** Vue fusionnée : paramètres globaux + paramètres du profil courant. */
   getAll(): AppSettings {
-    return { ...this.settings };
+    return { ...this.settings, ...structuredClone(this.activeProfile().settings) };
   }
 
+  /**
+   * Met à jour des paramètres. Les clés globales vont au premier niveau, les clés
+   * de profil dans le profil courant.
+   */
   async updateSettings(newSettings: Partial<AppSettings>): Promise<void> {
-    this.settings = { ...this.settings, ...newSettings };
+    const { global, profile } = splitProfileSettings(newSettings);
+    // Les profils se modifient par replaceProfiles / setActiveProfile, pas par cette voie
+    delete global.profiles;
+    delete global.activeProfileId;
+
+    this.settings = { ...this.settings, ...global };
+    const active = this.activeProfile();
+    active.settings = { ...active.settings, ...profile };
 
     // Valider après mise à jour
     this.validateSettings(this.settings);
@@ -982,7 +1276,67 @@ class SettingsManager {
   }
 
   reset(): void {
-    this.settings = { ...this.defaultSettings };
+    this.settings = this.buildStoredDefaults();
+  }
+
+  // ─── Profils de consolidation : API ───
+
+  /** Profils (copies) et identifiant du profil courant. */
+  listProfiles(): { profiles: ConsolidationProfile[]; activeProfileId: string } {
+    return {
+      profiles: structuredClone(this.settings.profiles ?? []),
+      activeProfileId: this.activeProfile().id
+    };
+  }
+
+  getActiveProfileId(): string {
+    return this.activeProfile().id;
+  }
+
+  /** Change le profil courant. Retourne false si l'id est inconnu. */
+  async setActiveProfile(id: string): Promise<boolean> {
+    if (!(this.settings.profiles ?? []).some(p => p.id === id)) return false;
+    this.settings.activeProfileId = id;
+    await this.save();
+    return true;
+  }
+
+  /**
+   * Remplace l'ensemble des profils (fenêtre des paramètres : créations, renommages,
+   * suppressions et modifications enregistrés en une fois). Les profils intégrés ne
+   * peuvent pas disparaître ; si le profil courant a été supprimé, on revient à
+   * « Mon profil » ou au premier profil.
+   */
+  async replaceProfiles(profiles: ConsolidationProfile[]): Promise<void> {
+    this.settings.profiles = structuredClone(profiles);
+    this.validateSettings(this.settings);
+    for (const profile of this.settings.profiles) this.normalizeProfileCompat(profile);
+    await this.save();
+  }
+
+  /** Valeurs par défaut d'un profil intégré (bouton « Réinitialiser »). */
+  getBuiltinProfileDefaults(id: string): ConsolidationProfile | null {
+    return isBuiltinProfileId(id) ? this.buildBuiltinProfile(id, this.defaultProfileSettings()) : null;
+  }
+
+  /**
+   * Mise à jour Recalbox : les systèmes acceptés reprennent, dans chaque profil,
+   * les formats donnés par la dernière règle appliquée au profil (universal à défaut).
+   */
+  async applySystemsUpdateToProfiles(systemIds: string[]): Promise<void> {
+    for (const profile of this.settings.profiles ?? []) {
+      const compat = [...(profile.settings.systemCompatibility ?? [])];
+      for (const id of systemIds) {
+        const sys = getSystemById(id);
+        if (!sys) continue;
+        const entry = compatEntryForRule(sys, profile.compatRule ?? 'universal');
+        const index = compat.findIndex(c => c.systemId.toLowerCase() === id.toLowerCase());
+        if (index >= 0) compat[index] = entry;
+        else compat.push(entry);
+      }
+      profile.settings.systemCompatibility = compat;
+    }
+    await this.save();
   }
 
   /**
@@ -991,7 +1345,7 @@ class SettingsManager {
    * @returns Le premier format de la priorité qui est compatible
    */
   getPreferredFormat(compatibleFormats: ArchiveFormat[]): ArchiveFormat | null {
-    for (const format of this.settings.archiveFormatPriority) {
+    for (const format of this.get('archiveFormatPriority')) {
       if (compatibleFormats.includes(format)) {
         return format;
       }
@@ -1013,83 +1367,137 @@ class SettingsManager {
     return this.activeSystemId;
   }
 
+  // ─── Dossiers propres à la base ouverte (métadonnées) ───
+  // Copie en mémoire pour les composants synchrones (getEffectiveFolderSync) ;
+  // alimentée à l'ouverture/fermeture de la base et à chaque modification.
+  private activeDbFolders: DbFolderSettings = { ...EMPTY_DB_FOLDER_SETTINGS };
+
+  setActiveDbFolders(folders: DbFolderSettings | null): void {
+    this.activeDbFolders = folders ? { ...folders } : { ...EMPTY_DB_FOLDER_SETTINGS };
+  }
+
+  getActiveDbFolders(): DbFolderSettings {
+    return { ...this.activeDbFolders };
+  }
+
   /**
-   * Variante synchrone : applique le sous-dossier système si l'option
-   * "Dossier multi-système" est active ET qu'un system_id est défini.
+   * Variante synchrone : surcharges de la base ouverte + sous-dossier système
+   * (option de la base, sinon paramètre global "Dossier multi-système").
    * Ne crée pas le dossier ; l'appelant doit appeler fs.mkdir si besoin.
    */
-  getEffectiveFolderSync(key: 'validatedRomsFolder' | 'unmatchedRomsFolder' | 'incompleteRomsFolder' | 'tempExtractionFolder'): string {
-    const base = (this.settings[key] as string) || '';
-    if (!base || !this.settings.validatedRomsMultiSystem || !this.activeSystemId) return base;
-    return path.join(base, this.activeSystemId);
+  getEffectiveFolderSync(key: EffectiveFolderKey): string {
+    return resolveEffectiveFolder(key, this.activeDbFolders, this.activeSystemId);
   }
 }
 
 // Instance singleton
 export const settingsManager = new SettingsManager();
 
-/**
- * Retourne un dossier cible effectif (avec sous-dossier système si l'option
- * "Dossier multi-système" est activée et qu'un system_id est défini en metadata).
- *
- * - Si validatedRomsMultiSystem est activé ET que system_id est défini :
- *   retourne path.join(baseFolder, system_id) et crée le sous-dossier au besoin.
- * - Sinon : retourne baseFolder tel quel.
- *
- * Le dossier paramétré (baseFolder) reste toujours le parent — seul le dossier
- * effectif change selon le mode multi-système.
- */
-export async function getEffectiveTargetFolder(
-  db: { get<T = any>(sql: string, params?: any[]): Promise<T | undefined> },
-  baseFolder: string
-): Promise<string> {
-  const settings = settingsManager.getAll();
-  if (!baseFolder || !settings.validatedRomsMultiSystem) {
-    return baseFolder;
-  }
+// ─── Dossiers par base ───
 
-  let systemId = '';
+export type EffectiveFolderKey = 'validatedRomsFolder' | 'unmatchedRomsFolder' | 'incompleteRomsFolder' | 'tempExtractionFolder';
+
+/** Métadonnées qui influent sur les dossiers effectifs de la base. */
+export const DB_FOLDER_METADATA_KEYS = [
+  'target_folder_base',
+  'target_folder',
+  'target_system_subfolder',
+  'unmatched_folder',
+  'incomplete_folder',
+  'temp_folder',
+  'system_id'
+];
+
+type MetadataReader = { get<T = any>(sql: string, params?: any[]): Promise<T | undefined> };
+
+async function readMetadata(db: MetadataReader, key: string): Promise<string | null> {
   try {
-    const row = await db.get<{ value: string }>(
-      'SELECT value FROM metadata WHERE key = ?',
-      ['system_id']
-    );
-    systemId = row?.value || '';
+    const row = await db.get<{ value: string }>('SELECT value FROM metadata WHERE key = ?', [key]);
+    return row?.value || null;
   } catch {
-    return baseFolder;
+    return null;
   }
-
-  if (!systemId) return baseFolder;
-
-  const subFolder = path.join(baseFolder, systemId);
-  await fs.mkdir(subFolder, { recursive: true });
-  return subFolder;
 }
 
-/** Raccourci pour le dossier cible des ROMs validées (rétrocompatible). */
-export async function getEffectiveValidatedRomsFolder(
-  db: { get<T = any>(sql: string, params?: any[]): Promise<T | undefined> }
-): Promise<string> {
-  return getEffectiveTargetFolder(db, settingsManager.getAll().validatedRomsFolder);
+/** Lit les dossiers propres à une base depuis ses métadonnées. */
+export async function loadDbFolderSettings(db: MetadataReader): Promise<DbFolderSettings> {
+  const subfolder = await readMetadata(db, 'target_system_subfolder');
+  return {
+    targetFolderBase: await readMetadata(db, 'target_folder_base'),
+    targetFolderLegacy: await readMetadata(db, 'target_folder'),
+    systemSubfolder: subfolder === null ? null : subfolder === '1',
+    unmatchedFolder: await readMetadata(db, 'unmatched_folder'),
+    incompleteFolder: await readMetadata(db, 'incomplete_folder'),
+    tempFolder: await readMetadata(db, 'temp_folder')
+  };
 }
 
-/** Raccourci pour le dossier cible des ROMs incomplètes. */
-export async function getEffectiveIncompleteRomsFolder(
-  db: { get<T = any>(sql: string, params?: any[]): Promise<T | undefined> }
-): Promise<string> {
-  return getEffectiveTargetFolder(db, settingsManager.getAll().incompleteRomsFolder ?? '');
+/** Recharge la copie en mémoire des dossiers de la base (null = aucune base ouverte). */
+export async function refreshActiveDbFolders(db: MetadataReader | null): Promise<void> {
+  settingsManager.setActiveDbFolders(db ? await loadDbFolderSettings(db) : null);
 }
 
-/** Raccourci pour le dossier cible des ROMs non référencées. */
-export async function getEffectiveUnmatchedRomsFolder(
-  db: { get<T = any>(sql: string, params?: any[]): Promise<T | undefined> }
-): Promise<string> {
-  return getEffectiveTargetFolder(db, settingsManager.getAll().unmatchedRomsFolder);
+/**
+ * Résout un dossier effectif à partir des dossiers de la base et des paramètres globaux.
+ * - Dossier cible : `target_folder_base` (+ sous-dossier système) ; sinon `target_folder`
+ *   tel quel (bases antérieures, déjà effectif) ; sinon paramètre global.
+ * - Autres dossiers : surcharge de la base, sinon paramètre global, + sous-dossier système.
+ * Le sous-dossier système suit l'option de la base si elle est définie, sinon le
+ * paramètre global « Dossier multi-système ».
+ */
+export function resolveEffectiveFolder(
+  key: EffectiveFolderKey,
+  dbFolders: DbFolderSettings,
+  systemId: string | null
+): string {
+  const settings = settingsManager.getAll();
+  const useSystemSubfolder = dbFolders.systemSubfolder ?? !!settings.validatedRomsMultiSystem;
+  const withSystem = (base: string) =>
+    base && useSystemSubfolder && systemId ? path.join(base, systemId) : base;
+
+  switch (key) {
+    case 'validatedRomsFolder':
+      if (dbFolders.targetFolderBase) return withSystem(dbFolders.targetFolderBase);
+      if (dbFolders.targetFolderLegacy) return dbFolders.targetFolderLegacy;
+      return withSystem(settings.validatedRomsFolder || '');
+    case 'unmatchedRomsFolder':
+      return withSystem(dbFolders.unmatchedFolder || settings.unmatchedRomsFolder || '');
+    case 'incompleteRomsFolder':
+      return withSystem(dbFolders.incompleteFolder || settings.incompleteRomsFolder || '');
+    case 'tempExtractionFolder':
+      return withSystem(dbFolders.tempFolder || settings.tempExtractionFolder || '');
+  }
 }
 
-/** Raccourci pour le dossier temporaire d'extraction. */
-export async function getEffectiveTempExtractionFolder(
-  db: { get<T = any>(sql: string, params?: any[]): Promise<T | undefined> }
-): Promise<string> {
-  return getEffectiveTargetFolder(db, settingsManager.getAll().tempExtractionFolder);
+/**
+ * Dossier effectif lu directement dans la base (toujours à jour). Crée le
+ * sous-dossier système quand il s'applique.
+ */
+async function getEffectiveDbFolder(db: MetadataReader, key: EffectiveFolderKey): Promise<string> {
+  const dbFolders = await loadDbFolderSettings(db);
+  const folder = resolveEffectiveFolder(key, dbFolders, await readMetadata(db, 'system_id'));
+  if (folder && folder !== resolveEffectiveFolder(key, dbFolders, null)) {
+    await fs.mkdir(folder, { recursive: true });
+  }
+  return folder;
+}
+
+/** Dossier cible des ROMs validées (destination de la consolidation). */
+export async function getEffectiveValidatedRomsFolder(db: MetadataReader): Promise<string> {
+  return getEffectiveDbFolder(db, 'validatedRomsFolder');
+}
+
+/** Dossier des ROMs incomplètes. */
+export async function getEffectiveIncompleteRomsFolder(db: MetadataReader): Promise<string> {
+  return getEffectiveDbFolder(db, 'incompleteRomsFolder');
+}
+
+/** Dossier des ROMs non référencées. */
+export async function getEffectiveUnmatchedRomsFolder(db: MetadataReader): Promise<string> {
+  return getEffectiveDbFolder(db, 'unmatchedRomsFolder');
+}
+
+/** Dossier temporaire d'extraction. */
+export async function getEffectiveTempExtractionFolder(db: MetadataReader): Promise<string> {
+  return getEffectiveDbFolder(db, 'tempExtractionFolder');
 }

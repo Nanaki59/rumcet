@@ -27,17 +27,24 @@
 
 import { initI18n, t } from './i18n.js';
 import { setupConsoleCapture } from './consoleCapture.js';
+import { renderDbFoldersForm, type DbFoldersForm } from './dbFoldersForm.js';
+import { escapeHtml } from './htmlEscape.js';
 
 // Capturer les console.* de cette page vers le fichier de logs dès le chargement
 setupConsoleCapture();
 
 interface DatSystemInfo {
   name: string;
+  systemId: string;
   sources: Array<{
     type: 'no-intro' | 'redump';
     id: string;
     recommended: boolean;
   }>;
+  /** Système ajouté par une mise à jour Recalbox, sans source DAT connue. */
+  unknownSource?: boolean;
+  /** Sources associées manuellement par l'utilisateur. */
+  userDefinedSources?: boolean;
 }
 
 interface MameVersion {
@@ -45,6 +52,8 @@ interface MameVersion {
   date?: string;
   isLatest?: boolean;
   recalboxTag?: string;
+  /** Derniers tags Stable / Patron / Alpha de Recalbox utilisant cette version. */
+  recalboxRefs?: Array<{ channel: string; ref: string }>;
   downloadUrl: string;
 }
 
@@ -105,9 +114,15 @@ const sourceSelection = document.getElementById('source-selection') as HTMLDivEl
 const sourceRadioGroup = document.getElementById('source-radio-group') as HTMLDivElement;
 const nointroNotice = document.getElementById('nointro-notice') as HTMLDivElement;
 const pleasuredomeNotice = document.getElementById('pleasuredome-notice') as HTMLDivElement;
+const mameRecalboxNotice = document.getElementById('mame-recalbox-notice') as HTMLDivElement;
 const destFolderInput = document.getElementById('dest-folder') as HTMLInputElement;
 const btnDownload = document.getElementById('btn-download') as HTMLButtonElement;
 const btnOpenPage = document.getElementById('btn-open-page') as HTMLButtonElement;
+const manualSource = document.getElementById('manual-source') as HTMLDivElement;
+const manualSourceInfo = document.getElementById('manual-source-info') as HTMLParagraphElement;
+const manualSourceError = document.getElementById('manual-source-error') as HTMLParagraphElement;
+const manualNoIntroId = document.getElementById('manual-nointro-id') as HTMLInputElement;
+const manualRedumpSlug = document.getElementById('manual-redump-slug') as HTMLInputElement;
 const systemLoading = document.getElementById('system-loading') as HTMLDivElement;
 const mameLoading = document.getElementById('mame-loading') as HTMLDivElement;
 
@@ -122,6 +137,9 @@ const btnBrowseDb = document.getElementById('btn-browse-db') as HTMLButtonElemen
 // réécrase alors plus le chemin par la valeur automatique lors d'un changement de DAT.
 let dbPathCustomized = false;
 
+const stepTarget = document.getElementById('step-target') as HTMLDivElement;
+/** Formulaire du dossier cible (mode primaire uniquement) */
+let foldersForm: DbFoldersForm | null = null;
 const statusMessage = document.getElementById('status-message') as HTMLSpanElement;
 const btnLoad = document.getElementById('btn-load') as HTMLButtonElement;
 
@@ -142,7 +160,18 @@ async function init() {
     const datName = context.datName || context.dbPath || t('datDownload.activeDb');
     modeBanner.innerHTML = t('datDownload.modeBanner', { dat: escapeHtml(datName) });
     stepDb.style.display = 'none';
+    stepTarget.style.display = 'none';
     windowSubtitle.textContent = t('datDownload.subtitleComplementary');
+  } else {
+    // Mode primaire : dossier cible de la future base (pré-rempli avec les paramètres)
+    try {
+      const folderInfo = await window.api.getDbFolderSettings();
+      foldersForm = renderDbFoldersForm(document.getElementById('db-folders-form') as HTMLDivElement, folderInfo);
+      foldersForm.onChange(updateLoadButton);
+    } catch (error) {
+      console.error('Unable to load the default folders:', error);
+      stepTarget.style.display = 'none';
+    }
   }
 
   destFolderInput.value = context.defaultDatFolder || '';
@@ -157,6 +186,7 @@ async function init() {
   setupDownloadButtons();
   setupLoadButton();
   setupCloseButton();
+  setupManualSource();
 
   // Charger la liste des systèmes en arrière-plan (pane online affiché à la demande)
   loadSystems();
@@ -231,7 +261,7 @@ function updateLoadButton() {
     btnLoad.disabled = false;
     return;
   }
-  btnLoad.disabled = !dbPathInput.value.trim();
+  btnLoad.disabled = !dbPathInput.value.trim() || (!!foldersForm && !foldersForm.getValues().targetFolder);
 }
 
 // ==========================================
@@ -239,7 +269,13 @@ function updateLoadButton() {
 // ==========================================
 
 function setupDbSection() {
-  dbPathInput.addEventListener('input', updateLoadButton);
+  // Le champ est éditable (saisie ou copier-coller d'un chemin). Toute frappe vaut
+  // choix explicite : sans ce marquage, changer de DAT réécraserait la saisie par le
+  // chemin déduit automatiquement.
+  dbPathInput.addEventListener('input', () => {
+    dbPathCustomized = dbPathInput.value.trim().length > 0;
+    updateLoadButton();
+  });
 
   // Le chemin par défaut vient des paramètres ; « Parcourir » permet de le changer.
   btnBrowseDb.addEventListener('click', async () => {
@@ -265,7 +301,8 @@ function setupLoadButton() {
 
     try {
       const dbPath = context.dbOpen ? undefined : (dbPathInput.value.trim() || undefined);
-      let result = await window.api.loadDatUnified({ datPath: selectedDatPath, dbPath });
+      const folders = context.dbOpen ? undefined : foldersForm?.getValues();
+      let result = await window.api.loadDatUnified({ datPath: selectedDatPath, dbPath, folders });
 
       // La base cible existe déjà → demander confirmation avant écrasement
       if (result?.fileExists) {
@@ -276,7 +313,7 @@ function setupLoadButton() {
           return;
         }
         setStatus(t('datDownload.status.creating'), 'loading');
-        result = await window.api.loadDatUnified({ datPath: selectedDatPath, dbPath, overwrite: true });
+        result = await window.api.loadDatUnified({ datPath: selectedDatPath, dbPath, overwrite: true, folders });
       }
 
       if (result?.mode === 'complementary') {
@@ -376,6 +413,13 @@ function renderSystems(systems: DatSystemInfo[]) {
       badge.textContent = src.type === 'no-intro' ? 'No-Intro' : 'Redump';
       badges.appendChild(badge);
     });
+    if (sys.unknownSource || sys.userDefinedSources) {
+      const badge = document.createElement('span');
+      badge.className = sys.unknownSource ? 'badge unknown' : 'badge user';
+      badge.textContent = t(sys.unknownSource ? 'datDownload.manualSource.badgeUnknown' : 'datDownload.manualSource.badgeUser');
+      badge.title = t('datDownload.manualSource.badgeTitle');
+      badges.appendChild(badge);
+    }
 
     item.appendChild(nameSpan);
     item.appendChild(badges);
@@ -432,9 +476,15 @@ function renderMameList() {
       }
       if (ver.recalboxTag) {
         const badge = document.createElement('span');
-        badge.className = 'badge recalbox';
-        badge.textContent = ver.recalboxTag;
-        badges.appendChild(badge);
+        // Un badge par canal ; ils reflètent les DERNIÈRES versions de chaque canal Recalbox
+        for (const r of ver.recalboxRefs ?? []) {
+          const channel = t(`datDownload.recalboxChannel.${r.channel}`);
+          const badge = document.createElement('span');
+          badge.className = 'badge recalbox';
+          badge.textContent = t('datDownload.badgeRecalbox', { channel });
+          badge.title = t('datDownload.badgeRecalboxTitle', { channel, ref: r.ref });
+          badges.appendChild(badge);
+        }
       }
       item.appendChild(badges);
 
@@ -528,7 +578,71 @@ function selectSystem(sys: DatSystemInfo) {
     selectedSource = sys.sources[0]?.type || null;
   }
 
+  renderManualSource(sys);
   updateOnlineButtons();
+}
+
+/**
+ * Panneau de recherche / association manuelle, pour les systèmes ajoutés par une
+ * mise à jour Recalbox. Rumcet ne peut pas savoir s'ils ont un DAT No-Intro ou
+ * Redump : les boutons ouvrent les pages d'index dans le navigateur (jamais de
+ * requête de l'application vers DAT-o-Matic).
+ */
+function renderManualSource(sys: DatSystemInfo | null) {
+  const show = !!sys && (!!sys.unknownSource || !!sys.userDefinedSources);
+  manualSource.classList.toggle('visible', show);
+  manualSourceError.textContent = '';
+  if (!show || !sys) return;
+  manualSourceInfo.textContent = t(sys.unknownSource ? 'datDownload.manualSource.infoUnknown' : 'datDownload.manualSource.infoUser');
+  manualNoIntroId.value = sys.sources.find(s => s.type === 'no-intro')?.id ?? '';
+  manualRedumpSlug.value = sys.sources.find(s => s.type === 'redump')?.id ?? '';
+}
+
+function setupManualSource() {
+  const openIndex = async (source: 'no-intro' | 'redump') => {
+    const result = await window.api.openDatPage({ type: 'source-index', source, destFolder: '' });
+    if (result?.success) setStatus(t('datDownload.status.pageOpened'), 'success');
+    else setStatus(t('datDownload.manualSource.error', { error: result?.error ?? '' }), 'error');
+  };
+  document.getElementById('btn-search-nointro')!.addEventListener('click', () => { void openIndex('no-intro'); });
+  document.getElementById('btn-search-redump')!.addEventListener('click', () => { void openIndex('redump'); });
+
+  document.getElementById('btn-save-manual-source')!.addEventListener('click', async () => {
+    if (!selectedSystem) return;
+    manualSourceError.textContent = '';
+    const result = await window.api.systems.setUserDatSources(selectedSystem.systemId, {
+      noIntroId: manualNoIntroId.value,
+      redumpSlug: manualRedumpSlug.value
+    });
+    if (!result.success) {
+      manualSourceError.textContent =
+        result.error === 'invalid-nointro-id' ? t('datDownload.manualSource.invalidNoIntroId')
+        : result.error === 'invalid-redump-slug' ? t('datDownload.manualSource.invalidRedumpSlug')
+        : t('datDownload.manualSource.error', { error: result.error ?? '' });
+      return;
+    }
+    // La liste est rechargée via l'événement systems:updated
+    setStatus(t('datDownload.manualSource.saved'), 'success');
+  });
+
+  // Registre modifié (association, mise à jour Recalbox) : recharger la liste en
+  // conservant la recherche et la sélection
+  window.api.systems.onUpdated(async () => {
+    const selectedId = selectedSystem?.systemId;
+    await loadSystems();
+    const query = systemSearch.value.toLowerCase().trim();
+    if (query) renderSystems(allSystems.filter(sys => sys.name.toLowerCase().includes(query)));
+    const reselected = selectedId ? allSystems.find(sys => sys.systemId === selectedId) : undefined;
+    if (reselected) {
+      selectSystem(reselected);
+    } else {
+      selectedSystem = null;
+      selectedSource = null;
+      sourceSelection.classList.remove('visible');
+      renderManualSource(null);
+      updateOnlineButtons();
+    }
+  });
 }
 
 function updateOnlineButtons() {
@@ -581,6 +695,8 @@ function setupMameSourceRadios() {
     radio.addEventListener('change', () => {
       mameSource = radio.value as 'progetto' | 'pleasuredome';
       pleasuredomeNotice.classList.toggle('visible', mameSource === 'pleasuredome');
+      // Badges Recalbox : seulement pour la liste Progetto-Snaps
+      mameRecalboxNotice.classList.toggle('visible', mameSource === 'progetto');
       if (mameSource === 'progetto') loadMameVersions();
       else loadPleasuredomeDats();
       updateOnlineButtons();
@@ -611,7 +727,7 @@ function setupSearch() {
 
 function setupBrowseFolder() {
   document.getElementById('browse-folder')?.addEventListener('click', async () => {
-    const folder = await window.api.selectDownloadFolder();
+    const folder = await window.api.selectDownloadFolder(destFolderInput.value || undefined);
     if (folder) {
       destFolderInput.value = folder;
     }
@@ -724,10 +840,6 @@ function setupDownloadButtons() {
 function setStatus(message: string, type: '' | 'success' | 'error' | 'loading' = '') {
   statusMessage.textContent = message;
   statusMessage.className = `status-message ${type}`;
-}
-
-function escapeHtml(str: string): string {
-  return str.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
 }
 
 function setupCloseButton() {

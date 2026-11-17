@@ -116,8 +116,8 @@ export async function recordConsolidatedArchive(
   const archiveResult = await db.run(
     `INSERT OR REPLACE INTO scanned_files
        (folder_id, file_path, file_name, size, crc32, md5, sha1,
-        is_archive, archive_type, compression_level, has_comment, has_global_comment)
-     VALUES (?, ?, ?, ?, ?, ?, ?, 1, ?, ?, 0, 0)`,
+        is_archive, archive_type, compression_level, has_comment, has_global_comment, file_mtime)
+     VALUES (?, ?, ?, ?, ?, ?, ?, 1, ?, ?, 0, 0, ?)`,
     [
       folderId,
       archivePath,
@@ -127,7 +127,8 @@ export async function recordConsolidatedArchive(
       archiveHashes.md5,
       archiveHashes.sha1,
       archiveType,
-      entries[0]?.compressionLevel ?? null
+      entries[0]?.compressionLevel ?? null,
+      Math.trunc(stat.mtimeMs)
     ]
   );
   const archiveFileId = archiveResult.lastID!;
@@ -192,12 +193,15 @@ export async function recordConsolidatedRawFiles(
   const subFolderId = await ensureScannedFolder(db, gameSubfolderPath);
 
   // 3) Insérer chaque fichier brut + son rom_match
+  const fs = await import('fs/promises');
   for (const entry of entries) {
+    // Date de modification : permet au scan rapide de reconnaître ce fichier comme inchangé
+    const mtime = await fs.stat(entry.filePath).then(st => Math.trunc(st.mtimeMs)).catch(() => null);
     const result = await db.run(
       `INSERT OR REPLACE INTO scanned_files
          (folder_id, file_path, file_name, size, crc32, md5, sha1,
-          is_archive, archive_type, compression_level, has_comment, has_global_comment)
-       VALUES (?, ?, ?, ?, ?, ?, ?, 0, NULL, NULL, 0, 0)`,
+          is_archive, archive_type, compression_level, has_comment, has_global_comment, file_mtime)
+       VALUES (?, ?, ?, ?, ?, ?, ?, 0, NULL, NULL, 0, 0, ?)`,
       [
         subFolderId,
         entry.filePath,
@@ -205,7 +209,8 @@ export async function recordConsolidatedRawFiles(
         entry.size,
         entry.crc32,
         entry.md5,
-        entry.sha1
+        entry.sha1,
+        mtime
       ]
     );
     const fileId = result.lastID!;

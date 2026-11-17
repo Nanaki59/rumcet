@@ -109,89 +109,151 @@ export function registerCloneListHandlers(ipcMain: IpcMain, mainWindow: BrowserW
     };
   });
 
-  // Téléchargement. Sans argument, télécharge la liste correspondant au DAT ouvert.
-  ipcMain.handle('clone-list:download', async (_event, fileName?: string) => {
-    const settings = settingsManager.get('cloneLists');
-    const sourceUrl = settings?.sourceUrl;
-    if (!sourceUrl) throw new Error('No clone list source configured');
-
+  /**
+   * Récupère une liste si elle a changé à la source.
+   *
+   * Requête conditionnelle : l'ETag de la version locale est renvoyé en
+   * `If-None-Match`, et un 304 signifie « rien de neuf » pour quelques centaines
+   * d'octets. C'est ce qui permet de vérifier la fraîcheur à chaque chargement de
+   * DAT sans peser sur la source ni sur le temps de démarrage.
+   *
+   * `force` ignore l'ETag : utilisé par la mise à jour manuelle, quand l'utilisateur
+   * veut être certain d'avoir la dernière version.
+   */
+  async function fetchIfChanged(target: string, force: boolean): Promise<{
+    status: 'updated' | 'unchanged'; variants?: number;
+  }> {
+    const settings = settingsManager.get('cloneLists')!;
     const folder = cloneListsFolder();
     await fs.mkdir(folder, { recursive: true });
+    const destination = path.join(folder, target);
 
-    let target = fileName;
-    if (!target) {
-      const database = databaseService.getDatabase();
-      const datName = database ? await getMetadata(database, 'dat_name') : null;
-      if (!datName) throw new Error('No DAT loaded: cannot determine which list to download');
-      sendLogToRenderer(mainWindow, 'info', 'dat', 'logs.cloneList.listing');
-      target = matchCloneListFile(datName, await remoteFileNames(sourceUrl)) ?? undefined;
-      if (!target) {
-        sendLogToRenderer(mainWindow, 'warning', 'dat', 'logs.cloneList.noMatch', { dat: datName });
-        return { success: false, error: 'no-match', datName };
-      }
-    }
+    const knownEtag = force ? undefined : settings.etags?.[target];
+    // Un ETag sans fichier local serait un cache menteur : on redemande tout.
+    let hasLocal = true;
+    try { await fs.access(destination); } catch { hasLocal = false; }
 
-    const url = sourceUrl + encodeURIComponent(target);
-    const response = await fetch(url, { headers: { 'User-Agent': 'RUMCET' } });
+    const headers: Record<string, string> = { 'User-Agent': 'RUMCET' };
+    if (knownEtag && hasLocal) headers['If-None-Match'] = knownEtag;
+
+    const response = await fetch(settings.sourceUrl + encodeURIComponent(target), { headers });
+    if (response.status === 304) return { status: 'unchanged' };
     if (!response.ok) throw new Error(`Download failed (HTTP ${response.status}): ${target}`);
-    const body = await response.text();
 
-    // Validation avant écriture : mieux vaut aucun fichier qu'un fichier corrompu
-    // qui échouerait silencieusement à l'application.
+    const body = await response.text();
+    // Validation avant écriture : mieux vaut garder l'ancien fichier qu'en écrire un
+    // corrompu, qui échouerait plus tard au moment de l'application.
     const parsed = JSON.parse(body);
     if (!parsed || !Array.isArray(parsed.variants)) {
       throw new Error(`Downloaded file is not a clone list: ${target}`);
     }
-
-    const destination = path.join(folder, target);
     await fs.writeFile(destination, body, 'utf-8');
 
+    const etag = response.headers.get('etag');
+    const current = settingsManager.get('cloneLists')!;
     settingsManager.set('cloneLists', {
-      ...settingsManager.get('cloneLists')!,
-      lastDownload: new Date().toISOString()
+      ...current,
+      lastDownload: new Date().toISOString(),
+      etags: { ...(current.etags ?? {}), ...(etag ? { [target]: etag } : {}) }
     });
 
-    sendLogToRenderer(mainWindow, 'info', 'dat', 'logs.cloneList.downloaded', {
-      file: target,
-      variants: parsed.variants.length
-    });
-    return { success: true, fileName: target, variants: parsed.variants.length, path: destination };
-  });
+    return { status: 'updated', variants: parsed.variants.length };
+  }
 
-  // Application à la base ouverte.
-  ipcMain.handle('clone-list:apply', async (_event, fileName?: string) => {
+  /**
+   * Synchronise puis applique la liste correspondant au DAT ouvert.
+   * Point d'entrée unique : appelé au chargement d'un DAT et par la mise à jour
+   * manuelle. Tolère l'absence de réseau — la liste locale reste appliquée.
+   */
+  ipcMain.handle('clone-list:sync', async (_event, options?: { force?: boolean }) => {
+    const force = options?.force === true;
+    const log = (severity: 'info' | 'warning' | 'error', key: string, params?: Record<string, unknown>) =>
+      sendLogToRenderer(mainWindow, severity, 'dat', key, params as any);
+
     const database = databaseService.getDatabase();
-    if (!database) throw new Error('No database open');
+    if (!database) return { success: false, error: 'no-database' };
 
     const datSetMode = await getMetadata(database, 'dat_set_mode');
-    if (datSetMode && datSetMode !== 'n/a') {
-      return { success: false, error: 'arcade' };
+    if (datSetMode && datSetMode !== 'n/a') return { success: false, error: 'arcade' };
+
+    const datName = await getMetadata(database, 'dat_name');
+    if (!datName) return { success: false, error: 'no-dat' };
+
+    const sourceUrl = settingsManager.get('cloneLists')?.sourceUrl;
+    let target = matchCloneListFile(datName, await localFileNames());
+    let networkError: string | null = null;
+
+    // Résolution du nom distant seulement si rien ne correspond localement, ou si
+    // l'utilisateur force : l'énumération du dépôt est la partie coûteuse.
+    try {
+      if ((!target || force) && sourceUrl) {
+        log('info', 'logs.cloneList.listing');
+        const remote = matchCloneListFile(datName, await remoteFileNames(sourceUrl));
+        if (remote) target = remote;
+      }
+      if (target && sourceUrl) {
+        const outcome = await fetchIfChanged(target, force);
+        if (outcome.status === 'updated') {
+          log('info', 'logs.cloneList.downloaded', { file: target, variants: outcome.variants ?? 0 });
+        } else {
+          log('info', 'logs.cloneList.upToDate', { file: target });
+        }
+      }
+    } catch (error: any) {
+      // Motif explicite plutôt qu'un message brut : l'utilisateur doit pouvoir
+      // distinguer une panne réseau d'un fichier corrompu à la source.
+      networkError = error?.message || String(error);
+      const cause = String(networkError);
+      if (/HTTP 4\d\d/.test(cause)) {
+        log('warning', 'logs.cloneList.httpError', { file: target ?? datName, error: cause });
+      } else if (/not a clone list|JSON/i.test(cause)) {
+        log('warning', 'logs.cloneList.invalidRemote', { file: target ?? datName, error: cause });
+      } else {
+        log('warning', 'logs.cloneList.unreachable', { error: cause });
+      }
     }
 
-    let target = fileName;
     if (!target) {
-      const datName = await getMetadata(database, 'dat_name');
-      target = (datName ? matchCloneListFile(datName, await localFileNames()) : null) ?? undefined;
+      log('warning', 'logs.cloneList.noMatch', { dat: datName });
+      return { success: false, error: 'no-match', datName };
     }
-    if (!target) return { success: false, error: 'no-local-match' };
 
-    const list = await readCloneListFile(path.join(cloneListsFolder(), target));
-    const report = await applyCloneList(database, list);
+    // Lecture du fichier local : distincte du réseau, et distincte de l'application.
+    let list;
+    try {
+      list = await readCloneListFile(path.join(cloneListsFolder(), target));
+    } catch (error: any) {
+      log('error', 'logs.cloneList.unreadable', {
+        file: target, error: error?.message || String(error)
+      });
+      return { success: false, error: 'unreadable' };
+    }
+
+    if (networkError) log('info', 'logs.cloneList.usingLocal', { file: target });
+
+    let report;
+    try {
+      report = await applyCloneList(database, list);
+    } catch (error: any) {
+      log('error', 'logs.cloneList.applyFailed', {
+        file: target, error: error?.message || String(error)
+      });
+      return { success: false, error: 'apply-failed' };
+    }
 
     await setMetadata(database, 'clone_list_applied_at', new Date().toISOString());
     await setMetadata(database, 'clone_list_applied_name', report.listName);
 
-    sendLogToRenderer(mainWindow, 'info', 'dat', 'logs.cloneList.applied', {
-      list: report.listName,
-      games: report.gamesGrouped,
-      variants: report.variantsMatched
+    log('info', 'logs.cloneList.applied', {
+      list: report.listName, games: report.gamesGrouped, variants: report.variantsMatched
     });
-    if (report.unmatchedSearchTerms > 0) {
-      sendLogToRenderer(mainWindow, 'info', 'dat', 'logs.cloneList.unmatched', {
-        count: report.unmatchedSearchTerms
-      });
+    if (report.categoriesOverridden > 0) {
+      log('info', 'logs.cloneList.categories', { count: report.categoriesOverridden });
     }
-    return { success: true, report };
+    if (report.unmatchedSearchTerms > 0) {
+      log('info', 'logs.cloneList.unmatched', { count: report.unmatchedSearchTerms });
+    }
+    return { success: true, report, offline: networkError !== null };
   });
 
   // Retrait des regroupements posés par une liste (retour au titre normalisé seul).
