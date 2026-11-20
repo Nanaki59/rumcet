@@ -48,9 +48,9 @@ jobs:
       run:
         shell: bash
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v5
         with:
           node-version: 22
           cache: npm
@@ -67,7 +67,7 @@ jobs:
           echo "Version: $VERSION"
 
       - name: Fetch chdman
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v7
         with:
           name: chdman-${{ matrix.target }}
           path: resources/bin
@@ -96,7 +96,7 @@ jobs:
           --publish never
           -c.extraMetadata.version=${{ steps.version.outputs.version }}
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v6
         with:
           name: rumcet-${{ matrix.target }}
           if-no-files-found: error
@@ -110,7 +110,7 @@ jobs:
     needs: package
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v7
         with:
           pattern: rumcet-*
           path: installers

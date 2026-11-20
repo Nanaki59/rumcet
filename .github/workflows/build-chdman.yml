@@ -38,7 +38,7 @@ jobs:
     steps:
       - name: Restore cached build
         id: cache
-        uses: actions/cache@v4
+        uses: actions/cache@v5
         with:
           path: out/${{ matrix.target }}
           key: chdman-${{ env.MAME_TAG }}-${{ matrix.target }}
@@ -60,7 +60,10 @@ jobs:
       - name: Build tools only
         if: steps.cache.outputs.cache-hit != 'true'
         working-directory: mame
-        run: make -j"$(getconf _NPROCESSORS_ONLN)" TOOLS=1 EMULATOR=0 REGENIE=1
+        # chdman needs neither the Qt debugger (default on Linux) nor audio/MIDI backends
+        run: >
+          make -j"$(getconf _NPROCESSORS_ONLN)" TOOLS=1 EMULATOR=0 REGENIE=1
+          USE_QTDEBUG=0 NO_USE_MIDI=1 NO_USE_PORTAUDIO=1 NO_USE_PULSEAUDIO=1
 
       - name: Package
         if: steps.cache.outputs.cache-hit != 'true'
@@ -79,7 +82,7 @@ jobs:
           grep -q "CHD" usage.txt
           if [ "$RUNNER_OS" = "Linux" ]; then ldd "out/${{ matrix.target }}/chdman"; else otool -L "out/${{ matrix.target }}/chdman"; fi
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v6
         with:
           name: chdman-${{ matrix.target }}
           path: out/
@@ -92,7 +95,7 @@ jobs:
     steps:
       - name: Restore cached build
         id: cache
-        uses: actions/cache@v4
+        uses: actions/cache@v5
         with:
           path: out/win32-x64
           key: chdman-${{ env.MAME_TAG }}-win32-x64
@@ -135,7 +138,7 @@ jobs:
           if ($usage -notmatch 'CHD') { exit 1 }
           exit 0
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v6
         with:
           name: chdman-win32-x64
           path: out/
