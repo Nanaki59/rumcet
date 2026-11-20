@@ -110,6 +110,9 @@ interface ExistingFile {
   size: number;
   file_mtime: number | null;
   scanned_at: string | null;
+  is_archive: number;
+  /** 1 si au moins une entrée d'archive porte un hash. */
+  has_hashed_content: number;
 }
 
 /** Nombre de fichiers scannés regroupés dans une même transaction */
@@ -134,6 +137,12 @@ function parseSqliteUtc(value: string | null): number | null {
  */
 function isUnchanged(disk: DiskFile, existing: ExistingFile | undefined): boolean {
   if (!existing || existing.size !== disk.size) return false;
+  // Classification changée depuis le scan (ex. ISO autrefois listée comme une
+  // archive, désormais hachée en entier) ou image CSO scannée sans hash (ancien
+  // handler dépendant d'outils externes) : à rescanner.
+  const isArchive = archiveManager.isArchive(disk.filePath);
+  if ((existing.is_archive !== 0) !== isArchive) return false;
+  if (isArchive && path.extname(disk.filePath).toLowerCase() === '.cso' && !existing.has_hashed_content) return false;
   if (existing.file_mtime !== null && existing.file_mtime !== undefined) {
     return existing.file_mtime === disk.mtime;
   }
@@ -422,8 +431,11 @@ export async function scanFolderIncremental(
     for (let i = 0; i < ids.length; i += 500) {
       const chunk = ids.slice(i, i + 500);
       const rows = await db.all<ExistingFile & { file_path: string }>(
-        `SELECT id, file_path, size, file_mtime, scanned_at FROM scanned_files
-         WHERE folder_id IN (${chunk.map(() => '?').join(',')})`,
+        `SELECT sf.id, sf.file_path, sf.size, sf.file_mtime, sf.scanned_at, sf.is_archive,
+                EXISTS (SELECT 1 FROM archive_contents ac WHERE ac.archive_id = sf.id
+                        AND (COALESCE(ac.crc32, '') <> '' OR COALESCE(ac.sha1, '') <> '')) AS has_hashed_content
+         FROM scanned_files sf
+         WHERE sf.folder_id IN (${chunk.map(() => '?').join(',')})`,
         chunk
       );
       for (const row of rows) existing.set(row.file_path, row);

@@ -6,6 +6,7 @@ import type { ChdmanStatus, ConsolidationProfile, ProfileSettings } from '../typ
 import { compareMameVersions } from '../shared/mameVersion.js';
 import { initI18n, refreshTranslations, t, getLanguage } from './i18n.js';
 import { setupConsoleCapture } from './consoleCapture.js';
+import { initHelpTips } from './helpTip.js';
 
 // Capturer les console.* de cette page vers le fichier de logs dès le chargement
 setupConsoleCapture();
@@ -56,6 +57,7 @@ interface AppSettings {
   cleanupScope: CleanupScope;
   protectFilesForUnselectedGames: boolean;
   moveUnmatchedFiles: boolean;
+  unmatchedInReadOnlyArchives: 'repack' | 'move';
   autoSelectNewGames: boolean;
   arcadeTargetSetMode?: ArcadeTargetSetMode;
   arcadeSeparateBios?: boolean;
@@ -148,6 +150,7 @@ window.addEventListener('DOMContentLoaded', async () => {
   // Pas de reload au changement de langue : c'est cette fenêtre qui le déclenche via
   // la sauvegarde — un reload tuerait le flux « ✅ Enregistré ! » + fermeture différée.
   await initI18n({ onLanguageChanged: refreshTranslations });
+  initHelpTips();
   // Registre des systèmes (surcharge Recalbox éventuelle) avant tout rendu qui le lit
   await initSystems({ onUpdated: refreshSystemsViews });
   console.log('Loading settings...');
@@ -228,6 +231,12 @@ function setupTabs(): void {
       }
     });
   });
+
+  // Onglet d'arrivée demandé à l'ouverture (?tab=archives, bouton 🔧 de la fenêtre principale)
+  const requestedTab = new URLSearchParams(window.location.search).get('tab');
+  if (requestedTab) {
+    document.querySelector<HTMLButtonElement>(`.tab-button[data-tab="${CSS.escape(requestedTab)}"]`)?.click();
+  }
 }
 
 // ============================================
@@ -318,6 +327,7 @@ function fillProfile(): void {
   (document.getElementById('cleanupScope') as HTMLSelectElement).value = settings.cleanupScope || 'used-only';
   (document.getElementById('protectFilesForUnselectedGames') as HTMLInputElement).checked = settings.protectFilesForUnselectedGames !== undefined ? settings.protectFilesForUnselectedGames : true;
   (document.getElementById('moveUnmatchedFiles') as HTMLInputElement).checked = settings.moveUnmatchedFiles !== false;
+  (document.getElementById('unmatchedInReadOnlyArchives') as HTMLSelectElement).value = settings.unmatchedInReadOnlyArchives === 'move' ? 'move' : 'repack';
   toggleCleanupOptions();
 
   // Onglet Arcade — mode du set cible
@@ -385,6 +395,7 @@ function readProfileIntoDraft(): void {
     cleanupScope: (document.getElementById('cleanupScope') as HTMLSelectElement).value as CleanupScope,
     protectFilesForUnselectedGames: (document.getElementById('protectFilesForUnselectedGames') as HTMLInputElement).checked,
     moveUnmatchedFiles: (document.getElementById('moveUnmatchedFiles') as HTMLInputElement).checked,
+    unmatchedInReadOnlyArchives: (document.getElementById('unmatchedInReadOnlyArchives') as HTMLSelectElement).value === 'move' ? 'move' : 'repack',
 
     // Arcade — mode du set cible (MAME uniquement, ignoré pour les autres systèmes)
     arcadeTargetSetMode: ((document.querySelector('input[name="arcadeTargetSetMode"]:checked') as HTMLInputElement | null)?.value as ArcadeTargetSetMode) || 'split',
@@ -474,6 +485,14 @@ function renderProfileContext(): void {
       ? t('settings.profiles.bannerActive', { name })
       : t('settings.profiles.bannerOther', { name });
   });
+
+  // But du profil (profils intégrés et « Mon profil »), puis statut courant / non courant
+  const desc = document.getElementById('profileDesc');
+  if (desc) {
+    desc.textContent = profile.builtin || profile.id === 'custom'
+      ? t(`settings.profiles.descriptions.${profile.id}`)
+      : t('settings.profiles.descriptions.user');
+  }
 
   const hint = document.getElementById('profileHint');
   if (hint) hint.textContent = isActive ? t('settings.profiles.hintActive') : t('settings.profiles.hintOther');
@@ -1337,6 +1356,10 @@ function updateUnmatchedFolderEnabled(): void {
   const cleanCb = document.getElementById('cleanSourceAfterConsolidation') as HTMLInputElement | null;
   const moveCb = document.getElementById('moveUnmatchedFiles') as HTMLInputElement | null;
   const enabled = !!cleanCb?.checked && !!moveCb?.checked;
+
+  // Le choix pour les archives RAR n'a de sens que si les non matchés sont déplacés
+  const rarSelect = document.getElementById('unmatchedInReadOnlyArchives') as HTMLSelectElement | null;
+  if (rarSelect) rarSelect.disabled = !enabled;
 
   const msg = document.getElementById('unmatchedRomsFolderDisabledMsg');
   if (msg) msg.style.display = enabled ? 'none' : 'block';

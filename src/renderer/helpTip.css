@@ -1,0 +1,98 @@
+/*
+ * RUMCET - ROM's Ultimate Manager, Conversion and Editor Tool
+ * Copyright (C) 2025 Nanaki59
+ *
+ * This program is free software: you can redistribute it and/or modify
+ * it under the terms of the GNU Affero General Public License as published
+ * by the Free Software Foundation, either version 3 of the License, or
+ * (at your option) any later version.
+ *
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU Affero General Public License for more details.
+ *
+ * You should have received a copy of the GNU Affero General Public License
+ * along with this program.  If not, see <https://www.gnu.org/licenses/>.
+ */
+/* Puces d'aide « ? » et leur bulle (voir helpTip.ts). */
+
+.help-tip {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 16px;
+  height: 16px;
+  margin-left: 6px;
+  border-radius: 50%;
+  background: #95a5a6;
+  color: #fff;
+  font-size: 11px;
+  font-weight: 700;
+  font-style: normal;
+  line-height: 1;
+  vertical-align: middle;
+  cursor: help;
+  user-select: none;
+  flex-shrink: 0;
+  transition: background 0.15s;
+}
+
+.help-tip:hover,
+.help-tip:focus-visible,
+.help-tip[aria-describedby] {
+  background: #3498db;
+  outline: none;
+}
+
+.help-tip:focus-visible {
+  box-shadow: 0 0 0 2px rgba(52, 152, 219, 0.4);
+}
+
+.help-tip-bubble {
+  position: fixed;
+  z-index: 10000;
+  max-width: 340px;
+  padding: 10px 12px;
+  border-radius: 6px;
+  background: #2c3e50;
+  color: #ecf0f1;
+  font-size: 12px;
+  font-weight: normal;
+  line-height: 1.5;
+  text-align: left;
+  white-space: normal;
+  box-shadow: 0 4px 14px rgba(0, 0, 0, 0.25);
+  pointer-events: none;
+  visibility: hidden;
+  opacity: 0;
+  transition: opacity 0.12s;
+}
+
+.help-tip-bubble.visible {
+  visibility: visible;
+  opacity: 1;
+}
+
+.help-tip-bubble p { margin: 0; }
+.help-tip-bubble p + p { margin-top: 6px; }
+.help-tip-bubble strong { color: #fff; }
+
+/* Flèche, alignée sur la puce via --arrow-x */
+.help-tip-bubble::after {
+  content: '';
+  position: absolute;
+  left: var(--arrow-x, 50%);
+  margin-left: -6px;
+  border: 6px solid transparent;
+}
+
+.help-tip-bubble.below::after {
+  bottom: 100%;
+  border-bottom-color: #2c3e50;
+}
+
+.help-tip-bubble.above::after {
+  top: 100%;
+  border-top-color: #2c3e50;
+}

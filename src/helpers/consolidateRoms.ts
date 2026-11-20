@@ -28,6 +28,8 @@ import { buildM3uGroups, writeM3uFiles } from './m3uWriter.js';
 // Ré-exports de compatibilité : ces helpers vivent désormais dans systemProfiles/rules.
 export { getSystemAllowedFormats, determineTargetFormat } from './systemProfiles/rules.js';
 import { OperationSignal, OperationAbortedError, raceAbort, throwIfAborted } from './operationSignal.js';
+import { SourceCleaner, type GameCleanupRecord } from './sourceCleanup.js';
+import { isInsideFolder } from './sourceCleanupPlan.js';
 import path from 'path';
 import fs from 'fs/promises';
 
@@ -42,7 +44,7 @@ const RUMCET_DEBUG = process.env.RUMCET_DEBUG === '1' || process.env.RUMCET_DEBU
 
 /** Étape du jeu en cours ('done' | 'skipped' | 'error' | 'aborted' = issue du jeu) */
 export type ConsolidationStep =
-  | 'analyzing' | 'direct-copy' | 'extracting' | 'compressing' | 'copying'
+  | 'analyzing' | 'direct-copy' | 'extracting' | 'compressing' | 'copying' | 'cleaning'
   | 'done' | 'skipped' | 'error' | 'aborted';
 
 /** Stratégie appliquée au jeu en cours */
@@ -97,11 +99,20 @@ export interface ConsolidationResult {
     romsExtracted: number;
     archivesCreated: number;
     unmatchedFilesMoved: number;
+    /** Nettoyage : fichiers et archives sources supprimés */
+    sourcesDeleted: number;
+    /** Nettoyage : archives dont des fichiers inutiles ont été retirés */
+    archivesCleaned: number;
+    /** Nettoyage : archives dont les non matchés ont été séparés dans une nouvelle archive */
+    archivesSplit: number;
+    /** Fichiers sans lien avec le DAT laissés dans le dossier cible (jamais déplacés) */
+    unmatchedInTarget: number;
+    cleanupErrors: number;
     /** Jeux non traités (consolidation interrompue) */
     gamesRemaining?: number;
   };
   errors: Array<{ gameName: string; error: string }>;
-  /** Interrompue par l'utilisateur : phases de fin (nettoyage, déplacement) non exécutées */
+  /** Interrompue par l'utilisateur : passe finale (déplacement des non matchés) non exécutée */
   cancelled?: boolean;
   /** Option .m3u active et applicable : jeux multi-disques détectés et .m3u produits */
   m3u?: {
@@ -170,6 +181,20 @@ class GameProgressReporter {
 interface GameRunContext {
   reporter?: GameProgressReporter;
   signal?: OperationSignal;
+  /** Sources réellement utilisées et fichiers produits (nettoyage des sources) */
+  cleanup?: GameCleanupRecord;
+}
+
+/** Mémorise la source d'une ROM utilisée pour le jeu (pour le nettoyage). */
+function recordSource(ctx: GameRunContext | undefined, rom: MatchedRomInfo): void {
+  if (ctx?.cleanup && rom.sourceFileId) {
+    ctx.cleanup.sources.push({ fileId: rom.sourceFileId, contentId: rom.archiveContentId ?? null });
+  }
+}
+
+/** Mémorise un fichier produit dans le dossier cible (jamais nettoyé). */
+function recordOutput(ctx: GameRunContext | undefined, outputPath: string): void {
+  ctx?.cleanup?.outputs.push(outputPath);
 }
 
 /**
@@ -253,6 +278,8 @@ async function copyChdDisksToOutput(
     }
     const target = path.join(chdDir, chdOutputName(rom));
     await copyToTarget(source, target, ctx);
+    recordSource(ctx, rom);
+    recordOutput(ctx, target);
     console.log(`[CHD] disk copied as-is (no extraction) → ${target}`);
     result.stats.romsExtracted++;
 
@@ -386,6 +413,11 @@ export async function consolidateRoms(
       romsExtracted: 0,
       archivesCreated: 0,
       unmatchedFilesMoved: 0,
+      sourcesDeleted: 0,
+      archivesCleaned: 0,
+      archivesSplit: 0,
+      unmatchedInTarget: 0,
+      cleanupErrors: 0,
       gamesRemaining: 0
     },
     errors: []
@@ -549,6 +581,17 @@ export async function consolidateRoms(
     skipped: result.stats.gamesSkipped
   });
 
+  // Nettoyage des sources au fil de l'eau (src/helpers/sourceCleanup.ts)
+  const foldedOwner = new Map<number, number>();
+  for (const [parentId, clones] of parentToFoldedClones) {
+    for (const clone of clones) foldedOwner.set(clone.id, parentId);
+  }
+  const cleaner = settings.cleanSourceAfterConsolidation
+    ? await SourceCleaner.create(
+        db, settings, archiveManager, result.stats, signal,
+        selectedGames.filter(g => !foldedCloneIds.has(g.id)).map(g => g.id), foldedOwner)
+    : null;
+
   // Phase 2 : Consolider chaque jeu
   let gamesHandled = 0;
   for (let i = 0; i < selectedGames.length; i++) {
@@ -584,17 +627,23 @@ export async function consolidateRoms(
     const before = { ...result.stats };
     const mergedClones = parentToFoldedClones.get(game.id) || [];
     const gameSettings = m3uGameIds.has(game.id) ? m3uSettings : settings;
+    const cleanupRecord: GameCleanupRecord = { sources: [], outputs: [], consumedDatRomIds: [] };
     const gamePromise = consolidateGame(
       db, game, gameSettings, archiveManager, result, systemId, targetMode, datIsArcade, profile, mergedClones,
-      { reporter, signal }
+      { reporter, signal, cleanup: cleanupRecord }
     );
     try {
       await (signal ? raceAbort(gamePromise, signal.abort.signal) : gamePromise);
       gamesHandled++;
       if (result.stats.gamesConsolidated > before.gamesConsolidated) {
         consolidatedIds.add(game.id);
+        if (cleaner) {
+          reporter.step('cleaning');
+          await cleaner.gameFinished(game.id, 'succeeded', cleanupRecord);
+        }
         reporter.step('done');
       } else {
+        await cleaner?.gameFinished(game.id, 'failed');
         reporter.step('skipped');
       }
     } catch (error: any) {
@@ -623,6 +672,7 @@ export async function consolidateRoms(
       result.stats.gamesErrored++;
       result.errors.push({ gameName: game.name, error: error.message || String(error) });
       console.error(`❌ Consolidation error ${game.name}:`, error);
+      await cleaner?.gameFinished(game.id, 'failed');
       reporter.step('error', error.message || String(error));
 
       // Logger l'erreur en base
@@ -636,9 +686,9 @@ export async function consolidateRoms(
   result.stats.gamesRemaining = selectedGames.length - gamesHandled;
 
   if (result.cancelled) {
-    // Phases 3 et 4 sautées : supprimer « tous les fichiers matchés » effacerait les
-    // sources des jeux non encore consolidés.
-    console.warn(`⏹️ Consolidation interrupted: ${result.stats.gamesRemaining} game(s) not processed — cleanup phases skipped`);
+    // Les sources des jeux déjà consolidés ont été nettoyées au fil de l'eau ; seule la
+    // passe finale (déplacement des fichiers sans lien avec le DAT) est sautée.
+    console.warn(`⏹️ Consolidation interrupted: ${result.stats.gamesRemaining} game(s) not processed — final unmatched pass skipped`);
   }
 
   // Phase 2b : .m3u des jeux multi-disques dont tous les disques retenus ont été
@@ -655,28 +705,19 @@ export async function consolidateRoms(
     }
   }
 
-  // Phase 3 : Supprimer tous les fichiers matchés restants (si scope = all-matched)
-  if (!result.cancelled && settings.cleanSourceAfterConsolidation && settings.cleanupScope === 'all-matched') {
-    onProgress?.({
+  // Phase 3 : passe finale — déplacer les fichiers sans lien avec le DAT (hors dossier
+  // cible) et séparer les non matchés des archives hybrides restantes.
+  if (!result.cancelled && cleaner) {
+    const emitFinalPass = (params?: Record<string, number>) => onProgress?.({
       phase: 'moving-unmatched',
       currentGameIndex: selectedGames.length,
       totalGames: selectedGames.length,
-      key: 'logs.consolidation.progress.deletingMatched'
+      key: params ? 'logs.consolidation.progress.movingUnmatchedCount' : 'logs.consolidation.progress.movingUnmatched',
+      params,
+      ...counters()
     });
-
-    await deleteAllMatchedFiles(db, settings.protectFilesForUnselectedGames);
-  }
-
-  // Phase 4 : Déplacer les fichiers non matchés (si nettoyage et déplacement activés)
-  if (!result.cancelled && settings.cleanSourceAfterConsolidation && settings.moveUnmatchedFiles !== false) {
-    onProgress?.({
-      phase: 'moving-unmatched',
-      currentGameIndex: selectedGames.length,
-      totalGames: selectedGames.length,
-      key: 'logs.consolidation.progress.movingUnmatched'
-    });
-
-    await moveUnmatchedFiles(db, settings, result);
+    emitFinalPass();
+    await cleaner.finish(p => emitFinalPass({ current: p.current, total: p.total }));
   }
 
   // Phase 5 : Nettoyer les entrées scanned_files dont le fichier n'existe plus
@@ -723,6 +764,10 @@ function selectBestMatches(
 ): MatchedRomInfo[] {
   const allowedFormats = getSystemAllowedFormats(systemId, settings);
   const formatPriority = settings.archiveFormatPriority;
+  // À priorité égale, préférer une source hors du dossier cible : avec la portée
+  // « fichiers utilisés uniquement », c'est la copie source qui est alors nettoyée
+  // (la copie déjà présente dans la cible est réécrite à l'identique).
+  const inTarget = (p: string | null) => (p && isInsideFolder(p, settings.validatedRomsFolder)) ? 1 : 0;
 
   // Grouper par (owner_game_id | datRomName) — pas juste par datRomName !
   // En mode merged, le parent et ses clones peuvent avoir des ROMs de même nom
@@ -773,7 +818,7 @@ function selectBestMatches(
       .sort((a, b) => {
         const aIdx = formatPriority.indexOf(a[1].format as ArchiveFormat);
         const bIdx = formatPriority.indexOf(b[1].format as ArchiveFormat);
-        return (aIdx === -1 ? 99 : aIdx) - (bIdx === -1 ? 99 : bIdx);
+        return ((aIdx === -1 ? 99 : aIdx) - (bIdx === -1 ? 99 : bIdx)) || (inTarget(a[0]) - inTarget(b[0]));
       });
 
     if (completeArchives.length > 0) {
@@ -804,7 +849,8 @@ function selectBestMatches(
 
   const result: MatchedRomInfo[] = [];
   for (const [, matches] of grouped) {
-    matches.sort((a, b) => scoreMatch(b) - scoreMatch(a));
+    matches.sort((a, b) => (scoreMatch(b) - scoreMatch(a))
+      || (inTarget(a.archivePath || a.scannedFilePath) - inTarget(b.archivePath || b.scannedFilePath)));
     result.push(matches[0]);
   }
 
@@ -919,6 +965,7 @@ async function consolidateGame(
       dr.merge_name as datRomMergeName,
       dr.game_id as datRomOwnerGameId,
       ? as datRomOwnerGameName,
+      sf.id as sourceFileId,
       CASE WHEN rm.archive_content_id IS NULL THEN sf.id ELSE NULL END as scannedFileId,
       CASE WHEN rm.archive_content_id IS NULL THEN sf.file_path ELSE NULL END as scannedFilePath,
       CASE WHEN rm.archive_content_id IS NULL THEN sf.file_name ELSE NULL END as scannedFileName,
@@ -953,6 +1000,7 @@ async function consolidateGame(
         dr.merge_name as datRomMergeName,
         dr.game_id as datRomOwnerGameId,
         cg.name as datRomOwnerGameName,
+        sf.id as sourceFileId,
         CASE WHEN rm.archive_content_id IS NULL THEN sf.id ELSE NULL END as scannedFileId,
         CASE WHEN rm.archive_content_id IS NULL THEN sf.file_path ELSE NULL END as scannedFilePath,
         CASE WHEN rm.archive_content_id IS NULL THEN sf.file_name ELSE NULL END as scannedFileName,
@@ -984,6 +1032,7 @@ async function consolidateGame(
 
   // Sélectionner le meilleur match par ROM selon les priorités
   const matchedRoms = selectBestMatches(allMatches, settings, systemId);
+  if (ctx.cleanup) ctx.cleanup.consumedDatRomIds = matchedRoms.map(m => m.datRomId);
 
   // Logger les fichiers sources qui seront utilisés pour ce jeu
   logSourceFiles(matchedRoms);
@@ -1269,6 +1318,7 @@ async function consolidateGame(
       for (const fp of filePaths) {
         const dest = path.join(gameOutDir, path.basename(fp));
         await copyToTarget(fp, dest, ctx);
+        recordOutput(ctx, dest);
 
         // Faire correspondre ce fichier extrait à un dat_rom (par nom de fichier)
         const baseName = path.basename(fp);
@@ -1286,6 +1336,7 @@ async function consolidateGame(
         }
       }
       console.log(`[✓ Done]         ${filePaths.length} raw file(s) copied → ${gameOutDir}`);
+      for (const rom of fileRoms) recordSource(ctx, rom);
 
       // Enregistrer directement en base : scanned_files + rom_matches dans le dossier cible.
       // Si gameOutDir est un sous-dossier (bios/), il est enregistré sous validatedRomsFolder.
@@ -1364,6 +1415,8 @@ async function consolidateGame(
     await fs.mkdir(gameOutDir, { recursive: true });
     const finalDestPath = path.join(gameOutDir, path.basename(tempOutputPath));
     await copyToTarget(tempOutputPath, finalDestPath, ctx);
+    recordOutput(ctx, finalDestPath);
+    for (const rom of fileRoms) recordSource(ctx, rom);
     console.log(`[✓ Done]         consolidated archive → ${finalDestPath}`);
 
     // Copier les disques CHD tels quels à côté de l'archive (jeu ROMs + CHD).
@@ -1399,11 +1452,6 @@ async function consolidateGame(
        VALUES (?, ?, ?, ?, 'success', ?, ?)`,
       [game.id, game.name, finalDestPath, finalFormat, matchedRoms.length, game.totalRoms]
     );
-
-    // Supprimer les fichiers sources si demandé (vérification intelligente)
-    if (settings.cleanSourceAfterConsolidation) {
-      await tryDeleteSourceFiles(db, matchedRoms, settings.protectFilesForUnselectedGames);
-    }
 
   } finally {
     // Nettoyer le dossier temporaire (y compris output et candidats ratés)
@@ -1622,14 +1670,17 @@ async function tryDirectArchiveCopy(
   const validCandidates = candidateArchives
     .filter(a => allowedFormats.includes(a.archive_type as ArchiveFormat))
     .sort((a, b) => {
+      // À critère égal, préférer une archive hors du dossier cible (voir selectBestMatches)
+      const targetTie = (isInsideFolder(a.archive_path, settings.validatedRomsFolder) ? 1 : 0)
+        - (isInsideFolder(b.archive_path, settings.validatedRomsFolder) ? 1 : 0);
       if (settings.useBestCompression) {
         // Mode meilleure compression : trier par taille croissante (la plus petite d'abord)
-        return (a.archive_size || Infinity) - (b.archive_size || Infinity);
+        return ((a.archive_size || Infinity) - (b.archive_size || Infinity)) || targetTie;
       }
       // Mode standard : trier par priorité format utilisateur
       const aIdx = formatPriority.indexOf(a.archive_type as ArchiveFormat);
       const bIdx = formatPriority.indexOf(b.archive_type as ArchiveFormat);
-      return (aIdx === -1 ? 99 : aIdx) - (bIdx === -1 ? 99 : bIdx);
+      return ((aIdx === -1 ? 99 : aIdx) - (bIdx === -1 ? 99 : bIdx)) || targetTie;
     });
 
   if (validCandidates.length === 0) {
@@ -1684,6 +1735,8 @@ async function tryDirectArchiveCopy(
 
       reporter?.step('copying');
       await copyToTarget(sourcePath, finalDestPath, ctx);
+      recordOutput(ctx, finalDestPath);
+      ctx.cleanup?.sources.push({ fileId: candidate.archive_id, contentId: null, wholeArchive: true });
       reporter?.chosen(sourcePath);
       console.log(`${logPrefix} reusable CHD source archive → direct copy without recompression`);
       console.log(`${logPrefix}   source: ${sourcePath}`);
@@ -1714,10 +1767,6 @@ async function tryDirectArchiveCopy(
          VALUES (?, ?, ?, ?, 'success', ?, ?)`,
         [game.id, game.name, finalDestPath, 'chd', matchedRoms.length, game.totalRoms]
       );
-
-      if (settings.cleanSourceAfterConsolidation) {
-        await tryDeleteSourceFiles(db, matchedRoms, settings.protectFilesForUnselectedGames);
-      }
 
       return true;
     }
@@ -1803,6 +1852,8 @@ async function tryDirectArchiveCopy(
       }
     }
 
+    recordOutput(ctx, finalDestPath);
+    ctx.cleanup?.sources.push({ fileId: candidate.archive_id, contentId: null, wholeArchive: true });
     reporter?.chosen(sourcePath);
     throwIfAborted(ctx.signal);
     result.stats.archivesCreated++;
@@ -1831,10 +1882,6 @@ async function tryDirectArchiveCopy(
        VALUES (?, ?, ?, ?, 'success', ?, ?)`,
       [game.id, game.name, finalDestPath, candidate.archive_type, matchedRoms.length, game.totalRoms]
     );
-
-    if (settings.cleanSourceAfterConsolidation) {
-      await tryDeleteSourceFiles(db, matchedRoms, settings.protectFilesForUnselectedGames);
-    }
 
     return true;
   }
@@ -1869,6 +1916,7 @@ async function consolidateChdGame(
   if (settings.arcadeChdEmptyZip) {
     const emptyZipPath = path.join(settings.validatedRomsFolder, `${sanitizedName}.zip`);
     await writeEmptyChdZip(emptyZipPath);
+    recordOutput(ctx, emptyZipPath);
     console.log(`[CHD] empty placeholder zip created → ${emptyZipPath}`);
   }
 
@@ -1884,6 +1932,8 @@ async function consolidateChdGame(
 
     // Copie telle quelle (aucune extraction ni recompression d'un CHD).
     await copyToTarget(sourcePath, targetPath, ctx);
+    recordSource(ctx, rom);
+    recordOutput(ctx, targetPath);
 
     producedChds.push({ targetPath, rom });
     result.stats.romsExtracted++;
@@ -1916,10 +1966,6 @@ async function consolidateChdGame(
      VALUES (?, ?, ?, 'chd', 'success', ?, ?)`,
     [game.id, game.name, targetDir, matchedRoms.length, game.totalRoms]
   );
-
-  if (settings.cleanSourceAfterConsolidation) {
-    await tryDeleteSourceFiles(db, matchedRoms, settings.protectFilesForUnselectedGames);
-  }
 }
 
 /**
@@ -2077,190 +2123,6 @@ async function extractChdRomsToTemp(
       await fs.rm(extractDir, { recursive: true, force: true });
     } catch {
       // Ignorer
-    }
-  }
-}
-
-/**
- * Vérifie si un fichier source peut être supprimé en toute sécurité.
- * Un fichier est encore nécessaire si :
- * - Il est référencé par un rom_match d'un jeu qui n'a pas encore été consolidé avec succès
- * - Si protectUnselected est true, les fichiers servant à des jeux non sélectionnés sont aussi protégés
- */
-async function canDeleteSourceFile(db: Database, sourcePath: string, protectUnselected: boolean): Promise<boolean> {
-  // Chercher si ce fichier est encore nécessaire pour d'autres jeux non consolidés
-  // scanned_file_id pointe vers le fichier physique (loose ou archive)
-  const query = protectUnselected
-    ? `SELECT 1 FROM rom_matches rm
-       JOIN dat_roms dr ON rm.dat_rom_id = dr.id
-       JOIN games g ON dr.game_id = g.id
-       JOIN scanned_files sf ON rm.scanned_file_id = sf.id
-       LEFT JOIN consolidation_log cl ON cl.game_id = g.id AND cl.status = 'success'
-       WHERE sf.file_path = ?
-       AND cl.id IS NULL
-       LIMIT 1`
-    : `SELECT 1 FROM rom_matches rm
-       JOIN dat_roms dr ON rm.dat_rom_id = dr.id
-       JOIN games g ON dr.game_id = g.id
-       JOIN scanned_files sf ON rm.scanned_file_id = sf.id
-       LEFT JOIN consolidation_log cl ON cl.game_id = g.id AND cl.status = 'success'
-       WHERE sf.file_path = ?
-       AND cl.id IS NULL
-       AND g.is_selected != 0
-       LIMIT 1`;
-
-  const stillNeeded = await db.get(query, [sourcePath]);
-  return !stillNeeded;
-}
-
-/**
- * Tente de supprimer les fichiers sources des ROMs matchées,
- * en vérifiant d'abord qu'ils ne sont plus nécessaires pour d'autres jeux
- */
-async function tryDeleteSourceFiles(
-  db: Database,
-  matchedRoms: MatchedRomInfo[],
-  protectUnselected: boolean
-): Promise<void> {
-  const checkedPaths = new Set<string>();
-
-  for (const rom of matchedRoms) {
-    const sourcePath = rom.scannedFilePath || rom.archivePath;
-    if (!sourcePath || checkedPaths.has(sourcePath)) continue;
-    checkedPaths.add(sourcePath);
-
-    try {
-      if (await canDeleteSourceFile(db, sourcePath, protectUnselected)) {
-        await fs.unlink(sourcePath);
-        console.log(`Source deleted: ${path.basename(sourcePath)}`);
-      }
-    } catch {
-      // Fichier déjà supprimé ou inaccessible
-    }
-  }
-}
-
-/**
- * Supprime tous les fichiers matchés (pas seulement ceux utilisés pour la consolidation).
- * Utilisé quand cleanupScope === 'all-matched'.
- */
-async function deleteAllMatchedFiles(db: Database, protectUnselected: boolean): Promise<void> {
-  // Récupérer tous les fichiers physiques ayant au moins un match
-  const matchedFiles = await db.all<{ file_path: string }>(`
-    SELECT DISTINCT sf.file_path
-    FROM scanned_files sf
-    WHERE EXISTS (
-      SELECT 1 FROM rom_matches rm WHERE rm.scanned_file_id = sf.id
-    )
-  `);
-
-  for (const file of matchedFiles) {
-    try {
-      // Vérifier que le fichier existe encore (pas déjà supprimé lors de la phase per-game)
-      await fs.access(file.file_path);
-      if (await canDeleteSourceFile(db, file.file_path, protectUnselected)) {
-        await fs.unlink(file.file_path);
-        console.log(`Source deleted (all-matched): ${path.basename(file.file_path)}`);
-      }
-    } catch {
-      // Fichier déjà supprimé ou inaccessible
-    }
-  }
-}
-
-/**
- * Déplace les fichiers non matchés vers le dossier unmatchedRomsFolder
- */
-async function moveUnmatchedFiles(
-  db: Database,
-  settings: ReturnType<typeof settingsManager.getAll>,
-  result: ConsolidationResult
-): Promise<void> {
-  // Récupérer les fichiers loose non matchés
-  const unmatchedFiles = await db.all<{
-    id: number;
-    file_path: string;
-    file_name: string;
-  }>(`
-    SELECT
-      sf.id,
-      sf.file_path,
-      sf.file_name
-    FROM scanned_files sf
-    WHERE sf.is_archive = 0
-    AND NOT EXISTS (
-      SELECT 1 FROM rom_matches rm
-      WHERE rm.scanned_file_id = sf.id AND rm.archive_content_id IS NULL
-    )
-  `);
-
-  // Récupérer les archives dont aucun contenu n'est matché
-  const unmatchedArchives = await db.all<{
-    id: number;
-    file_path: string;
-    file_name: string;
-  }>(`
-    SELECT DISTINCT
-      sf.id,
-      sf.file_path,
-      sf.file_name
-    FROM scanned_files sf
-    WHERE sf.is_archive = 1
-    AND NOT EXISTS (
-      SELECT 1 FROM rom_matches rm
-      WHERE rm.archive_content_id IN (
-        SELECT ac.id FROM archive_contents ac WHERE ac.archive_id = sf.id
-      )
-    )
-  `);
-
-  const allUnmatched = [...unmatchedFiles, ...unmatchedArchives];
-
-  for (const file of allUnmatched) {
-    try {
-      // Vérifier que le fichier existe encore
-      try {
-        await fs.access(file.file_path);
-      } catch {
-        continue; // Fichier déjà supprimé
-      }
-
-      const destPath = path.join(settings.unmatchedRomsFolder, file.file_name);
-
-      // Gérer les conflits de noms
-      let finalDestPath = destPath;
-      let counter = 1;
-      while (true) {
-        try {
-          await fs.access(finalDestPath);
-          // Le fichier existe, ajouter un suffixe
-          const ext = path.extname(file.file_name);
-          const base = path.basename(file.file_name, ext);
-          finalDestPath = path.join(settings.unmatchedRomsFolder, `${base}_${counter}${ext}`);
-          counter++;
-        } catch {
-          break; // Le fichier n'existe pas, on peut utiliser ce chemin
-        }
-      }
-
-      await fs.rename(file.file_path, finalDestPath);
-
-      // Logger en base
-      await db.run(
-        `INSERT INTO unmatched_moves (original_path, destination_path, status)
-         VALUES (?, ?, 'success')`,
-        [file.file_path, finalDestPath]
-      );
-
-      result.stats.unmatchedFilesMoved++;
-    } catch (error: any) {
-      // Logger l'erreur mais continuer
-      await db.run(
-        `INSERT INTO unmatched_moves (original_path, destination_path, status)
-         VALUES (?, ?, 'error')`,
-        [file.file_path, settings.unmatchedRomsFolder]
-      );
-      console.error(`Move error ${file.file_name}:`, error);
     }
   }
 }

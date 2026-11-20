@@ -130,7 +130,9 @@
       "start": "🧹 Starting ROM consolidation (profile \"{profile}\")...",
       "launching": "Launching ROM consolidation...",
       "finished": "Consolidation complete!",
-      "done": "✅ Consolidation complete! {games} games consolidated, {archives} archives created, {unmatched} unmatched files moved",
+      "done": "✅ Consolidation complete! {games} games consolidated, {archives} archives created — cleanup: {deleted} sources deleted, {cleaned} archives trimmed, {split} archives split, {unmatched} unmatched files moved",
+      "unmatchedInTarget": "{count} file(s) unrelated to the DAT left in place in the target folder",
+      "cleanupErrors": "⚠️ {count} error(s) during source cleanup (details in the log file)",
       "errorsCount": "⚠️ {count} error(s) during consolidation",
       "m3uFormatOverride": "💿 {count} multi-disc game(s) detected: their discs were not compressed to 7z/zip (CHD or raw files) so they can be referenced by a .m3u",
       "m3uCreated": "💿 {count} .m3u file(s) created",
@@ -140,8 +142,8 @@
       "progress": {
         "preparing": "Preparing consolidation...",
         "game": "Consolidating {game}...",
-        "deletingMatched": "Deleting remaining matched files (duplicates)...",
         "movingUnmatched": "Moving unmatched files...",
+        "movingUnmatchedCount": "Moving unmatched files ({current}/{total})...",
         "complete": "Consolidation complete: {count} games consolidated"
       },
       "gameDone": "✅ {game} → {format}",
@@ -257,7 +259,8 @@
     "unknown": "Unknown",
     "others": "Others",
     "filterExecutables": "Executables",
-    "filterAllFiles": "All files"
+    "filterAllFiles": "All files",
+    "help": "Help"
   },
   "menu": {
     "file": {
@@ -370,16 +373,24 @@
   "index": {
     "workflow": {
       "openDatabase": "📂 Open Rumcet DB",
-      "openDatabaseTitle": "Open an existing Rumcet DB (quick loading).",
-      "loadDat": "📖 1. Load DAT/XML",
+      "openDatabaseTitle": "Resume an existing Rumcet DB.\nThe DAT, scanned folders and matching results are kept: no need to start over.",
+      "loadDat": "✨ 1. New Rumcet DB",
       "loadDatComplementary": "📖 1. Load complementary DAT/XML",
-      "loadDatTitle": "📖 Step 1: Load a DAT/XML file (local or downloaded) — the database is created automatically. If a database is already open, adds a complementary DAT.",
+      "loadDatTitle": "Step 1: create a new Rumcet DB from a DAT/XML file (local or downloaded).\nA DAT/XML is the complete inventory of a system's games and of the files that make them up, made by preservation groups (No-Intro, Redump, MAME…).\nIf a Rumcet DB is already open, adds a complementary DAT (e.g. CHDs DAT, BIOS pack).",
       "addFolder": "📂 2. Add ROMs folder",
-      "addFolderTitle": "📂 Step 2: Add a folder containing ROMs",
+      "addFolderTitle": "Step 2: add a folder containing your ROMs.\nRUMCET analyzes the files and the content of archives (ZIP, 7z, RAR, CHD…) and computes their checksums.",
       "match": "🎯 3. Match ROMs",
-      "matchTitle": "🎯 Step 3: Analyze and match ROMs",
-      "consolidate": "🧹 4. Consolidate",
-      "consolidateTitle": "🧹 Step 4: Consolidate validated ROMs"
+      "matchTitle": "Step 3: compare your files' checksums with those of the DAT/XML.\nYou then see complete, incomplete or missing games, and extra files.",
+      "select": "☑️ 4. Select",
+      "selectTitle": "Step 4 (optional): choose the games to consolidate. By default, all games are selected.\nYou can check or uncheck them by hand while browsing the DAT/XML content (left pane, “DAT/XML file” section), or use the automatic selection, which is recommended (regions, languages, clones, prototypes…, 1G1R).",
+      "consolidate": "🧹 5. Consolidate",
+      "consolidateTitle": "Step 5: rebuild the selected games in the target folder, renamed according to the DAT/XML and in the format defined by the consolidation profile.\nDepending on your settings, it can also clean up your source folders: delete game files already rebuilt and move unneeded files to dedicated folders.",
+      "or": "or",
+      "disabled": {
+        "needDat": "Available once a Rumcet DB has been created or opened.",
+        "needFolder": "Available once at least one ROMs folder has been added.",
+        "needMatch": "Available once the matching has been run."
+      }
     },
     "dbBanner": {
       "system": "🎮 System:",
@@ -390,7 +401,7 @@
     },
     "sidebar": {
       "datSection": "📖 DAT/XML file",
-      "datAddTitle": "Load a DAT/XML (local or downloaded). First DAT: creates the database. Subsequent DATs: merged as complementary (e.g. CHDs DAT, BIOS pack).",
+      "datAddTitle": "Load a DAT/XML (local or downloaded). First DAT: creates the Rumcet DB. Subsequent DATs: merged as complementary (e.g. CHDs DAT, BIOS pack).",
       "collapseTitle": "Collapse/Expand",
       "foldersSection": "📂 ROMs folders",
       "foldersAddTitle": "Add one or more ROMs folders",
@@ -398,7 +409,7 @@
       "scanIncomplete": "Incomplete scan — right-click › \"Resume scan\""
     },
     "search": {
-      "placeholder": "🔍 Search games, ROMs and archives...",
+      "placeholder": "🔍 Search games, ROMs and archives (name or CRC32 / MD5 / SHA1)...",
       "scopeAll": "All",
       "scopeGames": "DAT games",
       "scopeFiles": "ROM files",
@@ -453,8 +464,11 @@
     },
     "selection": {
       "selectAll": "Select all",
-      "autoSelectBtn": "⚙️ Auto select",
-      "autoSelectTitle": "Automatic selection using include/exclude rules (name, category, driver status, CHD, clones…)"
+      "autoSelectBtn": "✨ Automatic selection (recommended)",
+      "autoSelectTitle": "Automatic selection using include/exclude rules (regions, languages, name, category, driver status, CHD, clones…) and 1G1R",
+      "help": "<p>Check or uncheck the games to consolidate directly in this list, which shows the DAT/XML content (opened from the “DAT/XML file” section of the left pane). Search, filters and grouping help you find them.</p><p>The <strong>automatic selection</strong> (recommended) does this sorting for you, based on rules (regions, languages, clones, prototypes, BIOS…) and 1G1R (one game, one ROM).</p>",
+      "tip": "All games are selected. Uncheck the ones you do not want in this list, or use the automatic selection to keep only the games you want (regions, clones, 1G1R…).",
+      "tipClose": "Hide this tip"
     },
     "selectionStatus": {
       "selected": "Selected",
@@ -485,18 +499,21 @@
     },
     "welcome": {
       "title": "Welcome to RUMCET",
+      "tagline": "RUMCET checks your ROM collection against a reference DAT/XML, then renames, cleans up and converts it to the formats of your choice.",
+      "automation": "RUMCET can automate much of the work: downloading DAT/XML files and missing games from within the app, picking the best compression format for each game, creating .m3u files for multi-disc games, moving unneeded files rather than deleting them… You choose what is automated, and how.",
       "intro": "To get started:",
-      "step1": "Select a DAT/XML file or open an existing database",
-      "step2": "Create a database",
-      "step3": "Load the data",
-      "step4": "Add your ROMs folders",
-      "step5": "Match the ROMs to identify missing ones"
-    },
-    "welcomeReset": {
-      "step1": "Load a DAT/XML file (local or downloaded) or open an existing database",
+      "step1": "Create a Rumcet DB from a DAT/XML file (local or downloaded) or open an existing Rumcet DB",
       "step2": "Add your ROMs folders",
-      "step3": "Match the ROMs to identify missing ones",
-      "step4": "Consolidate validated ROMs into archives"
+      "step3": "Match the ROMs to identify missing ROMs or files",
+      "step4": "Optional: choose the games to consolidate, by hand while browsing the DAT/XML content (left pane) or with the automatic selection (recommended)",
+      "step5": "Consolidate validated ROMs into archives",
+      "help": {
+        "step1": "<p>A <strong>DAT/XML file</strong> is the complete inventory of an emulated system's games and of the files that make up each of them (names, sizes, checksums), made by retro game preservation groups such as <strong>No-Intro</strong> (cartridges), <strong>Redump</strong> (discs) or <strong>MAME</strong> (arcade).</p><p>RUMCET can download it for you, then creates a <strong>Rumcet DB</strong> from it: the database that will hold the DAT, your scanned folders and the matching results.</p><p>To resume your work, use <strong>“Open Rumcet DB”</strong>.</p>",
+        "step2": "<p>Add one or more folders containing your ROMs. RUMCET records the names, sizes and checksums of every file, including inside archives, without you having to extract them.</p><p>A new scan only re-analyzes what has changed.</p>",
+        "step3": "<p>Matching compares your files' checksums (CRC32, then MD5/SHA1) with those of the DAT/XML, whatever the file names.</p><p>You then see complete, incomplete or missing games, as well as extra files.</p>",
+        "step4": "<p>By default, <strong>all games</strong> of the DAT/XML are selected for consolidation. This step is optional, but it lets you keep only the games you care about.</p><p><strong>By hand</strong>: click the DAT/XML in the left pane (“DAT/XML file” section) to browse its content (search, filters, grouping), then check or uncheck games.</p><p><strong>Automatically</strong> (recommended): the automatic selection applies rules (regions, languages, clones, prototypes, BIOS…) and <strong>1G1R</strong> (one game, one ROM). The settings are saved in the Rumcet DB and can serve as a template for a system.</p>",
+        "step5": "<p>Consolidation rebuilds the selected games in the <strong>target folder</strong>: each file is <strong>renamed</strong> according to the DAT/XML, in the format chosen by the consolidation <strong>profile</strong> (ZIP, 7z, CHD, per-system compatibility…).</p><p>Depending on your cleanup settings, it can also <strong>clean up your source folders</strong>: delete the game files already rebuilt in the target folder, and move unneeded or unreferenced files to dedicated folders rather than deleting them.</p>"
+      }
     },
     "details": {
       "header": "Details",
@@ -719,12 +736,16 @@
       "cleanupScope": "Scope: {scope}",
       "protectionOn": "Protection of files used by unselected games",
       "protectionOff": "No protection for unselected games",
+      "moveUnmatchedOn": "Unmatched files moved to the dedicated folder (source folder structure kept)",
+      "moveUnmatchedOff": "Unmatched files left in place",
+      "readOnlyRepack": "RAR / CHD / CSO archives: unmatched files repacked as 7z",
+      "readOnlyMove": "RAR / CHD / CSO archives: moved whole",
       "cleanupDisabled": "Cleanup disabled (sources remain untouched)",
       "confirmTitle": "Consolidate ROMs",
       "confirmMessage": "Do you want to start the consolidation with these settings?",
       "confirmButton": "Consolidate",
       "inProgress": "⏳ Consolidating...",
-      "doneAlert": "🧹 Consolidation complete!\n\nConsolidated games: {games}\nArchives created: {archives}\nUnmatched files moved: {unmatched}\nErrors: {errors}",
+      "doneAlert": "🧹 Consolidation complete!\n\nConsolidated games: {games}\nArchives created: {archives}\nSources deleted: {deleted}\nArchives trimmed: {cleaned}\nArchives split: {split}\nUnmatched files moved: {unmatched}\nErrors: {errors}",
       "errorAlert": "❌ Error during consolidation. Check the logs.",
       "cancelledAlert": "⏹️ Consolidation interrupted\n\nConsolidated games: {games}\nGames not processed: {remaining}\nErrors: {errors}\n\nThe source cleanup and the move of unreferenced files were skipped.",
       "profile": "⚙️ PROFILE: {name}"
@@ -750,7 +771,8 @@
       "filesSection": "ROM files ({count})",
       "archivesSection": "Archive contents ({count})",
       "romCount": "{count} ROM(s)",
-      "inArchive": "In: {archive}"
+      "inArchive": "In: {archive}",
+      "hashRom": "ROM ({type}): {rom}"
     },
     "autoSelect": {
       "title": "⚙️ Automatic selection",
@@ -910,6 +932,7 @@
         "extracting": "Extracting the source files…",
         "compressing": "Creating the archive…",
         "copying": "Copying to the target folder…",
+        "cleaning": "Cleaning up sources…",
         "done": "✅ Consolidated",
         "skipped": "⏭️ Skipped (nothing to consolidate)",
         "error": "❌ Error",
@@ -944,7 +967,7 @@
       "chosenPending": "Chosen format: —",
       "elapsed": "Elapsed time: {time}",
       "gameElapsed": "Current game: {time}",
-      "hint": "If you interrupt, the games already consolidated are kept; the source cleanup and the move of unreferenced files are then skipped.",
+      "hint": "Each game's sources are cleaned up as soon as it is consolidated. If you interrupt, the games already consolidated are kept; only the final move of unreferenced files is skipped.",
       "stopHint": "The consolidation will stop automatically once the current game is finished. If it seems blocked or takes too long, you can try a forced stop: the current game is then abandoned and nothing is written to the target folder.",
       "cancel": "Interrupt",
       "cancelling": "Stopping after the current game…",
@@ -1001,7 +1024,8 @@
     "profiles": {
       "label": "⚙️ Profile:",
       "title": "Consolidation profile in use (edit it in the settings)",
-      "busyAlert": "The profile cannot be changed while a consolidation is running."
+      "busyAlert": "The profile cannot be changed while a consolidation is running.",
+      "settingsTitle": "Configure consolidation profiles (opens the settings on the Compression tab)"
     }
   },
   "settings": {
@@ -1146,12 +1170,16 @@
       "scope": "Cleanup scope:",
       "scopeUsedOnly": "Used files only",
       "scopeAllMatched": "All matched files",
-      "scopeInfo": "\"Used files only\" deletes only the files that were used to create the consolidated archives.<br>\"All matched files\" also deletes duplicates (redundant archives or loose files), freeing more space.",
+      "scopeInfo": "Cleanup runs right after each game is consolidated.<br>\"Used files only\": only the copies used to consolidate the game are deleted; unused duplicates stay.<br>\"All matched files\": every copy of the consolidated game's files is deleted.<br>Inside a ZIP/7z archive, only the files that are no longer needed are removed; the archive is deleted only when nothing in it is needed anymore. Produced files and files of other games in the target folder are never deleted.",
       "protectUnselected": "Keep files used by unselected games",
       "protectUnselectedInfo": "If enabled, a file will not be deleted if it matches a DAT game that is not checked for consolidation",
       "residualSection": "Moving residual files",
       "moveUnmatched": "Move unmatched files to the dedicated folder",
-      "moveUnmatchedInfo": "Files that do not match any DAT game will be moved to the folder below",
+      "moveUnmatchedInfo": "Files that do not match any DAT game are moved to the folder below, grouped by source folder. Those inside a ZIP/7z archive that is still needed are split out into a separate archive. Files in the target folder are never moved.",
+      "readOnlyArchives": "Non-modifiable archives (RAR, CHD, CSO) containing unmatched files:",
+      "readOnlyRepack": "Repack the unmatched files as 7z",
+      "readOnlyMove": "Move the whole archive",
+      "readOnlyArchivesInfo": "Applies when none of the DAT files in the archive is needed anymore. If some still are, the archive stays in place.",
       "unmatchedFolderGlobal": "The destination folder is a global setting, shared by all profiles: <a href=\"#\" data-goto-tab=\"folders\">\"Folders\" tab</a>.",
       "unmatchedFolderCurrent": "Current folder:",
       "unmatchedFolderNotSet": "no folder set",
@@ -1324,16 +1352,24 @@
       "renameDialogTitle": "Rename the profile",
       "deleteConfirm": "Delete the profile \"{name}\"? It will be deleted when you save.",
       "deleteActiveConfirm": "\"{name}\" is the current profile. Delete it? \"My profile\" (or the first profile) will become the current profile when you save.",
-      "resetConfirm": "Reset the profile \"{name}\" to Rumcet's default values?"
+      "resetConfirm": "Reset the profile \"{name}\" to Rumcet's default values?",
+      "descriptions": {
+        "universal": "For maximum compatibility: only formats read by every emulator (core) of a system are kept.",
+        "recalbox": "To play on Recalbox: formats accepted by at least one emulator of the system are kept, and .m3u files are created for multi-disc games.",
+        "master": "To archive a collection: 7z, ZIP and CHD (when the system allows it), keeping the most compact format for each game.",
+        "custom": "Your personal profile, to set up as you like.",
+        "user": "Custom profile, to set up as you like."
+      },
+      "help": "<p>A <strong>consolidation profile</strong> groups the compression, per-system compatibility, cleanup, arcade and 1G1R settings. The current profile is chosen in the main window.</p><p><strong>100% compatibility</strong>: formats read by every emulator of a system.</p><p><strong>Recalbox (play)</strong>: formats accepted by at least one Recalbox emulator, .m3u files for multi-disc games.</p><p><strong>Archive / Master</strong>: 7z, ZIP or CHD, the most compact format for each game.</p><p>Built-in profiles can be edited and reset; the <strong>+</strong> button creates your own profile from the displayed one.</p>"
     }
   },
   "datDownload": {
     "windowTitle": "Load a DAT/XML file - RUMCET",
     "title": "Load a DAT/XML file",
     "subtitle": "Select a local DAT or download one, then load it into RUMCET.",
-    "subtitleComplementary": "Add a complementary DAT to the current database (e.g. CHDs DAT, BIOS pack…).",
-    "activeDb": "active database",
-    "modeBanner": "➕ <strong>Complementary mode</strong> — a DAT is already loaded ({dat}). The selected DAT will be <strong>merged</strong> into the current database: existing games are preserved, only new games and missing files will be added (e.g. a CHDs DAT completing a ROMs DAT, BIOS pack…).",
+    "subtitleComplementary": "Add a complementary DAT to the current Rumcet DB (e.g. CHDs DAT, BIOS pack…).",
+    "activeDb": "active Rumcet DB",
+    "modeBanner": "➕ <strong>Complementary mode</strong> — a DAT is already loaded ({dat}). The selected DAT will be <strong>merged</strong> into the current Rumcet DB: existing games are preserved, only new games and missing files will be added (e.g. a CHDs DAT completing a ROMs DAT, BIOS pack…).",
     "badgeLatest": "Latest version",
     "recommendedTag": "(recommended)",
     "counter": {
@@ -1345,11 +1381,11 @@
     },
     "status": {
       "merging": "Merging the complementary DAT…",
-      "creating": "Creating the database and loading the DAT…",
-      "dbExistsConfirm": "A database already exists:\n{path}\n\nDo you want to replace it? All existing data will be lost.",
+      "creating": "Creating the Rumcet DB and loading the DAT…",
+      "dbExistsConfirm": "A Rumcet DB already exists:\n{path}\n\nDo you want to replace it? All existing data will be lost.",
       "cancelled": "Loading cancelled.",
       "mergedSuccess": "✅ Complementary DAT merged: {games} new game(s), {roms} ROM(s), {disks} disk(s).",
-      "createdSuccess": "✅ Database created: {games} game(s), {roms} ROM(s).",
+      "createdSuccess": "✅ Rumcet DB created: {games} game(s), {roms} ROM(s).",
       "error": "Error: {error}",
       "loadError": "Loading error: {error}",
       "pageOpened": "Page opened in the browser. Download the DAT then select it via \"Local file\".",
@@ -1382,9 +1418,9 @@
     },
     "step2": {
       "title": "Rumcet DB",
-      "subtitle": "Created automatically — customizable if needed",
-      "autoNote": "RUMCET creates a database to store the DAT information, scanned ROMs and matching results. By default, it is named after the DAT and placed in your Rumcet DB folder (configurable in the settings). You can also pick another location below.",
-      "customize": "Customize the database location and name",
+      "subtitle": "Location chosen automatically from the settings — customizable if needed",
+      "autoNote": "RUMCET creates a Rumcet DB, a database that stores the DAT information, scanned ROMs and matching results. By default, it is named after the DAT and placed in your Rumcet DB folder (configurable in the settings). You can also pick another location below.",
+      "customize": "Customize the Rumcet DB location and name",
       "dbPathPlaceholder": "Select a DAT file first…",
       "browseDbTitle": "Choose the Rumcet DB location and name"
     },
@@ -1418,18 +1454,25 @@
       "patron": "Patron",
       "patronAlpha": "Patron Alpha",
       "alpha": "Alpha"
+    },
+    "help": {
+      "step1": "<p>A <strong>DAT/XML file</strong> is the complete inventory of an emulated system's games and of the files that make up each of them (names, sizes, checksums), made by retro game preservation groups (No-Intro, Redump, MAME…). It is the reference your ROMs will be compared against.</p><p>Pick a file from your disk or download it here.</p><p>If no Rumcet DB is open, the DAT creates a <strong>new Rumcet DB</strong>. Otherwise, it is <strong>merged</strong> as a complementary DAT (e.g. CHDs DAT, BIOS pack).</p>",
+      "sources": "<p><strong>No-Intro</strong> covers cartridge and floppy games, <strong>Redump</strong> disc-based games (CD, DVD…). Pick the source offered for the system.</p><p>No-Intro DATs cannot be downloaded automatically: “Open page” opens the website in your browser, then select the downloaded file via “Local file”.</p>",
+      "mameSources": "<p>For arcade, pick the MAME version used by your emulator: ROMs change from one version to another.</p><p><strong>Progetto-Snaps</strong> provides the full DAT (parent/clone relationships, BIOS, emulation status), required by the advanced arcade features. <strong>Pleasuredome</strong> offers DATs already organized by mode (split, merged, non-merged, CHDs).</p>",
+      "step2": "<p>The <strong>Rumcet DB</strong> is a database (.sqlite file) dedicated to this DAT: it holds the DAT inventory, your scanned folders and the matching results.</p><p>It is created automatically in your Rumcet DB folder (set in the settings); you can reopen it later with “Open Rumcet DB”.</p>",
+      "step3": "<p>The <strong>target folder</strong> receives the games rebuilt by the consolidation. If it already contains ROMs, they are scanned and taken into account.</p><p>Working folders (unreferenced, incomplete, temporary ROMs) are optional: left empty, they use those from the settings. All of them can be changed later.</p>"
     }
   },
   "dbFolders": {
     "targetTitle": "📁 Target folder",
     "targetLabel": "Validated ROMs (consolidation destination)",
-    "targetInfo": "The ROMs kept by the consolidation are placed in this folder. It is scanned right after the database is created, which may take a while if it already contains files.",
+    "targetInfo": "The ROMs kept by the consolidation are placed in this folder. It is scanned right after the Rumcet DB is created, which may take a while if it already contains files.",
     "targetRequired": "Please select a target folder.",
     "systemSubfolder": "Create a subfolder named after the system",
     "systemSubfolderInfo": "Example: …/psx. The system is detected from the DAT name (or chosen manually).",
     "effective": "Effective folder: {path}",
     "advancedTitle": "Working folders (advanced)",
-    "advancedInfo": "Specific to this database. Leave a field empty to use the folder defined in the settings.",
+    "advancedInfo": "Specific to this Rumcet DB. Leave a field empty to use the folder defined in the settings.",
     "unmatched": "Unreferenced ROMs",
     "incomplete": "Incomplete ROMs",
     "temp": "Temporary extraction folder",

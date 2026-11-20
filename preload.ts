@@ -315,6 +315,7 @@ contextBridge.exposeInMainWorld('api', {
   downloadDat: (params: any) => ipcRenderer.invoke('dat-download:download', params),
   openDatPage: (params: any) => ipcRenderer.invoke('dat-download:open-page', params),
   openDatDownloadWindow: () => ipcRenderer.invoke('dat-download:open-window'),
+  openSettingsWindow: (tab?: string) => ipcRenderer.invoke('settings:open-window', tab),
   selectDownloadFolder: (defaultPath?: string) => ipcRenderer.invoke('dat-download:select-folder', defaultPath),
 
   // ========================================

@@ -4,9 +4,10 @@ import Seven from 'node-7z';
 import { getBundled7zaPath } from '../toolPaths.js';
 import path from 'path';
 import fs from 'fs/promises';
+import os from 'os';
 import { exec } from 'child_process';
 import { promisify } from 'util';
-import { trackProcess } from './processRegistry.js';
+import { trackProcess, trackedExecFileAsync } from './processRegistry.js';
 import { 
   IArchiveHandler, 
   ArchiveContent, 
@@ -317,6 +318,40 @@ export class SevenZipHandler implements IArchiveHandler {
     });
   }
   
+  /**
+   * Retire des entrées d'une archive ZIP ou 7z via la ligne de commande 7-Zip
+   * (`7z d`). 7-Zip écrit la nouvelle archive dans un fichier temporaire puis
+   * remplace l'original : une interruption laisse l'archive d'origine intacte.
+   * Contrairement à adm-zip, aucune limite de taille (pas de chargement en mémoire).
+   * Les noms sont passés via un fichier liste UTF-8, sans interprétation des jokers (-spd).
+   */
+  async removeEntriesCli(archivePath: string, entryNames: string[]): Promise<void> {
+    if (entryNames.length === 0) return;
+    await this.runWithListFile(entryNames, listFile =>
+      ['d', archivePath, '-y', '-scsUTF-8', '-spd', `@${listFile}`]);
+  }
+
+  /**
+   * Extrait des entrées d'une archive ZIP ou 7z en conservant leurs chemins (`7z x`).
+   */
+  async extractEntriesCli(archivePath: string, entryNames: string[], outputDir: string): Promise<void> {
+    if (entryNames.length === 0) return;
+    await fs.mkdir(outputDir, { recursive: true });
+    await this.runWithListFile(entryNames, listFile =>
+      ['x', archivePath, `-o${outputDir}`, '-y', '-scsUTF-8', '-spd', `@${listFile}`]);
+  }
+
+  private async runWithListFile(entryNames: string[], buildArgs: (listFile: string) => string[]): Promise<void> {
+    const listFile = path.join(os.tmpdir(), `rumcet-7zlist-${process.pid}-${Date.now()}-${Math.random().toString(36).slice(2)}.txt`);
+    // 7-Zip ne reconnaît pas « sub\fichier » dans un ZIP : toujours des « / »
+    await fs.writeFile(listFile, entryNames.map(n => n.replace(/\\/g, '/')).join('\n'), 'utf8');
+    try {
+      await trackedExecFileAsync(this.sevenZipPath, buildArgs(listFile), { maxBuffer: 64 * 1024 * 1024 });
+    } finally {
+      await fs.unlink(listFile).catch(() => { /* déjà absent */ });
+    }
+  }
+
   getSupportedExtensions(): string[] {
     return ['.7z'];
   }

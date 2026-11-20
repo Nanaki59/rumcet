@@ -1,7 +1,8 @@
 // src/renderer/index.ts
 
 import { displayMatchingReport, initMatchingUI, displayInitialReport } from './matchingUI.js';
-import { initI18n, refreshTranslations, t, getLanguage } from './i18n.js';
+import { initI18n, refreshTranslations, t, getLanguage, applyDomI18n } from './i18n.js';
+import { initHelpTips } from './helpTip.js';
 import { setupConsoleCapture } from './consoleCapture.js';
 import { makeReorderable } from './reorderable.js';
 import { registerPriorityList } from './priorityList.js';
@@ -1346,6 +1347,7 @@ function updateWorkflowButtons() {
     romAddFolder: document.getElementById('rom-add-folder') as HTMLButtonElement,
     romAddFolderSidebar: document.getElementById('rom-add-folder-sidebar') as HTMLButtonElement,
     matchRoms: document.getElementById('match-roms') as HTMLButtonElement,
+    selectGames: document.getElementById('select-games') as HTMLButtonElement,
     consolidateRoms: document.getElementById('consolidate-roms') as HTMLButtonElement
   };
 
@@ -1364,6 +1366,20 @@ function updateWorkflowButtons() {
     elements.datLoad.title = t('index.workflow.loadDatTitle');
   }
 
+  // Infobulle d'un bouton du workflow : explication de l'étape, suivie de la
+  // condition manquante quand il est désactivé.
+  const setWorkflowTitle = (btn: HTMLButtonElement | null, baseKey: string) => {
+    if (!btn) return;
+    let title = t(baseKey);
+    if (btn.disabled) {
+      const reason = !canAddRoms ? 'needDat'
+        : loadedFolders.length === 0 ? 'needFolder'
+        : 'needMatch';
+      title += `\n\n⏳ ${t(`index.workflow.disabled.${reason}`)}`;
+    }
+    btn.title = title;
+  };
+
   // Boutons "Ajouter dossier ROMs" : disponibles si une base est ouverte avec un DAT chargé
   const canAddRoms = currentDbPath !== null && currentDatInfo !== null;
   if (elements.romAddFolder) {
@@ -1372,16 +1388,26 @@ function updateWorkflowButtons() {
   if (elements.romAddFolderSidebar) {
     elements.romAddFolderSidebar.disabled = !canAddRoms;
   }
+  setWorkflowTitle(elements.romAddFolder, 'index.workflow.addFolderTitle');
 
   // Bouton "Matcher les ROMs" : disponible si des dossiers de ROMs ont été ajoutés
   if (elements.matchRoms) {
     elements.matchRoms.disabled = !(canAddRoms && loadedFolders.length > 0);
   }
+  setWorkflowTitle(elements.matchRoms, 'index.workflow.matchTitle');
+
+  // Bouton "Sélectionner" (étape facultative) : dès qu'un DAT est chargé — la
+  // sélection ne dépend pas du matching.
+  if (elements.selectGames) {
+    elements.selectGames.disabled = !canAddRoms;
+  }
+  setWorkflowTitle(elements.selectGames, 'index.workflow.selectTitle');
 
   // Bouton "Consolider les ROMs" : disponible si le matching a été effectué
   if (elements.consolidateRoms) {
     elements.consolidateRoms.disabled = !matchingComplete;
   }
+  setWorkflowTitle(elements.consolidateRoms, 'index.workflow.consolidateTitle');
 
   // Mettre à jour l'état des entrées du menu principal.
   // Charger un DAT est toujours possible : sans base → primaire (création),
@@ -1394,6 +1420,29 @@ function updateWorkflowButtons() {
     canAddFolder: canAddRoms,
     canCloseDatabase
   });
+}
+
+// Écran d'accueil (volet central, aucune Rumcet DB ouverte) : présentation de
+// RUMCET (but, puis l'accent mis sur l'automatisation) et les 5 étapes du
+// workflow, chacune avec une puce d'aide « ? ». Textes posés via data-i18n* :
+// un changement de langue les retraduit sans re-rendu (refreshTranslations → applyDomI18n).
+function renderWelcome(): void {
+  const gameList = document.getElementById('game-list');
+  if (!gameList) return;
+  const steps = [1, 2, 3, 4, 5].map(n => `
+        <li><span data-i18n="index.welcome.step${n}"></span><span class="help-tip" data-help="index.welcome.help.step${n}"></span></li>`).join('');
+  gameList.innerHTML = `
+    <div class="welcome-screen">
+      <h3 data-i18n="index.welcome.title"></h3>
+      <p class="welcome-tagline" data-i18n="index.welcome.tagline"></p>
+      <p class="welcome-tagline" data-i18n="index.welcome.automation"></p>
+      <p class="welcome-intro" data-i18n="index.welcome.intro"></p>
+      <div><ol>${steps}
+      </ol></div>
+    </div>
+  `;
+  applyDomI18n(gameList);
+  initHelpTips(gameList);
 }
 
 // Réinitialisation de l'interface
@@ -1440,6 +1489,9 @@ function resetInterface() {
   if (groupFilterBar) groupFilterBar.style.display = 'none';
   const selectAllBar = document.getElementById('select-all-bar');
   if (selectAllBar) selectAllBar.style.display = 'none';
+  hasSelectionRules = false;
+  selectionTipDismissed = false;
+  updateSelectionTip();
   const searchBar = document.getElementById('search-bar');
   if (searchBar) searchBar.style.display = 'none';
   const activeFiltersBar = document.getElementById('active-filters-bar');
@@ -1473,37 +1525,12 @@ function resetInterface() {
   // Masquer le bandeau d'info DB
   updateDbInfoBanner();
 
-  const elements = {
-    datLoad: document.getElementById('dat-load') as HTMLButtonElement,
-    romAddFolder: document.getElementById('rom-add-folder') as HTMLButtonElement,
-    romAddFolderSidebar: document.getElementById('rom-add-folder-sidebar') as HTMLButtonElement,
-    matchRoms: document.getElementById('match-roms') as HTMLButtonElement,
-    consolidateRoms: document.getElementById('consolidate-roms') as HTMLButtonElement
-  };
-
-  if (elements.datLoad) elements.datLoad.disabled = false;
-  if (elements.romAddFolder) elements.romAddFolder.disabled = true;
-  if (elements.romAddFolderSidebar) elements.romAddFolderSidebar.disabled = true;
-  if (elements.matchRoms) elements.matchRoms.disabled = true;
-  if (elements.consolidateRoms) elements.consolidateRoms.disabled = true;
+  // État remis à zéro ci-dessus : boutons (libellés, infobulles, désactivation) et menus
+  updateWorkflowButtons();
 
   updateLeftSidebar();
 
-  const gameList = document.getElementById('game-list');
-  if (gameList) {
-    gameList.innerHTML = `
-      <div style="padding: 40px; text-align: center; color: #7f8c8d;">
-        <h3>${t('index.welcome.title')}</h3>
-        <p style="margin-top: 20px;">${t('index.welcome.intro')}</p>
-        <ol style="text-align: left; display: inline-block; margin-top: 10px;">
-          <li>${t('index.welcomeReset.step1')}</li>
-          <li>${t('index.welcomeReset.step2')}</li>
-          <li>${t('index.welcomeReset.step3')}</li>
-          <li>${t('index.welcomeReset.step4')}</li>
-        </ol>
-      </div>
-    `;
-  }
+  renderWelcome();
 
   const breadcrumb = document.getElementById('breadcrumb');
   if (breadcrumb) breadcrumb.style.display = 'none';
@@ -1523,6 +1550,7 @@ function updateLeftSidebar() {
     if (currentDatPath && currentDatInfo) {
       const div = document.createElement('div');
       div.className = 'sidebar-item';
+      div.dataset.type = 'dat';
 
       const datFileName = currentDatPath.split(/[\\\/]/).pop() || t('index.datDetails.fallbackName');
 
@@ -1660,7 +1688,7 @@ function updateLeftSidebar() {
 }
 
 // Sélection d'un élément dans le volet gauche
-function selectSidebarItem(element: HTMLElement, type: 'dat' | 'folder', path: string) {
+function selectSidebarItem(element: HTMLElement, type: 'dat' | 'folder', path: string): Promise<void> {
   document.querySelectorAll('.sidebar-item').forEach(item => {
     item.classList.remove('active');
   });
@@ -1672,8 +1700,21 @@ function selectSidebarItem(element: HTMLElement, type: 'dat' | 'folder', path: s
   if (type === 'folder') {
     currentRootFolder = path;
   }
-  
-  updateCenterContent(type, path);
+
+  return updateCenterContent(type, path);
+}
+
+/**
+ * Étape 4 (facultative) du workflow : choisir les jeux à consolider.
+ * Affiche d'abord le contenu du DAT/XML (comme un clic dans le volet gauche),
+ * où la sélection manuelle se fait, puis ouvre la sélection automatique.
+ */
+async function openSelectionStep(): Promise<void> {
+  if (!(selectedElement?.type === 'dat' && allGames.length > 0)) {
+    const datItem = document.querySelector<HTMLElement>('.sidebar-item[data-type="dat"]');
+    if (datItem && currentDbPath) await selectSidebarItem(datItem, 'dat', currentDbPath);
+  }
+  await openAutoSelectModal();
 }
 
 // ============================================================================
@@ -1860,6 +1901,8 @@ async function updateCenterContent(type: 'dat' | 'folder', path: string) {
       if (groupFilterBar) groupFilterBar.style.display = 'block';
       const selectAllBar = document.getElementById('select-all-bar');
       if (selectAllBar) selectAllBar.style.display = 'flex';
+      await refreshHasSelectionRules();
+      updateSelectionTip();
       updateGroupFilterSummary();
 
       // Masquer les contrôles de vue et le breadcrumb
@@ -3444,6 +3487,30 @@ function updateSelectAllCheckbox() {
   updateSelectionCounter();
 }
 
+// Conseil 💡 sous la barre de sélection : affiché tant que tous les jeux sont
+// sélectionnés, qu'aucune sélection automatique n'a été enregistrée dans la
+// Rumcet DB (metadata 'selection_rules') et que l'utilisateur ne l'a pas masqué.
+let hasSelectionRules = false;
+let selectionTipDismissed = false;
+
+function updateSelectionTip(): void {
+  // Le conseil est un enfant de la barre de sélection : masqué avec elle.
+  const tip = document.getElementById('selection-tip');
+  if (!tip) return;
+  const realGames = allGames.filter(g => !g.is_disappeared && !g.is_bios && !g.is_device);
+  const allSelected = realGames.length > 0 && realGames.every(g => g.is_selected !== 0);
+  tip.style.display = allSelected && !hasSelectionRules && !selectionTipDismissed ? 'flex' : 'none';
+}
+
+/** Relit dans la Rumcet DB si une sélection automatique y a déjà été enregistrée. */
+async function refreshHasSelectionRules(): Promise<void> {
+  try {
+    hasSelectionRules = (await window.api.getDbMetadata('selection_rules')) !== null;
+  } catch {
+    hasSelectionRules = false;
+  }
+}
+
 // Mise à jour du compteur de jeux sélectionnés
 function updateSelectionCounter() {
   const counterSpan = document.getElementById('selection-counter');
@@ -3456,6 +3523,7 @@ function updateSelectionCounter() {
   const selectedSize = selected.reduce((sum, g) => sum + (g.total_size || 0), 0);
   const sizePart = selectedSize > 0 ? ` · 💾 ${formatFileSize(selectedSize)}` : '';
   counterSpan.textContent = `✔️ ${selected.length} / ${realGames.length}${sizePart}`;
+  updateSelectionTip();
 }
 
 // Mise à jour des checkboxes de groupes
@@ -4327,6 +4395,13 @@ async function runConsolidation() {
     } else {
       lines.push(`  • ${t('index.consolidation.protectionOff')}`);
     }
+    if (settings.moveUnmatchedFiles !== false) {
+      lines.push(`  • ${t('index.consolidation.moveUnmatchedOn')}`);
+      lines.push(`  • ${t(settings.unmatchedInReadOnlyArchives === 'move'
+        ? 'index.consolidation.readOnlyMove' : 'index.consolidation.readOnlyRepack')}`);
+    } else {
+      lines.push(`  • ${t('index.consolidation.moveUnmatchedOff')}`);
+    }
   } else {
     lines.push(`  • ${t('index.consolidation.cleanupDisabled')}`);
   }
@@ -4365,6 +4440,9 @@ async function runConsolidation() {
         games: result.stats.gamesConsolidated,
         archives: result.stats.archivesCreated,
         unmatched: result.stats.unmatchedFilesMoved,
+        deleted: result.stats.sourcesDeleted ?? 0,
+        cleaned: result.stats.archivesCleaned ?? 0,
+        split: result.stats.archivesSplit ?? 0,
         errors: result.stats.gamesErrored
       }));
       log('logs.consolidation.finished', { context: 'match', state: 'success' });
@@ -4629,6 +4707,15 @@ function displaySearchResults(results: any, query: string) {
     return;
   }
   
+  // Recherche par hash : afficher la ligne du hash trouvé
+  const hashType: 'crc32' | 'md5' | 'sha1' | null = results.hashType ?? null;
+  const hashLabel = hashType === 'crc32' ? 'CRC32' : hashType === 'md5' ? 'MD5' : 'SHA1';
+  const hashMatchLine = (row: any): string => {
+    const value = hashType ? row[hashType] : null;
+    if (!value || value.toLowerCase() !== query.trim().replace(/^0x/i, '').toLowerCase()) return '';
+    return `<div class="list-item-info" style="font-size: 11px;">${hashLabel} : <span class="search-highlight">${escapeHtml(value)}</span></div>`;
+  };
+
   // Créer un conteneur pour les résultats
   const container = document.createElement('div');
   container.style.padding = '10px';
@@ -4649,6 +4736,7 @@ function displaySearchResults(results: any, query: string) {
         <div>
           <div class="list-item-name">${highlightText(game.name, query)}</div>
           ${game.description ? `<div class="list-item-info">${highlightText(game.description, query)}</div>` : ''}
+          ${game.hash_rom ? `<div class="list-item-info">${t('index.searchView.hashRom', { type: hashLabel, rom: `<span class="search-highlight">${escapeHtml(game.hash_rom)}</span>` })}</div>` : ''}
           <div class="list-item-info">${t('index.searchView.romCount', { count: game.rom_count })}</div>
         </div>
       `;
@@ -4678,6 +4766,7 @@ function displaySearchResults(results: any, query: string) {
           <div class="list-item-info" style="font-size: 11px; color: #95a5a6;">
             ${file.folder_path}
           </div>
+          ${hashMatchLine(file)}
         </div>
         <div class="list-item-info">${formatFileSize(file.size)}</div>
       `;
@@ -4712,6 +4801,7 @@ function displaySearchResults(results: any, query: string) {
           <div class="list-item-info" style="font-size: 11px; color: #95a5a6;">
             ${archive.archive_path}
           </div>
+          ${hashMatchLine(archive)}
         </div>
         <div class="list-item-info">${formatFileSize(archive.size)}</div>
       `;
@@ -6240,6 +6330,8 @@ async function asmPersist(): Promise<void> {
     rules: asmRules,
     oneGameOneRom: ogorConfig
   }));
+  hasSelectionRules = true;
+  updateSelectionTip();
 }
 
 async function asmApply() {
@@ -6296,6 +6388,13 @@ async function asmApply() {
 
 function setupAutoSelectModal() {
   document.getElementById('auto-select-btn')?.addEventListener('click', openAutoSelectModal);
+  document.getElementById('select-games')?.addEventListener('click', () => { void openSelectionStep(); });
+
+  // Conseil « tous les jeux sont sélectionnés » : masquable pour la Rumcet DB ouverte
+  document.getElementById('selection-tip-close')?.addEventListener('click', () => {
+    selectionTipDismissed = true;
+    updateSelectionTip();
+  });
 
   document.getElementById('asm-add-rule')?.addEventListener('click', () => {
     asmRules.push({ action: 'deselect', field: 'name', operator: 'contains', value: '' });
@@ -6714,6 +6813,9 @@ async function handleLanguageChanged(): Promise<void> {
 document.addEventListener('DOMContentLoaded', async () => {
   // Traductions d'abord : le DOM statique et tous les textes dynamiques en dépendent
   await initI18n({ onLanguageChanged: handleLanguageChanged });
+  renderWelcome();
+  initHelpTips(); // puces « ? » statiques (barre de sélection…)
+  updateWorkflowButtons();
   // Registre des systèmes (surcharge Recalbox éventuelle), lu par la sélection de système
   await initSystems();
   await initProfileSelector();

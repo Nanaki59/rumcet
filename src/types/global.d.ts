@@ -95,6 +95,7 @@ export interface AppSettings {
   cleanupScope: CleanupScope;
   protectFilesForUnselectedGames: boolean;
   moveUnmatchedFiles: boolean;
+  unmatchedInReadOnlyArchives: 'repack' | 'move';
 
   // ========================================
   // ONGLET ARCADE (MAME)
@@ -183,7 +184,7 @@ export type CompatRule = 'universal' | 'recalbox' | 'master';
 export type ProfileSettings = Pick<AppSettings,
   | 'compressionLevel' | 'recreateArchivesIfNeeded' | 'archiveFormatPriority' | 'useBestCompression'
   | 'solidArchive' | 'multithreading' | 'systemCompatibility' | 'generateM3u'
-  | 'cleanSourceAfterConsolidation' | 'cleanupScope' | 'protectFilesForUnselectedGames' | 'moveUnmatchedFiles'
+  | 'cleanSourceAfterConsolidation' | 'cleanupScope' | 'protectFilesForUnselectedGames' | 'moveUnmatchedFiles' | 'unmatchedInReadOnlyArchives'
   | 'arcadeTargetSetMode' | 'arcadeSeparateBios' | 'arcadeChdEmptyZip' | 'oneGameOneRom'>;
 
 /** Profil de consolidation. Miroir de ConsolidationProfile (settingsManager.ts). */
@@ -682,7 +683,7 @@ export interface ConsolidationProgress {
   /** Paramètres d'interpolation {nom} de la clé. */
   params?: Record<string, string | number>;
   /** Détail du jeu en cours (voir ConsolidationProgress dans src/helpers/consolidateRoms.ts) */
-  step?: 'analyzing' | 'direct-copy' | 'extracting' | 'compressing' | 'copying' | 'done' | 'skipped' | 'error' | 'aborted';
+  step?: 'analyzing' | 'direct-copy' | 'extracting' | 'compressing' | 'copying' | 'cleaning' | 'done' | 'skipped' | 'error' | 'aborted';
   mode?: 'standard' | 'best' | 'direct' | 'raw' | 'chd-copy';
   formats?: ConsolidationFormatCandidate[];
   chosenFormat?: string;
@@ -713,6 +714,11 @@ export interface ConsolidationResult {
     romsExtracted: number;
     archivesCreated: number;
     unmatchedFilesMoved: number;
+    sourcesDeleted: number;
+    archivesCleaned: number;
+    archivesSplit: number;
+    unmatchedInTarget: number;
+    cleanupErrors: number;
     gamesRemaining?: number;
   };
   errors: Array<{ gameName: string; error: string }>;
@@ -1251,8 +1257,10 @@ declare global {
         games: any[];
         files: any[];
         archives: any[];
+        /** Type de hash détecté dans la requête (8 / 32 / 40 caractères hexa), sinon null. */
+        hashType: 'crc32' | 'md5' | 'sha1' | null;
       }>;
-      
+
       /**
        * Recherche dans les ROMs d'un jeu spécifique.
        * @param gameId - L'ID du jeu.
@@ -1339,6 +1347,8 @@ declare global {
       downloadDat: (params: DatDownloadParams) => Promise<DatDownloadResult>;
       openDatPage: (params: DatDownloadParams) => Promise<DatDownloadResult>;
       openDatDownloadWindow: () => Promise<void>;
+      /** Ouvre la fenêtre des paramètres, éventuellement sur un onglet (data-tab de settings.html). */
+      openSettingsWindow: (tab?: string) => Promise<void>;
       selectDownloadFolder: (defaultPath?: string) => Promise<string | null>;
 
       // ========================================

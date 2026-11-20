@@ -29,6 +29,8 @@ export interface ChdConversionOptions {
   compression?: 'none' | 'cdlz' | 'cdzl' | 'cdfl' | 'avhu' | 'lzma' | 'zlib' | 'huff' | 'flac';
   force?: boolean;
   numProcessors?: number;
+  /** Taille de hunk (-hs) ; PPSSPP exige 2048 pour les CHD PSP. */
+  hunkSize?: number;
 }
 
 export interface ChdInfo {
@@ -67,7 +69,7 @@ export interface ChdTrackInfo {
 // CONSTANTES
 // ============================================
 
-const CD_FORMATS = ['.cue', '.gdi', '.toc', '.nrg', '.cdi', '.iso', '.ccd'];
+const CD_FORMATS = ['.cue', '.gdi', '.toc', '.nrg', '.cdi', '.ccd'];
 const DVD_FORMATS = ['.iso', '.mds'];
 const HD_FORMATS = ['.img', '.vhd', '.vmdk', '.vdi', '.qcow2', '.raw'];
 
@@ -85,10 +87,9 @@ export function detectMediaType(filePath: string, fileSize?: number): string {
   if (ext === '.cue') return 'cd';  // CUE est toujours CD
   if (ext === '.toc') return 'cd';  // TOC est toujours CD
 
-  // ISO peut être CD ou DVD selon la taille
-  if (ext === '.iso' && fileSize) {
-    return fileSize > 800 * 1024 * 1024 ? 'dvd' : 'cd';  // > 800MB = probablement DVD
-  }
+  // Une ISO est une image en secteurs de 2048 octets (Redump : DVD PS2, UMD PSP,
+  // GameCube…) : createdvd quelle que soit sa taille. Les CD sont décrits par un .cue.
+  if (ext === '.iso') return 'dvd';
 
   if (CD_FORMATS.includes(ext)) return 'cd';
 
@@ -195,6 +196,11 @@ export class ChdHandler extends EventEmitter implements IArchiveHandler {
     return systemProfileManager.forSystem(systemId).chdIdentity();
   }
 
+  /** Taille de hunk des CHD DVD : 2048 pour la PSP (exigence de PPSSPP), sinon défaut de chdman. */
+  private dvdHunkSize(): number | undefined {
+    return settingsManager.getActiveSystemId() === 'psp' ? 2048 : undefined;
+  }
+
   /**
    * Extrait temporairement le CHD et calcule le hash des fichiers de données
    * (bin/cue/gdi/iso). Utilisé pour le matching des romsets Redump.
@@ -210,7 +216,7 @@ export class ChdHandler extends EventEmitter implements IArchiveHandler {
       const outputBase = path.join(tempDir, baseName);
 
       if (chdInfo.mediaType === 'DVD') {
-        await this.extractDVD(filePath, outputBase);
+        await this.extractDVD(filePath, outputBase + '.iso');
       } else if (chdInfo.mediaType === 'HD') {
         await this.extractHD(filePath, outputBase + '.img');
       } else {
@@ -278,7 +284,7 @@ export class ChdHandler extends EventEmitter implements IArchiveHandler {
     const outputBase = path.join(options.outputDir, baseName);
     
     if (chdInfo.mediaType === 'DVD') {
-      await this.extractDVD(options.archivePath, outputBase);
+      await this.extractDVD(options.archivePath, outputBase + '.iso');
     } else if (chdInfo.mediaType === 'HD') {
       await this.extractHD(options.archivePath, outputBase + '.img');
     } else {
@@ -326,7 +332,8 @@ export class ChdHandler extends EventEmitter implements IArchiveHandler {
     const chdOptions: ChdConversionOptions = {
       inputPath: inputFile,
       outputPath: options.outputPath,
-      force: true
+      force: true,
+      hunkSize: this.dvdHunkSize()
     };
     
     const stats = await fs.stat(inputFile);
@@ -473,6 +480,10 @@ export class ChdHandler extends EventEmitter implements IArchiveHandler {
       // Compression (default: lzma, zlib, huff, flac)
       if (options.compression) {
         args.push('-c', options.compression);
+      }
+
+      if (options.hunkSize) {
+        args.push('-hs', options.hunkSize.toString());
       }
       
       // Force overwrite

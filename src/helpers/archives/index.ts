@@ -17,7 +17,6 @@ export { ZipHandler } from './ZipHandler.js';
 export { SevenZipHandler } from './SevenZipHandler.js';
 export { RarHandler } from './RarHandler.js';
 export { ChdHandler } from './ChdHandler.js';
-export { IsoHandler } from './IsoHandler.js';
 export { CsoHandler } from './CsoHandler.js';
 
 // Gestionnaire principal (singleton)

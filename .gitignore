@@ -147,3 +147,6 @@ CLAUDE.md
 
 # electron-builder output
 release/
+
+# Test files
+tests-files/

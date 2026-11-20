@@ -42,6 +42,7 @@ export const PROFILE_KEYS = [
   'cleanupScope',
   'protectFilesForUnselectedGames',
   'moveUnmatchedFiles',
+  'unmatchedInReadOnlyArchives',
   // Arcade
   'arcadeTargetSetMode',
   'arcadeSeparateBios',

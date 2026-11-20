@@ -48,6 +48,8 @@ export interface MatchedRomInfo {
   /** ID du game qui possède cette dat_rom dans le DAT (= game.id sauf clones foldés merged). */
   datRomOwnerGameId: number;
   datRomOwnerGameName: string;
+  /** scanned_files.id du fichier physique (fichier seul ou archive) — nettoyage des sources. */
+  sourceFileId?: number;
   scannedFileId: number | null;
   scannedFilePath: string | null;
   scannedFileName: string | null;

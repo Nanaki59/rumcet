@@ -87,7 +87,7 @@ function createMainWindow(): void {
   });
 }
 
-function createSettingsWindow(): void {
+function createSettingsWindow(tab?: string): void {
   if (settingsWindow) {
     settingsWindow.focus();
     return;
@@ -105,7 +105,10 @@ function createSettingsWindow(): void {
     }
   });
 
-  settingsWindow.loadFile(path.join(__dirname, '../renderer/settings.html'));
+  // Onglet d'arrivée éventuel (lu par settings.ts dans location.search)
+  const safeTab = tab && /^[a-z0-9-]+$/i.test(tab) ? tab : undefined;
+  settingsWindow.loadFile(path.join(__dirname, '../renderer/settings.html'),
+    safeTab ? { query: { tab: safeTab } } : undefined);
 
   settingsWindow.on('closed', () => {
     settingsWindow = null;
@@ -368,6 +371,11 @@ function handleLanguageChanged(language: 'fr' | 'en'): void {
 function registerDatDownloadWindowHandlers(): void {
   ipcMain.handle('dat-download:open-window', () => {
     createDatDownloadWindow();
+  });
+
+  // Ouverture des paramètres depuis la fenêtre principale (bouton 🔧 près du profil)
+  ipcMain.handle('settings:open-window', (_event, tab?: string) => {
+    createSettingsWindow(typeof tab === 'string' ? tab : undefined);
   });
 
   ipcMain.handle('dat-download:select-folder', async (_event, defaultPath?: string) => {

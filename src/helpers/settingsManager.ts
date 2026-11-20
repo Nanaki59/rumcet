@@ -46,6 +46,8 @@ export const EMPTY_DB_FOLDER_SETTINGS: DbFolderSettings = {
 export type ArchiveFormat = '7z' | 'zip' | 'chd';
 export type CompressionLevel = 'fastest' | 'normal' | 'maximum';
 export type CleanupScope = 'used-only' | 'all-matched';
+/** Archive en lecture seule (RAR) ne contenant plus que des fichiers inutiles + des non matchés. */
+export type ReadOnlyArchiveUnmatchedMode = 'repack' | 'move';
 export type RarTool = '7zip' | 'winrar' | 'unrar';
 export type ArcadeTargetSetMode = 'split' | 'non-merged' | 'merged';
 
@@ -206,6 +208,8 @@ export interface AppSettings {
   protectFilesForUnselectedGames: boolean;
   /** Déplacer les fichiers non matchés vers le dossier dédié (si le nettoyage est activé) */
   moveUnmatchedFiles: boolean;
+  /** RAR : recompresser les non matchés en 7z (`repack`) ou déplacer l'archive entière (`move`) */
+  unmatchedInReadOnlyArchives: ReadOnlyArchiveUnmatchedMode;
 
   // Mise à jour DAT
   autoSelectNewGames: boolean;
@@ -432,6 +436,7 @@ class SettingsManager {
       cleanupScope: 'used-only',
       protectFilesForUnselectedGames: true,
       moveUnmatchedFiles: true,
+      unmatchedInReadOnlyArchives: 'repack',
 
       autoSelectNewGames: true,
       arcadeTargetSetMode: 'split',

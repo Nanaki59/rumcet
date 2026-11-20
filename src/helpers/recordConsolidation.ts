@@ -264,3 +264,46 @@ export async function cleanupStaleScannedFiles(db: Database): Promise<number> {
 
   return staleIds.length;
 }
+
+/**
+ * Oublie un fichier source supprimé ou déplacé : supprime sa ligne scanned_files
+ * (cascade : archive_contents, rom_matches) et met à jour le compteur du dossier.
+ */
+export async function forgetScannedFile(db: Database, fileId: number): Promise<void> {
+  const row = await db.get<{ folder_id: number }>('SELECT folder_id FROM scanned_files WHERE id = ?', [fileId]);
+  if (!row) return;
+  await db.run('DELETE FROM scanned_files WHERE id = ?', [fileId]);
+  await db.run(
+    `UPDATE scanned_folders SET file_count = (
+       SELECT COUNT(*) FROM scanned_files WHERE folder_id = ?
+     ) WHERE id = ?`,
+    [row.folder_id, row.folder_id]
+  );
+}
+
+/**
+ * Enregistre le retrait d'entrées d'une archive modifiée en place : supprime les
+ * archive_contents concernés (cascade : rom_matches) et met à jour taille, date
+ * et hashs de l'archive pour qu'un scan rapide la considère inchangée.
+ */
+export async function recordEntriesRemoved(
+  db: Database,
+  archiveId: number,
+  contentIds: number[],
+  archivePath: string
+): Promise<void> {
+  const chunkSize = 500;
+  for (let i = 0; i < contentIds.length; i += chunkSize) {
+    const chunk = contentIds.slice(i, i + chunkSize);
+    const placeholders = chunk.map(() => '?').join(',');
+    await db.run(`DELETE FROM archive_contents WHERE id IN (${placeholders})`, chunk);
+  }
+
+  const fs = await import('fs/promises');
+  const stat = await fs.stat(archivePath);
+  const hashes = await calculateFileHashes(archivePath);
+  await db.run(
+    `UPDATE scanned_files SET size = ?, crc32 = ?, md5 = ?, sha1 = ?, file_mtime = ? WHERE id = ?`,
+    [stat.size, hashes.crc32, hashes.md5, hashes.sha1, Math.trunc(stat.mtimeMs), archiveId]
+  );
+}

@@ -18,7 +18,6 @@ import { SevenZipHandler } from './SevenZipHandler.js';
 import { RarHandler } from './RarHandler.js';
 import { ChdHandler } from './ChdHandler.js';
 import { resolveChdmanPath, setCurrentChdmanPath, type ChdmanVersionChoice } from '../toolPaths.js';
-import { IsoHandler } from './IsoHandler.js';
 import { CsoHandler } from './CsoHandler.js';
 
 /**
@@ -39,8 +38,11 @@ import { CsoHandler } from './CsoHandler.js';
  * - 7z (lecture/écriture)
  * - RAR (lecture seule)
  * - CHD (lecture/écriture via chdman)
- * - ISO (lecture seule via 7zip)
- * - CSO (lecture seule via maxcso)
+ * - CSO/ZSO (lecture seule, décodeur intégré : une entrée = l'ISO compressée)
+ *
+ * Une ISO n'est PAS une archive : c'est l'image disque décrite par les DAT
+ * Redump (PS2, PSP, GameCube…), hachée en entier comme une ROM ordinaire et
+ * convertible directement en CHD par chdman.
  */
 export class ArchiveManager extends EventEmitter {
   private handlers: Map<string, IArchiveHandler>;
@@ -55,7 +57,6 @@ export class ArchiveManager extends EventEmitter {
       ['7z', '.7z'],
       ['rar', '.rar'],
       ['chd', '.chd'],
-      ['iso', '.iso'],
       ['cso', '.cso']
     ]);
     
@@ -72,7 +73,6 @@ export class ArchiveManager extends EventEmitter {
       new SevenZipHandler(),
       new RarHandler(),
       new ChdHandler(),
-      new IsoHandler(),
       new CsoHandler()
     ];
     
@@ -626,6 +626,47 @@ export class ArchiveManager extends EventEmitter {
     }
   }
   
+  /**
+   * Indique si l'on peut retirer des entrées d'une archive existante sans la
+   * recréer : uniquement ZIP et 7z (RAR, CHD et CSO sont en lecture seule).
+   */
+  canRemoveEntries(archivePath: string): boolean {
+    const ext = path.extname(archivePath).toLowerCase();
+    return ext === '.zip' || ext === '.7z';
+  }
+
+  /** 7-Zip en ligne de commande, qui sait modifier les ZIP comme les 7z. */
+  private get sevenZipCli(): SevenZipHandler {
+    return this.handlers.get('.7z') as SevenZipHandler;
+  }
+
+  /**
+   * Retire des entrées d'une archive ZIP/7z (opération sûre : 7-Zip remplace
+   * l'archive seulement une fois la nouvelle version écrite).
+   */
+  async removeEntries(archivePath: string, entryNames: string[]): Promise<void> {
+    if (!this.canRemoveEntries(archivePath)) {
+      throw new Error(`Cannot remove entries from ${archivePath} (read-only format)`);
+    }
+    await this.sevenZipCli.removeEntriesCli(archivePath, entryNames);
+
+    // 7-Zip ignore sans erreur un nom introuvable : vérifier que tout a bien été retiré
+    const norm = (n: string) => n.replace(/\\/g, '/').toLowerCase();
+    const removed = new Set(entryNames.map(norm));
+    const left = (await this.listArchive(archivePath)).filter(e => removed.has(norm(e.fileName)));
+    if (left.length > 0) {
+      throw new Error(`${left.length} entry(ies) could not be removed from ${archivePath}: ${left.map(e => e.fileName).join(', ')}`);
+    }
+  }
+
+  /** Extrait des entrées d'une archive ZIP/7z en conservant leurs sous-dossiers. */
+  async extractEntries(archivePath: string, entryNames: string[], outputDir: string): Promise<void> {
+    if (!this.canRemoveEntries(archivePath)) {
+      throw new Error(`Cannot extract selected entries from ${archivePath}`);
+    }
+    await this.sevenZipCli.extractEntriesCli(archivePath, entryNames, outputDir);
+  }
+
   /**
    * Récupère récursivement tous les fichiers d'un dossier
    */

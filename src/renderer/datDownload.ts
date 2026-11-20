@@ -26,6 +26,7 @@
 //     fusionne dans la base active (complémentaire) si une base est ouverte.
 
 import { initI18n, t } from './i18n.js';
+import { initHelpTips } from './helpTip.js';
 import { setupConsoleCapture } from './consoleCapture.js';
 import { renderDbFoldersForm, type DbFoldersForm } from './dbFoldersForm.js';
 import { escapeHtml } from './htmlEscape.js';
@@ -855,5 +856,6 @@ function setupCloseButton() {
 document.addEventListener('DOMContentLoaded', async () => {
   // Traductions d'abord : le DOM statique et tous les textes dynamiques en dépendent
   await initI18n();
+  initHelpTips();
   await init();
 });

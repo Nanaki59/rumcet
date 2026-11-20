@@ -58,6 +58,11 @@ export async function initProfileSelector(): Promise<void> {
   });
   window.api.profiles.onChanged(() => { void renderProfileSelector(); });
 
+  // 🔧 : paramètres des profils, ouverts sur l'onglet Compression
+  document.getElementById('profile-settings-btn')?.addEventListener('click', () => {
+    void window.api.openSettingsWindow('archives');
+  });
+
   await renderProfileSelector();
 }
 

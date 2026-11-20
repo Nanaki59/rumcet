@@ -12,6 +12,8 @@
     "clean": "rimraf dist",
     "sync-systems": "tsc && node scripts/generateSystems.mjs",
     "check-naming": "node scripts/checkRomNaming.mjs",
+    "check-cleanup": "node scripts/checkSourceCleanup.mjs",
+    "check-cso": "node scripts/checkCso.mjs",
     "dist": "npm run clean && npm run build && electron-builder"
   },
   "keywords": [

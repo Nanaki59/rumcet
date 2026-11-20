@@ -84,8 +84,18 @@ export function registerConsolidationHandlers(ipcMain: IpcMain, mainWindow: Brow
         sendLogToRenderer(mainWindow, 'info', 'match', 'logs.consolidation.done', {
           games: result.stats.gamesConsolidated,
           archives: result.stats.archivesCreated,
-          unmatched: result.stats.unmatchedFilesMoved
+          unmatched: result.stats.unmatchedFilesMoved,
+          deleted: result.stats.sourcesDeleted,
+          cleaned: result.stats.archivesCleaned,
+          split: result.stats.archivesSplit
         });
+      }
+
+      if (result.stats.unmatchedInTarget > 0) {
+        sendLogToRenderer(mainWindow, 'info', 'match', 'logs.consolidation.unmatchedInTarget', { count: result.stats.unmatchedInTarget });
+      }
+      if (result.stats.cleanupErrors > 0) {
+        sendLogToRenderer(mainWindow, 'warning', 'match', 'logs.consolidation.cleanupErrors', { count: result.stats.cleanupErrors });
       }
 
       if (result.m3u) {

@@ -5,6 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title data-i18n="datDownload.windowTitle">Charger un fichier DAT/XML - RUMCET</title>
   <link rel="stylesheet" href="dbFolders.css">
+  <link rel="stylesheet" href="helpTip.css">
   <style>
     * {
       box-sizing: border-box;
@@ -647,6 +648,7 @@
       <div class="step-header">
         <span class="step-number">1</span>
         <span class="step-title" data-i18n="datDownload.step1.title">Fichier DAT/XML</span>
+        <span class="help-tip" data-help="datDownload.help.step1"></span>
         <span class="step-subtitle" data-i18n="datDownload.step1.subtitle">Depuis votre disque ou depuis les sites des groupes de préservation</span>
       </div>
       <div class="step-body">
@@ -684,7 +686,7 @@
             </div>
 
             <div class="source-selection" id="source-selection">
-              <div class="source-selection-label" data-i18n="datDownload.step1.sourceLabel">Source :</div>
+              <div class="source-selection-label"><span data-i18n="datDownload.step1.sourceLabel">Source :</span><span class="help-tip" data-help="datDownload.help.sources"></span></div>
               <div class="source-radio-group" id="source-radio-group"></div>
             </div>
 
@@ -714,7 +716,7 @@
           <!-- Onglet MAME (Progetto-Snaps / Pleasuredome) -->
           <div class="online-tab-content" id="online-tab-mame">
             <div class="source-selection visible">
-              <div class="source-selection-label" data-i18n="datDownload.step1.sourceLabel">Source :</div>
+              <div class="source-selection-label"><span data-i18n="datDownload.step1.sourceLabel">Source :</span><span class="help-tip" data-help="datDownload.help.mameSources"></span></div>
               <div class="source-radio-group">
                 <label>
                   <input type="radio" name="mame-source" value="progetto" checked>
@@ -779,6 +781,7 @@
       <div class="step-header">
         <span class="step-number">2</span>
         <span class="step-title" data-i18n="datDownload.step2.title">Rumcet DB</span>
+        <span class="help-tip" data-help="datDownload.help.step2"></span>
         <span class="step-subtitle" data-i18n="datDownload.step2.subtitle">Créée automatiquement — personnalisable si besoin</span>
       </div>
       <div class="step-body">
@@ -799,6 +802,7 @@
       <div class="step-header">
         <span class="step-number">3</span>
         <span class="step-title" data-i18n="dbFolders.targetTitle">📁 Dossier cible</span>
+        <span class="help-tip" data-help="datDownload.help.step3"></span>
       </div>
       <div class="step-body">
         <p class="db-auto-note" data-i18n="dbFolders.targetInfo">
