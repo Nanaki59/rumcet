@@ -1,0 +1,152 @@
+# Build RUMCET installers for Windows, Linux and macOS and publish a GitHub release.
+#
+# - Push a tag "v<version>" (e.g. v0.1.0-beta.1) to build and publish a release.
+#   The version comes from the tag (package.json is not modified). A tag with a
+#   suffix (-beta.1, -rc.2…) is published as a pre-release.
+# - Run manually (Actions tab) to build the installers only, downloadable as
+#   workflow artifacts, without publishing anything.
+#
+# chdman is built (or restored from cache) by build-chdman.yml for every platform
+# and embedded in resources/bin/<platform>-<arch>/.
+# Installers are not signed: Windows SmartScreen and macOS Gatekeeper will warn.
+
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+    inputs:
+      mame_tag:
+        description: "MAME source tag for chdman (e.g. mame0288)"
+        required: true
+        default: "mame0288"
+
+permissions:
+  contents: write
+
+jobs:
+  chdman:
+    uses: ./.github/workflows/build-chdman.yml
+    with:
+      mame_tag: ${{ inputs.mame_tag || 'mame0288' }}
+
+  package:
+    needs: chdman
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { runner: windows-latest,   target: win32-x64,    builder: "--win nsis --x64" }
+          - { runner: ubuntu-22.04,     target: linux-x64,    builder: "--linux AppImage --x64" }
+          - { runner: ubuntu-22.04-arm, target: linux-arm64,  builder: "--linux AppImage --arm64" }
+          - { runner: macos-15,         target: darwin-arm64, builder: "--mac dmg --arm64" }
+          - { runner: macos-15-intel,   target: darwin-x64,   builder: "--mac dmg --x64" }
+    runs-on: ${{ matrix.runner }}
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Version
+        id: version
+        run: |
+          if [ "$GITHUB_REF_TYPE" = "tag" ]; then
+            VERSION="${GITHUB_REF_NAME#v}"
+          else
+            VERSION="$(node -p "require('./package.json').version")-dev.${GITHUB_RUN_NUMBER}"
+          fi
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "Version: $VERSION"
+
+      - name: Fetch chdman
+        uses: actions/download-artifact@v4
+        with:
+          name: chdman-${{ matrix.target }}
+          path: resources/bin
+
+      - name: Restore chdman permissions
+        if: runner.os != 'Windows'
+        # Artifacts do not keep the executable bit
+        run: chmod 755 "resources/bin/${{ matrix.target }}/chdman"
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Make bundled 7za executable
+        if: runner.os != 'Windows'
+        run: chmod 755 node_modules/7zip-bin/linux/*/7za node_modules/7zip-bin/mac/*/7za || true
+
+      - name: Build
+        run: npm run build
+
+      - name: Package
+        env:
+          # No signing certificate: do not look for one in the macOS keychain
+          CSC_IDENTITY_AUTO_DISCOVERY: "false"
+        run: >
+          npx electron-builder ${{ matrix.builder }}
+          --publish never
+          -c.extraMetadata.version=${{ steps.version.outputs.version }}
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: rumcet-${{ matrix.target }}
+          if-no-files-found: error
+          path: |
+            release/*.exe
+            release/*.AppImage
+            release/*.dmg
+
+  publish:
+    if: github.ref_type == 'tag'
+    needs: package
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: rumcet-*
+          path: installers
+          merge-multiple: true
+
+      - name: Create GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          VERSION="${GITHUB_REF_NAME#v}"
+          PRERELEASE=""
+          case "$VERSION" in *-*) PRERELEASE="--prerelease" ;; esac
+
+          cat > notes.md <<'EOF'
+          ## Installation
+
+          | Système | Fichier |
+          |---|---|
+          | Windows 10/11 (64 bits) | `.exe` |
+          | Linux x64 (PC) | `.AppImage` avec `x64` / `x86_64` dans le nom |
+          | Linux ARM64 (Raspberry Pi 4/5…) | `.AppImage` avec `arm64` dans le nom |
+          | macOS Apple Silicon (M1, M2…) | `.dmg` avec `arm64` dans le nom |
+          | macOS Intel | `.dmg` avec `x64` dans le nom |
+
+          Les installeurs ne sont pas signés :
+          - **Windows** : si SmartScreen affiche « Windows a protégé votre ordinateur », cliquez sur *Informations complémentaires* puis *Exécuter quand même*.
+          - **Linux** : rendez le fichier exécutable (`chmod +x RUMCET-*.AppImage`) puis lancez-le.
+          - **macOS** : après avoir copié RUMCET dans Applications, lancez `xattr -cr /Applications/RUMCET.app` dans le Terminal avant la première ouverture.
+
+          Journaux à joindre aux rapports de bug : `rumcet.log` dans le dossier `logs` des données de l'application (Windows : `%APPDATA%\rumcet\logs`).
+          EOF
+
+          gh release create "$GITHUB_REF_NAME" installers/* \
+            --repo "$GITHUB_REPOSITORY" \
+            --verify-tag \
+            --title "RUMCET $VERSION" \
+            --notes-file notes.md \
+            --generate-notes \
+            $PRERELEASE

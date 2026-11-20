@@ -35,6 +35,7 @@
   "build": {
     "appId": "io.github.nanaki59.rumcet",
     "productName": "RUMCET",
+    "artifactName": "${productName}-${version}-${os}-${arch}.${ext}",
     "directories": {
       "output": "release"
     },
@@ -42,6 +43,9 @@
       "dist/**/*",
       "locales/**/*",
       "package.json"
+    ],
+    "asarUnpack": [
+      "node_modules/7zip-bin/**"
     ],
     "extraResources": [
       {
