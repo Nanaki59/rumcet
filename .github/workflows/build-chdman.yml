@@ -41,17 +41,27 @@ jobs:
         uses: actions/cache@v5
         with:
           path: out/${{ matrix.target }}
-          key: chdman-${{ env.MAME_TAG }}-${{ matrix.target }}
+          # Bump the "v" number when the build or packaging steps change
+          key: chdman-v2-${{ env.MAME_TAG }}-${{ matrix.target }}
 
       - name: Install dependencies (Linux)
         if: steps.cache.outputs.cache-hit != 'true' && runner.os == 'Linux'
         run: |
           sudo apt-get update
-          sudo apt-get install -y build-essential python3 libsdl2-dev libsdl2-ttf-dev libfontconfig1-dev
+          sudo apt-get install -y build-essential python3 libsdl2-dev libsdl2-ttf-dev libfontconfig1-dev \
+            qt6-base-dev qt6-base-dev-tools
+          # MAME always adds "-I$(qmake6 -query QT_INSTALL_HEADERS)", even without the
+          # Qt debugger: without qmake6 the bare "-I" swallows the next flag (-std=c++20)
+          if ! command -v qmake6 >/dev/null; then
+            sudo ln -s /usr/lib/qt6/bin/qmake /usr/local/bin/qmake6
+          fi
+          qmake6 -query QT_INSTALL_HEADERS
 
       - name: Install dependencies (macOS)
         if: steps.cache.outputs.cache-hit != 'true' && runner.os == 'macOS'
-        run: brew install sdl2 sdl2_ttf
+        # MAME uses the sdl3 OSD on macOS; dylibbundler embeds the Homebrew
+        # libraries next to chdman (users do not have Homebrew)
+        run: brew install sdl2 sdl2_ttf sdl3 sdl3_ttf dylibbundler
 
       - name: Fetch MAME source
         if: steps.cache.outputs.cache-hit != 'true'
@@ -63,24 +73,40 @@ jobs:
         # chdman needs neither the Qt debugger (default on Linux) nor audio/MIDI backends
         run: >
           make -j"$(getconf _NPROCESSORS_ONLN)" TOOLS=1 EMULATOR=0 REGENIE=1
-          USE_QTDEBUG=0 NO_USE_MIDI=1 NO_USE_PORTAUDIO=1 NO_USE_PULSEAUDIO=1
+          USE_QTDEBUG=0 NO_USE_MIDI=1 NO_USE_PORTAUDIO=1 NO_USE_PULSEAUDIO=1 NO_USE_PIPEWIRE=1
 
       - name: Package
         if: steps.cache.outputs.cache-hit != 'true'
         run: |
-          mkdir -p "out/${{ matrix.target }}"
-          cp mame/chdman "out/${{ matrix.target }}/chdman"
-          strip "out/${{ matrix.target }}/chdman" || true
-          if [ "$RUNNER_OS" = "macOS" ]; then codesign --force -s - "out/${{ matrix.target }}/chdman"; fi
-          chmod 755 "out/${{ matrix.target }}/chdman"
+          OUT="out/${{ matrix.target }}"
+          mkdir -p "$OUT"
+          cp mame/chdman "$OUT/chdman"
+          strip "$OUT/chdman" || true
+          chmod 755 "$OUT/chdman"
+          if [ "$RUNNER_OS" = "macOS" ]; then
+            # Copy the Homebrew dylibs into lib/ and point chdman at them
+            dylibbundler -of -b -cd -x "$OUT/chdman" -d "$OUT/lib" -p @executable_path/lib/
+            # Rewriting the load paths invalidates signatures: ad-hoc re-sign everything
+            codesign --force -s - "$OUT"/lib/*.dylib
+            codesign --force -s - "$OUT/chdman"
+          fi
 
       - name: Smoke test
         run: |
+          OUT="out/${{ matrix.target }}"
           # Without arguments chdman prints its usage and exits with code 1
-          "out/${{ matrix.target }}/chdman" > usage.txt 2>&1 || true
-          head -n 1 usage.txt
+          "$OUT/chdman" > usage.txt 2>&1 || true
+          cat usage.txt | head -n 5
           grep -q "CHD" usage.txt
-          if [ "$RUNNER_OS" = "Linux" ]; then ldd "out/${{ matrix.target }}/chdman"; else otool -L "out/${{ matrix.target }}/chdman"; fi
+          if [ "$RUNNER_OS" = "Linux" ]; then
+            ldd "$OUT/chdman"
+          else
+            otool -L "$OUT/chdman" "$OUT"/lib/*.dylib
+            # Nothing may still point to Homebrew (absent on users' Macs)
+            if otool -L "$OUT/chdman" "$OUT"/lib/*.dylib | grep -E '/opt/homebrew|/usr/local/(opt|Cellar)'; then
+              echo "chdman still depends on Homebrew libraries"; exit 1
+            fi
+          fi
 
       - uses: actions/upload-artifact@v6
         with:
@@ -104,6 +130,8 @@ jobs:
         if: steps.cache.outputs.cache-hit != 'true'
         with:
           msystem: MINGW64
+          # MINGW64 is the environment documented by MAME; keep it while it works
+          suppress-deprecation-warnings: msystem-mingw64
           update: true
           install: >-
             git make
